@@ -1,0 +1,122 @@
+{
+  "name": "META Mover Build Resources",
+  "version": "3.0.0",
+  "description": "Build resources and configuration files for META Mover cross-platform builds",
+  "created": "2025-09-12",
+  "author": "Build System",
+  
+  "resources": {
+    "icons": {
+      "directory": "./icons/",
+      "description": "Application icons for all platforms",
+      "files": {
+        "icon.icns": "macOS application icon bundle",
+        "icon.ico": "Windows multi-resolution icon",
+        "icon.png": "Linux main icon (512x512)",
+        "16x16.png": "Small icon for taskbars and system trays",
+        "32x32.png": "Small window decorations",
+        "48x48.png": "Medium icons",
+        "64x64.png": "Standard desktop icons", 
+        "128x128.png": "Large icons",
+        "256x256.png": "High-DPI icons",
+        "512x512.png": "Extra large icons"
+      },
+      "status": "placeholder",
+      "notes": "Replace with professional META Mover branded icons before production"
+    },
+    
+    "entitlements": {
+      "description": "macOS security entitlements for sandboxing and capabilities",
+      "files": {
+        "entitlements.mac.plist": "Main application entitlements",
+        "entitlements.mac.inherit.plist": "Child process entitlements"
+      },
+      "capabilities": [
+        "Network client access",
+        "User-selected file access",
+        "Downloads folder access", 
+        "JIT compilation",
+        "Library validation bypass",
+        "Printing capability"
+      ],
+      "sandbox": true,
+      "status": "configured"
+    },
+    
+    "notarization": {
+      "description": "macOS notarization configuration",
+      "files": {
+        "notarize.js": "Automated notarization script for electron-builder"
+      },
+      "requirements": {
+        "apple_id": "Apple Developer Account required",
+        "certificates": "Valid code signing certificates",
+        "credentials": "Environment variables or API keys"
+      },
+      "status": "configured"
+    },
+    
+    "utilities": {
+      "description": "Build helper scripts and tools",
+      "files": {
+        "generate-placeholder-icons.sh": "Icon generation script (requires ImageMagick)"
+      },
+      "status": "ready"
+    }
+  },
+  
+  "platform_support": {
+    "macos": {
+      "architectures": ["x64", "arm64"],
+      "formats": [".dmg", ".pkg", ".zip"],
+      "signing": "configured", 
+      "notarization": "configured",
+      "entitlements": "configured"
+    },
+    "windows": {
+      "architectures": ["x64", "ia32", "arm64"],
+      "formats": [".exe", ".msi", ".appx", ".portable"],
+      "signing": "needs_certificate",
+      "installer": "nsis_configured"
+    },
+    "linux": {
+      "architectures": ["x64", "arm64"],
+      "formats": [".AppImage", ".deb", ".rpm", ".snap", ".tar.gz", ".tar.xz"],
+      "desktop_integration": "configured",
+      "system_integration": "configured"
+    }
+  },
+  
+  "build_configuration": {
+    "electron_version": "27.1.3",
+    "electron_builder_version": "24.6.4",
+    "target_platforms": "all",
+    "code_signing": {
+      "macos": "requires_certificates",
+      "windows": "optional_but_recommended"
+    },
+    "optimization": {
+      "asar": true,
+      "compression": "maximum",
+      "tree_shaking": true,
+      "bundle_analysis": true
+    }
+  },
+  
+  "development_notes": {
+    "icon_creation": "Use generate-placeholder-icons.sh to create basic placeholders, replace with professional icons",
+    "code_signing": "Requires valid certificates from Apple (macOS) and Microsoft (Windows)",
+    "notarization": "macOS apps require notarization for distribution outside App Store",
+    "testing": "Test builds on each target platform before release",
+    "size_optimization": "Use bloat-check.sh to identify and reduce bundle size"
+  },
+  
+  "next_steps": [
+    "Create professional META Mover icon artwork",
+    "Obtain code signing certificates for macOS and Windows",
+    "Set up Apple Developer account for notarization",
+    "Test complete build process on all platforms",
+    "Optimize bundle size and dependencies",
+    "Set up automated CI/CD pipeline"
+  ]
+}
