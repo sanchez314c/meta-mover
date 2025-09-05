@@ -1,0 +1,175 @@
+# META MOVER DEPENDENCY AUDIT REPORT
+Generated: 2025-09-19
+Project: META Mover v3.0.0 - Professional Media Organization Suite
+Total Dependencies: 1,362 packages
+Node Modules Size: 737MB
+Node.js Version: v24.8.0 (exceeds required >=18.0.0)
+NPM Version: 11.6.0 (exceeds required >=9.0.0)
+
+## =¨ SECURITY VULNERABILITIES (2 Critical Issues)
+
+### HIGH SEVERITY
+1. **axios <1.12.0**
+   - Issue: DoS attack through lack of data size check
+   - Advisory: GHSA-4hjh-wcwx-xvwj
+   - Impact: Potential denial of service attacks
+   - Resolution: `npm audit fix` or update to axios ^1.12.0
+
+### MODERATE SEVERITY
+2. **electron <=35.7.4**
+   - Issues: 
+     * Heap Buffer Overflow in NativeImage (GHSA-6r2x-8pq8-9489)
+     * ASAR Integrity Bypass via resource modification (GHSA-vmqv-hx8q-j7mg)
+   - Current: 27.3.11 (significantly outdated)
+   - Required: Update to Electron ^38.1.2 (available in package.json but not installed)
+   - Impact: Critical security vulnerabilities affecting app integrity
+
+## =æ OUTDATED PACKAGES (35 Major Updates Available)
+
+### CRITICAL ELECTRON UPDATES
+- **electron**: 27.3.11 ’ 38.1.2 (11 major versions behind!)
+- **electron-builder**: 24.13.3 ’ 26.0.12
+- **electron-store**: 8.2.0 ’ 10.1.0
+- **dmg-builder**: 24.13.3 ’ 26.0.12
+
+### TYPESCRIPT/ESLINT ECOSYSTEM  
+- **@typescript-eslint/eslint-plugin**: 7.18.0 ’ 8.44.0
+- **@typescript-eslint/parser**: 7.18.0 ’ 8.44.0
+- **eslint**: 8.57.1 ’ 9.36.0 (breaking changes)
+- **@types/node**: 20.19.13 ’ 24.5.2 (major version jump)
+
+### TESTING FRAMEWORK
+- **jest**: 29.7.0 ’ 30.1.3 (major version update)
+- **@types/jest**: 29.5.14 ’ 30.0.0
+- **jest-environment-jsdom**: 29.7.0 ’ 30.1.2
+
+### BUILD TOOLS
+- **webpack-cli**: 5.1.4 ’ 6.0.1 (major version)
+- **copy-webpack-plugin**: 12.0.2 ’ 13.0.1
+- **css-minimizer-webpack-plugin**: 6.0.0 ’ 7.0.2
+- **sass-loader**: 14.2.1 ’ 16.0.5
+
+## =' UNUSED DEPENDENCIES (Potential Size Reduction: ~50-100MB)
+
+### Runtime Dependencies (Can Remove)
+- **dmg-builder**: Used only in electron-builder config, not in code
+- **lodash**: Declared but no imports found in source code
+
+### Development Dependencies (Build Tools - Keep)
+- L **@electron/rebuild**: Listed as unused but required for native modules
+- L **electron-log**: Not imported but likely used via webpack externals
+- L **electron-store**: Not imported but used for settings persistence
+-  **@testing-library/react**: No test files found using React Testing Library
+-  **@testing-library/user-event**: No test files found using user-event
+-  **sass**: No .scss/.sass files found in project
+
+### Missing Dependencies (Critical - Build Will Fail)
+- **ffprobe-static**: Used in FFProbeWrapper.ts
+- **winston**: Used in Logger.ts  
+- **sqlite3**: Used in DatabaseManager.ts
+- **sharp**: Used in CorruptionDetector.ts
+- **date-fns**: Used in FileOrganizer.ts
+- **exifr**: Used in MetadataExtractor.ts
+
+## – LICENSE ANALYSIS (No Conflicts Detected)
+
+**License Distribution:**
+- MIT: 1,073 packages (78.8%) 
+- ISC: 130 packages (9.5%) 
+- Apache-2.0: 50 packages (3.7%) 
+- BSD-2-Clause/BSD-3-Clause: 77 packages (5.7%) 
+- Other permissive: 32 packages (2.3%) 
+
+**Assessment:** All licenses are permissive and compatible with MIT project license. No GPL or restrictive copyleft licenses detected.
+
+## = COMPATIBILITY ISSUES
+
+### Electron-Specific Concerns
+1. **React 19.1.1**: Very new, may have compatibility issues with Electron 27.x
+2. **Node.js 24.8.0**: Project uses Node 24 but engines specify >=18.0.0 (good)
+3. **Native Modules**: @electron/rebuild present but may need updating for Electron 38
+
+### Version Conflicts
+1. **ESLint Ecosystem**: Using v8 while v9 is available (breaking changes)
+2. **Jest**: Using v29 while v30 is available (migration needed)
+3. **TypeScript**: Project uses 5.2.2, @types/node expects newer versions
+
+## =Ê RECOMMENDATIONS BY PRIORITY
+
+### =4 IMMEDIATE (Security Critical)
+1. **Fix Security Vulnerabilities**
+   ```bash
+   npm audit fix
+   npm install electron@38.1.2
+   ```
+
+2. **Install Missing Dependencies**
+   ```bash
+   npm install ffprobe-static winston sqlite3 sharp date-fns exifr
+   ```
+
+### =á HIGH PRIORITY (Stability)
+3. **Update Electron Ecosystem**
+   ```bash
+   npm install electron@38.1.2 electron-builder@26.0.12 electron-store@10.1.0
+   ```
+
+4. **Remove Unused Dependencies**
+   ```bash
+   npm uninstall dmg-builder lodash sass @testing-library/react @testing-library/user-event
+   ```
+
+### =â MEDIUM PRIORITY (Maintenance)
+5. **Update Build Tools** (Test thoroughly)
+   ```bash
+   npm install webpack-cli@6.0.1 copy-webpack-plugin@13.0.1
+   ```
+
+6. **Update Testing Framework** (Breaking changes expected)
+   ```bash
+   npm install jest@30.1.3 @types/jest@30.0.0 jest-environment-jsdom@30.1.2
+   ```
+
+### =5 LOW PRIORITY (Future)
+7. **ESLint v9 Migration** (Breaking changes, significant effort)
+8. **Node.js Types Update** (May require code changes)
+
+## =¾ ESTIMATED SIZE REDUCTION
+- Current node_modules: 737MB
+- After removing unused deps: ~650-680MB (8-12% reduction)
+- After audit fix: Additional ~10-20MB savings
+
+##   MIGRATION NOTES
+
+### Electron 27 ’ 38 Breaking Changes
+- New IPC security model (may affect existing IPC handlers)
+- Updated Node.js integration policies
+- Context isolation changes (check preload scripts)
+- New CSP requirements for renderer process
+
+### Jest 29 ’ 30 Breaking Changes  
+- Node.js 18+ required (already met)
+- Some Jest configuration options deprecated
+- New snapshot format
+
+### ESLint 8 ’ 9 Breaking Changes
+- Flat config format required
+- Many plugins need updates
+- Some rules deprecated/renamed
+
+## =È MAINTENANCE SCHEDULE
+
+**Monthly:** Security audit (`npm audit`)
+**Quarterly:** Minor version updates (patch/minor)
+**Bi-annually:** Major version updates (with testing)
+**Annually:** Complete dependency review
+
+##  HEALTH SCORE: 6/10
+-  License compliance
+-  Node.js compatibility  
+- L Security vulnerabilities (critical)
+- L Missing dependencies (build-breaking)
+-   Outdated packages (moderate risk)
+-   Large dependency tree (performance impact)
+
+**Priority Action:** Fix security vulnerabilities and install missing dependencies before any production deployment.

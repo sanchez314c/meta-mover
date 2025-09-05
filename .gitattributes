@@ -1,0 +1,46 @@
+# Auto detect text files
+* text=auto
+
+# Source files
+*.ts text=auto eol=lf
+*.tsx text=auto eol=lf
+*.js text=auto eol=lf
+*.jsx text=auto eol=lf
+*.json text=auto eol=lf
+*.md text=auto eol=lf
+*.yml text=auto eol=lf
+*.yaml text=auto eol=lf
+*.sh text eol=lf
+*.py text=auto eol=lf
+
+# Build files
+*.js.map binary
+*.d.ts text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.bz2 binary
+*.dmg binary
+*.pkg binary
+*.exe binary
+*.msi binary
+*.app binary
+
+# Fonts
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.eot binary
+
+# Normalize line endings for all text files
+* text=auto eol=lf

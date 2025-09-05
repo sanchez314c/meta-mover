@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Basic entitlements for META Mover -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	
+	<!-- Network access for API integrations and updates -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<false/>
+	
+	<!-- File system access -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	
+	<!-- Camera and microphone (if needed for future features) -->
+	<key>com.apple.security.device.camera</key>
+	<false/>
+	<key>com.apple.security.device.microphone</key>
+	<false/>
+	
+	<!-- Temporary exception for development -->
+	<key>com.apple.security.temporary-exception.apple-events</key>
+	<array>
+		<string>com.apple.systempreferences</string>
+		<string>com.apple.finder</string>
+	</array>
+	
+	<!-- Hardware access -->
+	<key>com.apple.security.device.usb</key>
+	<false/>
+	<key>com.apple.security.device.bluetooth</key>
+	<false/>
+	
+	<!-- Printing capability -->
+	<key>com.apple.security.print</key>
+	<true/>
+	
+	<!-- JIT compilation for performance -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	
+	<!-- Electron-specific entitlements -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

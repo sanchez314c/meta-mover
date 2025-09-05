@@ -1,0 +1,36 @@
+# MetaMover - Requirements
+# Professional Media Organization and Metadata Management Suite
+
+# Core dependencies
+Pillow>=9.0.0              # Image processing and EXIF handling
+opencv-python>=4.5.0       # Computer vision and image analysis
+numpy>=1.21.0              # Numerical operations for image processing
+tqdm>=4.62.0               # Progress bars for user feedback
+mutagen>=1.45.0            # Audio metadata processing
+
+# Optional dependencies for enhanced functionality
+moviepy>=1.0.3             # Video processing (optional, for advanced video features)
+
+# GUI and system integration
+# tkinter is included with Python standard library
+
+# Development and testing (optional)
+pytest>=6.0.0             # Testing framework
+black>=22.0.0              # Code formatting
+flake8>=4.0.0              # Code linting
+
+# Platform-specific dependencies
+# Metal framework (macOS only) - automatically available on macOS systems
+# ExifTool - must be installed separately, not available via pip
+
+# Installation notes:
+# 1. ExifTool must be installed separately:
+#    - macOS: brew install exiftool
+#    - Windows: Download from https://exiftool.org/
+#    - Linux: sudo apt-get install libimage-exiftool-perl
+#
+# 2. For GPU acceleration on macOS, Metal framework is automatically available
+#
+# 3. MoviePy is optional - tools will work without it but with limited video processing
+#
+# 4. Development dependencies (pytest, black, flake8) are only needed for contributing
