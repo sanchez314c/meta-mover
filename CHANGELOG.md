@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Materialized the independently reviewed refit into the original `main` repository only after its staged Git tree exactly matched the sealed refit tree. Removed baseline paths remain recoverable from path-preserving RAID Pre-Trash.
 - Removed the hidden clean-test dependency on a pre-existing ignored `.build-tools` directory. `npm run test:ci` now stages the packaged native runtime before Jest, and a fresh registry-only checkout passes all 842 tests without prior build state.
 - Persisted the full immutable date-decision audit trail instead of only reduced preview rows. Private evidence now records every scored candidate, complete `DateResolutionRecord`, and exact operation ID/source/target/byte mapping under strict deterministic schemas. Raw embedded metadata stays out of renderer DTOs and ordinary job history.
 

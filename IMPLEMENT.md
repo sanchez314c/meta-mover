@@ -393,3 +393,10 @@ Node's `fs` API exposes held `FileHandle` objects but no `openat`/`renameat`/`un
 - Native validation passes 25 filesystem-helper protocols and 7 launch-broker tests. The production main, preload, and renderer bundles compile without warnings.
 - Fresh Linux x64 installers were built and extracted through the same containment checks used by release CI. DEB SHA-256: `b34dced9ee7a46a741605fb01484e1e75b7d736df74a5b56529c1f4bce9c763c`. RPM SHA-256: `a90f31687c79f012d35e073435c7b492fda57cae24243fa57d565416dfe96c16`.
 - The final independent review passed 354 cross-layer tests and returned LGTM with no remaining functional, security, or release finding. Linux x64 is locally proved. macOS and Windows remain truthfully gated on their signed native CI runners.
+
+## 2026-08-30 exact-tree materialization
+
+- Sealed the validated refit as commit `3b317b497e48cfbb5a89292a3ef2bddce4503d83` with tree `0dcfd738ee126047739277aad9103f6f48353968`.
+- Moved every baseline path absent from the refit into path-preserving RAID Pre-Trash before modifying the original repository. No deleted source was discarded.
+- Applied the refit to the original `main` index and required `git write-tree` to equal the sealed refit tree before commit. The gate caught one rename-detected legacy audit artifact; it was preserved and the gate reran successfully.
+- Materialized the exact validated tree into the original repository as commit `878e56e3101aba04650e1443cc3053eda7c463b9`. Neither repository was pushed or published.
