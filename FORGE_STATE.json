@@ -1,0 +1,13 @@
+{
+  "mode": "REFIT",
+  "phase": "F9_final_validation_complete",
+  "sourceRepository": "/media/heathen-admin/RAID/Development/Projects/portfolio/00-GITHUB/media-tools/meta-mover",
+  "workspace": "/media/heathen-admin/RAID/Development/Projects/portfolio/00-GITHUB/media-tools/meta-mover-refit",
+  "baselineCommit": "d6fdd9d6cf0600e41aafd9bc59b7ae950e4f096f",
+  "branch": "forge-refit",
+  "sourcePreserved": true,
+  "characterizationGate": "passed",
+  "implementationGate": "passed",
+  "validationGate": "passed_44_suites_842_tests_linux_deb_rpm",
+  "materializationGate": "ready_for_tree_verified_materialization"
+}

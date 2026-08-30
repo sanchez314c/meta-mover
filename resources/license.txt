@@ -22,9 +22,9 @@ SOFTWARE.
 
 ---
 
-META Mover is a professional media organization suite designed to help users
-organize, manage, and process their photo and video collections with advanced
-metadata handling and corruption detection.
+META Mover organizes local media with evidence-ranked capture dates, previewed
+copy or move plans, and transaction records. Ambiguous dates are routed for
+manual review instead of being guessed.
 
 For support, documentation, and updates, visit:
 https://github.com/spacewelder314/meta-mover

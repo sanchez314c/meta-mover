@@ -44,3 +44,6 @@
 
 # Normalize line endings for all text files
 * text=auto eol=lf
+
+# Preserve the pinned upstream Perl runtime byte-for-byte.
+native/perl/** -whitespace

@@ -16,6 +16,7 @@ export class Logger {
   private static instance: Logger;
   private winston: winston.Logger;
   private logDir: string;
+  private closePromise?: Promise<void>;
 
   private constructor() {
     // Determine log directory
@@ -239,14 +240,27 @@ export class Logger {
 
   // Cleanup and shutdown
   public async close(): Promise<void> {
-    return new Promise((resolve) => {
-      this.winston.info('Shutting down logger');
-
-      this.winston.on('finish', () => {
+    this.closePromise ??= new Promise<void>((resolve, reject) => {
+      const onFinish = () => {
+        this.winston.off('error', onError);
         resolve();
-      });
+      };
+      const onError = (error: Error) => {
+        this.winston.off('finish', onFinish);
+        reject(error);
+      };
 
-      this.winston.end();
+      this.winston.once('finish', onFinish);
+      this.winston.once('error', onError);
+      try {
+        this.winston.info('Shutting down logger');
+        this.winston.end();
+      } catch (error) {
+        this.winston.off('finish', onFinish);
+        this.winston.off('error', onError);
+        reject(error);
+      }
     });
+    return this.closePromise;
   }
 }

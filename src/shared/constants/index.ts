@@ -51,119 +51,140 @@ export const IPC_CHANNELS = {
 
 // ─── File Format Support ────────────────────────────────────────────────────
 
-export const SUPPORTED_IMAGE_FORMATS = [
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.gif',
-  '.bmp',
-  '.tiff',
-  '.tif',
-  '.webp',
-  '.heic',
-  '.heif',
-  '.raw',
-  '.dng',
-  '.cr2',
-  '.nef',
-  '.arw',
-  '.ptx',
-  '.svg',
-  '.pdf',
-  '.mpo',
-  '.orf',
-  '.rw2',
-  '.avif',
-];
+export const SUPPORTED_MEDIA_FORMATS = {
+  image: [
+    '.avif',
+    '.bmp',
+    '.gif',
+    '.heic',
+    '.heif',
+    '.ico',
+    '.jfif',
+    '.jpeg',
+    '.jpg',
+    '.jxl',
+    '.png',
+    '.tif',
+    '.tiff',
+    '.webp',
+  ],
+  raw: [
+    '.3fr',
+    '.arw',
+    '.cr2',
+    '.cr3',
+    '.dcr',
+    '.dng',
+    '.erf',
+    '.fff',
+    '.iiq',
+    '.kdc',
+    '.mef',
+    '.mos',
+    '.mrw',
+    '.nef',
+    '.nrw',
+    '.orf',
+    '.pef',
+    '.raf',
+    '.raw',
+    '.rw2',
+    '.rwl',
+    '.sr2',
+    '.srf',
+    '.srw',
+    '.x3f',
+  ],
+  video: [
+    '.3g2',
+    '.3gp',
+    '.asf',
+    '.avi',
+    '.divx',
+    '.flv',
+    '.m2ts',
+    '.m4v',
+    '.mkv',
+    '.mov',
+    '.mp4',
+    '.mpeg',
+    '.mpg',
+    '.mts',
+    '.ogv',
+    '.rm',
+    '.rmvb',
+    '.ts',
+    '.vob',
+    '.webm',
+    '.wmv',
+  ],
+  audio: [
+    '.aac',
+    '.aif',
+    '.aiff',
+    '.alac',
+    '.ape',
+    '.caf',
+    '.flac',
+    '.m4a',
+    '.mka',
+    '.mp3',
+    '.oga',
+    '.ogg',
+    '.opus',
+    '.wav',
+    '.wma',
+  ],
+  document: [
+    '.ai',
+    '.doc',
+    '.docx',
+    '.eps',
+    '.indd',
+    '.odg',
+    '.odp',
+    '.ods',
+    '.odt',
+    '.pdf',
+    '.ppt',
+    '.pptx',
+    '.ps',
+    '.rtf',
+    '.svg',
+    '.xls',
+    '.xlsx',
+  ],
+  art: ['.kra', '.ora', '.psb', '.psd', '.xcf'],
+} as const;
 
-export const SUPPORTED_VIDEO_FORMATS = [
-  '.mp4',
-  '.mov',
-  '.avi',
-  '.mkv',
-  '.wmv',
-  '.flv',
-  '.webm',
-  '.m4v',
-  '.mpg',
-  '.mpeg',
-  '.3gp',
-  '.3g2',
-  '.mts',
-  '.m2ts',
-  '.ts',
-  '.vob',
-  '.ogv',
-  '.asf',
-  '.rm',
-  '.rmvb',
-  '.prores',
-];
+export type SupportedMediaKind = keyof typeof SUPPORTED_MEDIA_FORMATS;
 
-export const SUPPORTED_AUDIO_FORMATS = [
-  '.mp3',
-  '.wav',
-  '.aac',
-  '.flac',
-  '.m4a',
-  '.ogg',
-  '.aiff',
-  '.alac',
-  '.caf',
-  '.amr',
-  '.wmf',
-  '.wma',
-  '.opus',
-  '.au',
-  '.ra',
-];
+export function normalizedFileExtension(filePath: string): string {
+  const basename = filePath.slice(
+    Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1
+  );
+  const dot = basename.lastIndexOf('.');
+  return dot < 0 ? '' : basename.slice(dot).toLowerCase();
+}
 
-export const SUPPORTED_DOCUMENT_FORMATS = [
-  '.pdf',
-  '.doc',
-  '.docx',
-  '.xls',
-  '.xlsx',
-  '.ppt',
-  '.pptx',
-  '.txt',
-  '.rtf',
-  '.odt',
-];
+export function classifyMediaExtension(filePath: string): SupportedMediaKind | null {
+  const extension = normalizedFileExtension(filePath);
+  for (const [kind, extensions] of Object.entries(SUPPORTED_MEDIA_FORMATS) as [
+    SupportedMediaKind,
+    readonly string[],
+  ][]) {
+    if (extensions.includes(extension)) return kind;
+  }
+  return null;
+}
 
-export const SUPPORTED_ART_FORMATS = ['.psd', '.ai', '.indd', '.cdr', '.dwg', '.eps'];
-
-export const ALL_SUPPORTED_FORMATS = [
-  ...SUPPORTED_IMAGE_FORMATS,
-  ...SUPPORTED_VIDEO_FORMATS,
-  ...SUPPORTED_AUDIO_FORMATS,
-  ...SUPPORTED_DOCUMENT_FORMATS,
-  ...SUPPORTED_ART_FORMATS,
-];
-
-// RAW formats that require special handling
-export const RAW_IMAGE_FORMATS = [
-  '.cr2',
-  '.nef',
-  '.arw',
-  '.dng',
-  '.raw',
-  '.orf',
-  '.rw2',
-  '.pef',
-  '.x3f',
-  '.iiq',
-  '.3fr',
-  '.fff',
-  '.mrw',
-  '.bay',
-  '.crw',
-  '.srf',
-  '.sr2',
-  '.kdc',
-  '.dcr',
-  '.k25',
-];
+export const SUPPORTED_IMAGE_FORMATS = [...SUPPORTED_MEDIA_FORMATS.image];
+export const RAW_IMAGE_FORMATS = [...SUPPORTED_MEDIA_FORMATS.raw];
+export const SUPPORTED_VIDEO_FORMATS = [...SUPPORTED_MEDIA_FORMATS.video];
+export const SUPPORTED_AUDIO_FORMATS = [...SUPPORTED_MEDIA_FORMATS.audio];
+export const SUPPORTED_DOCUMENT_FORMATS = [...SUPPORTED_MEDIA_FORMATS.document];
+export const SUPPORTED_ART_FORMATS = [...SUPPORTED_MEDIA_FORMATS.art];
+export const ALL_SUPPORTED_FORMATS = Object.values(SUPPORTED_MEDIA_FORMATS).flat();
 
 // ─── Processing ─────────────────────────────────────────────────────────────
 

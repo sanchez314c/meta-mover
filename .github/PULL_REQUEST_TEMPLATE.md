@@ -1,34 +1,26 @@
-## Description
-Brief description of the changes made in this PR.
+## What changed?
 
-## Type of Change
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Code style update (formatting, renaming)
-- [ ] Refactoring (no functional changes, no api changes)
-- [ ] Build related changes
-- [ ] Other (please describe):
+## Why?
 
-## How Has This Been Tested?
-- [ ] Unit tests
-- [ ] Integration tests
-- [ ] Manual testing
-- [ ] Other (please describe):
+## Risk
 
-## Checklist:
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published in downstream modules
+Describe media-loss, path, metadata-truth, crash, cancellation, package, and platform risks that apply.
 
-## Screenshots (if applicable):
-<!-- Add screenshots to help explain your changes -->
+## Validation
 
-## Additional Notes:
-<!-- Any additional information or context about this PR -->
+- [ ] Tests were written before production changes
+- [ ] Focused tests pass
+- [ ] `npm run verify` passes
+- [ ] `npm run build` passes
+- [ ] `npm run package:integrity` passes when reachability or packaging changed
+- [ ] Copy and move behavior preserve the transaction contract
+- [ ] Documentation, `IMPLEMENT.md`, and `CHANGELOG.md` are current
+- [ ] No runtime download, host executable lookup, updater, or unsupported package target was added
+
+## Platform evidence
+
+List the OS and architecture where runtime behavior was tested. Cross-compilation must be labeled as compile evidence only.
+
+## Recovery and rollback
+
+Explain how a failure is detected and how the change can be reversed.

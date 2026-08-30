@@ -4,68 +4,251 @@ on:
   push:
     tags:
       - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g. 3.0.0)'
-        required: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  package:
+    name: Package verified Linux ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            target: deb
+            extension: .deb
+          - os: ubuntu-latest
+            platform: linux
+            target: rpm
+            extension: .rpm
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 22.12.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20.x
+          node-version: 22.12.0
+          cache: npm
 
-      - name: Install dependencies
+      - name: Verify release version
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json');if(process.env.GITHUB_REF_NAME!=='v'+p.version){throw new Error('Tag does not match package version')}"
+
+      - name: Verify dependency lock provenance
+        shell: bash
+        run: |
+          node -e "const lock=require('./package-lock.json');const bad=Object.entries(lock.packages).filter(([,p])=>p.resolved&&!p.resolved.startsWith('https://registry.npmjs.org/'));if(bad.length){console.error(bad);process.exit(1)}"
+
+      - name: Install locked dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm run test:ci
+      - name: Validate native helper and launch broker on package target
+        run: npm run native:verify
 
-      - name: Build application
+      - name: Prove native staged broker relay
+        run: npm run native:broker:build
+
+      - name: Run source validation
+        run: npm run verify
+
+      - name: Build production bundles
         run: npm run build
 
-      - name: Package for ${{ matrix.os }}
-        run: npm run pack
+      - name: Verify packaged runtime containment
+        run: npm run package:integrity
+
+      - name: Build unpacked package for containment smoke test
+        run: npm exec --offline -- electron-builder --dir --linux --x64 --publish never
+
+      - name: Verify unpacked application resources
+        run: npm run package:integrity:release
+
+      - name: Build native package
+        run: npm exec --offline -- electron-builder --linux ${{ matrix.target }} --x64 --publish never
+
+      - name: Install native package inspection tools
+        if: matrix.target == 'rpm'
+        run: sudo apt-get update && sudo apt-get install --yes rpm2cpio cpio
+
+      - name: Extract and verify final native package
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_EXTENSION: ${{ matrix.extension }}
+          ARTIFACT_TYPE: ${{ matrix.target }}
+        run: |
+          artifact=$(find release -maxdepth 1 -type f -name "*${ARTIFACT_EXTENSION}" -print)
+          test "$(printf '%s\n' "$artifact" | sed '/^$/d' | wc -l)" -eq 1
+          node scripts/verify-native-package.js --artifact "$artifact" --type "$ARTIFACT_TYPE"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Write checksum for verified package
+        shell: bash
+        env:
+          ARTIFACT_EXTENSION: ${{ matrix.extension }}
+          ARTIFACT_PLATFORM: linux-${{ matrix.target }}
+        run: |
+          node -e "const fs=require('fs');const crypto=require('crypto');const ext=process.env.ARTIFACT_EXTENSION;const files=fs.readdirSync('release').filter((file)=>file.endsWith(ext));if(files.length!==1)throw new Error('Expected exactly one '+ext+' artifact, found '+files.length);const file=files[0];const line=crypto.createHash('sha256').update(fs.readFileSync('release/'+file)).digest('hex')+'  '+file;fs.writeFileSync('release/SHA256SUMS-'+process.env.ARTIFACT_PLATFORM+'.txt',line+'\n')"
+
+      - name: Upload tested package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dist-${{ matrix.os }}
-          path: release/*
+          name: meta-mover-linux-${{ matrix.target }}
+          path: |
+            release/*${{ matrix.extension }}
+            release/SHA256SUMS-linux-${{ matrix.target }}.txt
+          if-no-files-found: error
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+  native-package:
+    name: Package verified ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+            extension: .pkg
+          - os: macos-15
+            platform: macos
+            arch: arm64
+            extension: .pkg
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            extension: .exe
+          - os: windows-11-arm
+            platform: windows
+            arch: arm64
+            extension: .exe
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Setup Node.js 22.12.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          files: |
-            dist-*/*
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Verify release version
+        shell: bash
+        run: node -e "const p=require('./package.json');if(process.env.GITHUB_REF_NAME!=='v'+p.version){throw new Error('Tag does not match package version')}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Materialize pinned portable Perl on native macOS
+        if: runner.os == 'macOS'
+        run: npm run package:build-portable-perl
+
+      - name: Run native source and runtime validation
+        run: npm run verify
+
+      - name: Build production bundles
+        run: npm run build
+
+      - name: Verify staged native runtime containment
+        run: npm run package:integrity
+
+      - name: Build and notarize signed macOS package
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          META_MOVER_RELEASE_SIGNER: mac-team:${{ secrets.MAC_TEAM_ID }}
+        run: npm exec --offline -- electron-builder --mac pkg --${{ matrix.arch }} --publish never
+
+      - name: Build signed Windows package
+        if: runner.os == 'Windows'
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          META_MOVER_RELEASE_SIGNER: win-cert-sha256:${{ secrets.WINDOWS_SIGNER_SHA256 }}
+        run: npm exec --offline -- electron-builder --win nsis --${{ matrix.arch }} --publish never
+
+      - name: Verify macOS installer signature, notarization, and extracted containment
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          artifact=$(find release -maxdepth 1 -type f -name '*.pkg' -print)
+          test "$(printf '%s\n' "$artifact" | sed '/^$/d' | wc -l)" -eq 1
+          pkgutil --check-signature "$artifact"
+          spctl --assess --type install --verbose=4 "$artifact"
+          expanded=$(mktemp -d)
+          trap 'rm -rf "$expanded"' EXIT
+          pkgutil --expand-full "$artifact" "$expanded/package"
+          node scripts/verify-package-integrity.js --packaged-release "$expanded/package"
+          app=$(find "$expanded/package" -type d -name '*.app' -print -quit)
+          test -n "$app"
+          team=$(codesign -d --verbose=4 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          test "$team" = "${{ secrets.MAC_TEAM_ID }}"
+
+      - name: Verify Windows installer signature and extracted containment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifacts = @(Get-ChildItem release -File -Filter '*.exe')
+          if ($artifacts.Count -ne 1) { throw "Expected one NSIS installer, found $($artifacts.Count)" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $artifacts[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "Installer signature is $($signature.Status)" }
+          $sha = [Security.Cryptography.SHA256]::Create()
+          try { $actualSigner = ([BitConverter]::ToString($sha.ComputeHash($signature.SignerCertificate.RawData))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+          if ($actualSigner -ne '${{ secrets.WINDOWS_SIGNER_SHA256 }}') { throw 'Installer signer does not match the pinned certificate' }
+          $expanded = Join-Path $env:RUNNER_TEMP 'meta-mover-nsis'
+          New-Item -ItemType Directory -Force -Path $expanded | Out-Null
+          & 'C:\Program Files\7-Zip\7z.exe' x $artifacts[0].FullName "-o$expanded" -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed' }
+          node scripts/verify-package-integrity.js --packaged-release $expanded
+          Get-ChildItem $expanded -Recurse -File -Filter '*.exe' | ForEach-Object {
+            $nested = Get-AuthenticodeSignature -LiteralPath $_.FullName
+            if ($nested.Status -ne 'Valid') { throw "Unsigned executable in package: $($_.FullName)" }
+          }
+
+      - name: Write checksum for verified package
+        shell: bash
+        env:
+          ARTIFACT_EXTENSION: ${{ matrix.extension }}
+          ARTIFACT_PLATFORM: ${{ matrix.platform }}-${{ matrix.arch }}
+        run: node -e "const fs=require('fs');const crypto=require('crypto');const ext=process.env.ARTIFACT_EXTENSION;const files=fs.readdirSync('release').filter((file)=>file.endsWith(ext));if(files.length!==1)throw new Error('Expected one artifact');const file=files[0];fs.writeFileSync('release/SHA256SUMS-'+process.env.ARTIFACT_PLATFORM+'.txt',crypto.createHash('sha256').update(fs.readFileSync('release/'+file)).digest('hex')+'  '+file+'\n')"
+
+      - name: Upload tested native package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: meta-mover-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*${{ matrix.extension }}
+            release/SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [package, native-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download tested packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Publish tested packages
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: artifacts/**/*
           generate_release_notes: true
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

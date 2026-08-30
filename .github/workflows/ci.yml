@@ -2,30 +2,114 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, develop, forge-refit]
   pull_request:
     branches: [main, master, develop]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  native-helper:
+    name: Native helper (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: [18.x, 20.x]
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+          - os: windows-latest
+            arch: x64
+          - os: windows-11-arm
+            arch: arm64
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 22.12.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          node-version: 22.12.0
+          cache: npm
 
-      - name: Install dependencies
+      - name: Install locked dependencies
         run: npm ci
+
+      - name: Validate pinned native filesystem helper
+        run: cargo fmt --manifest-path native/fs-helper/Cargo.toml -- --check
+
+      - name: Lint pinned native filesystem helper
+        run: cargo clippy --manifest-path native/fs-helper/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Test pinned native filesystem helper
+        run: cargo test --manifest-path native/fs-helper/Cargo.toml --locked
+
+      - name: Validate pinned native launch broker
+        run: cargo fmt --manifest-path native/launch-broker/Cargo.toml -- --check
+
+      - name: Lint pinned native launch broker
+        run: cargo clippy --manifest-path native/launch-broker/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Test pinned native launch broker
+        run: cargo test --manifest-path native/launch-broker/Cargo.toml --locked
+
+      - name: Prove macOS immutable descriptor launch snapshot
+        if: runner.os == 'macOS'
+        run: cargo test --manifest-path native/launch-broker/Cargo.toml --locked macos_execution_snapshot_is_unlinked_and_immutable
+
+      - name: Prove Windows handle confinement and bounded cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --manifest-path native/launch-broker/Cargo.toml --locked windows_process_handle_list_excludes_ambient_inheritable_handles
+          cargo test --manifest-path native/launch-broker/Cargo.toml --locked windows_kill_on_close_job_terminates_the_launched_process_tree
+          cargo test --manifest-path native/launch-broker/Cargo.toml --locked windows_pre_resume_failure_terminates_the_exact_suspended_child
+
+      - name: Prove native staged broker relay
+        run: node scripts/build-launch-broker.js
+
+      - name: Materialize pinned portable Perl on native macOS
+        if: runner.os == 'macOS'
+        run: npm run package:build-portable-perl
+
+      - name: Stage and verify the native self-contained runtime
+        run: npm run package:integrity
+
+  validate:
+    name: Source validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js 22.12.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Verify dependency lock provenance
+        run: |
+          node -e "const lock=require('./package-lock.json');const bad=Object.entries(lock.packages).filter(([,p])=>p.resolved&&!p.resolved.startsWith('https://registry.npmjs.org/'));if(bad.length){console.error(bad);process.exit(1)}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
 
       - name: Run linter
         run: npm run lint:check
@@ -33,49 +117,14 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Run tests
+      - name: Validate native filesystem helper
+        run: npm run native:verify
+
+      - name: Run tests with coverage thresholds
         run: npm run test:ci
 
-      - name: Build
+      - name: Build production bundles
         run: npm run build
 
-  code-quality:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run ESLint
-        run: npm run lint:check
-
-      - name: Check formatting
-        run: npm run format:check
-
-      - name: TypeScript check
-        run: npm run typecheck
-
-  security-audit:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
-
-      - name: Run security audit
-        run: npm audit --production
-        continue-on-error: true
+      - name: Verify packaged runtime containment
+        run: npm run package:integrity

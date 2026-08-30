@@ -12,6 +12,10 @@ release/
 build/
 out/
 build-temp/
+.build-tools/
+/native/fs-helper/target/
+/native/launch-broker/target/
+*.backup.*
 *.dmg
 *.pkg
 *.exe

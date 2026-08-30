@@ -1,10 +1,8 @@
-import React, { useState, useCallback } from 'react';
+import React from 'react';
 import styled from 'styled-components';
 
-// ─── Styled Components ───────────────────────────────────────────────────────
-
 const ViewContainer = styled.div`
-  animation: fadeIn 200ms ease;
+  animation: fadeIn 180ms ease;
   @keyframes fadeIn {
     from {
       opacity: 0;
@@ -14,336 +12,97 @@ const ViewContainer = styled.div`
     }
   }
 `;
-
-const MetadataCard = styled.div`
+const Card = styled.section`
   background: var(--gradient-card);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-card);
   padding: 24px;
-  margin-bottom: 20px;
   box-shadow: var(--shadow-card);
-  position: relative;
-  overflow: hidden;
-
-  &::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--glass-highlight), transparent);
-    pointer-events: none;
-  }
 `;
-
-const CardTitle = styled.h3`
-  font-size: 16px;
-  font-weight: 600;
+const Title = styled.h3`
+  margin: 0 0 10px;
   color: var(--text-heading);
-  margin-bottom: 16px;
-`;
-
-const SelectFilesBtn = styled.button`
-  padding: 12px 24px;
-  background: var(--gradient-button);
-  color: var(--bg-void);
-  border: none;
-  border-radius: var(--radius-button);
-  font-weight: 600;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 150ms ease;
-
-  &:hover {
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-glow-strong);
-  }
-`;
-
-const EmptyState = styled.div`
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--text-muted);
-`;
-
-const EmptyIcon = styled.div`
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.3;
-`;
-
-const EmptyTitle = styled.h3`
   font-size: 18px;
-  font-weight: 600;
-  color: var(--text-heading);
-  margin-bottom: 8px;
 `;
-
-const EmptyDesc = styled.p`
-  font-size: 14px;
+const Intro = styled.p`
+  max-width: 720px;
+  margin: 0 0 22px;
   color: var(--text-secondary);
-  max-width: 400px;
-  margin: 0 auto 24px;
+  font-size: 14px;
   line-height: 1.6;
 `;
-
-const FileList = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 20px;
-`;
-
-const FileItem = styled.div<{ $active?: boolean }>`
-  display: flex;
-  align-items: center;
+const EvidenceGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  padding: 10px 14px;
-  background: ${({ $active }) =>
-    $active ? 'var(--accent-teal-dim)' : 'var(--bg-card, rgba(255,255,255,0.02))'};
-  border: 1px solid ${({ $active }) => ($active ? 'rgba(20,184,166,0.3)' : 'var(--glass-border)')};
-  border-radius: var(--radius-md, 8px);
-  cursor: pointer;
-  transition: all 150ms ease;
-
-  &:hover {
-    border-color: var(--border-light);
+`;
+const EvidenceCard = styled.div`
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  h4 {
+    margin: 0 0 7px;
+    color: var(--accent-teal);
+    font-size: 13px;
+  }
+  p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.55;
   }
 `;
-
-const FileIcon = styled.div`
-  width: 32px;
-  height: 32px;
-  background: var(--accent-teal-dim);
-  border-radius: var(--radius-sm, 4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent-teal);
-  font-size: 14px;
-  flex-shrink: 0;
-`;
-
-const FileDetails = styled.div`
-  flex: 1;
-  overflow: hidden;
-`;
-
-const FileName = styled.div`
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const FilePath = styled.div`
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const MetadataPanel = styled.div`
-  background: var(--bg-input, rgba(0, 0, 0, 0.2));
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md, 8px);
-  padding: 20px;
-`;
-
-const MetadataGrid = styled.div`
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-`;
-
-const MetadataField = styled.div``;
-
-const FieldLabel = styled.div`
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-bottom: 4px;
-`;
-
-const FieldValue = styled.div`
-  font-size: 13px;
-  color: var(--text-primary);
-  font-weight: 400;
-`;
-
-const PlaceholderNote = styled.div`
-  margin-top: 16px;
-  padding: 12px 16px;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  border-radius: var(--radius-md, 8px);
+const TruthNote = styled.div`
+  margin-top: 18px;
+  padding: 13px 15px;
+  color: var(--text-secondary);
+  background: rgba(20, 184, 166, 0.07);
+  border: 1px solid rgba(20, 184, 166, 0.22);
+  border-radius: var(--radius-md);
   font-size: 12px;
-  color: var(--status-warning);
+  line-height: 1.55;
 `;
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function getFileName(filePath: string): string {
-  return filePath.split(/[/\\]/).pop() || filePath;
-}
-
-function getFileExtension(filePath: string): string {
-  const name = getFileName(filePath);
-  const dot = name.lastIndexOf('.');
-  return dot > 0 ? name.substring(dot + 1).toUpperCase() : 'FILE';
-}
-
-// ─── Component ───────────────────────────────────────────────────────────────
 
 export function MetadataView() {
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
-
-  const handleSelectFiles = useCallback(async () => {
-    if (!window.electronAPI) return;
-    try {
-      const files = await window.electronAPI.selectFiles();
-      if (files && Array.isArray(files) && files.length > 0) {
-        setSelectedFiles(files);
-        setActiveFile(files[0]);
-      }
-    } catch {
-      // Selection cancelled or failed
-    }
-  }, []);
-
-  const handleSelectFolder = useCallback(async () => {
-    if (!window.electronAPI) return;
-    try {
-      const folder = await window.electronAPI.selectDirectory();
-      if (folder) {
-        setSelectedFiles([folder]);
-        setActiveFile(folder);
-      }
-    } catch {
-      // Selection cancelled or failed
-    }
-  }, []);
-
-  if (selectedFiles.length === 0) {
-    return (
-      <ViewContainer>
-        <MetadataCard>
-          <EmptyState>
-            <EmptyIcon>&#128269;</EmptyIcon>
-            <EmptyTitle>Metadata Inspector</EmptyTitle>
-            <EmptyDesc>
-              Select files or a folder to view their metadata. You can inspect EXIF data, file
-              properties, camera info, dimensions, and more.
-            </EmptyDesc>
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-              <SelectFilesBtn onClick={handleSelectFiles}>Select Files</SelectFilesBtn>
-              <SelectFilesBtn
-                onClick={handleSelectFolder}
-                style={{
-                  background: 'var(--glass-bg)',
-                  color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-light)',
-                }}
-              >
-                Select Folder
-              </SelectFilesBtn>
-            </div>
-          </EmptyState>
-        </MetadataCard>
-      </ViewContainer>
-    );
-  }
-
-  const active = activeFile || selectedFiles[0];
-  const ext = getFileExtension(active);
-
   return (
     <ViewContainer>
-      <MetadataCard>
-        <CardTitle>Selected Files ({selectedFiles.length})</CardTitle>
-        <FileList>
-          {selectedFiles.map((file) => (
-            <FileItem key={file} $active={file === active} onClick={() => setActiveFile(file)}>
-              <FileIcon>{getFileExtension(file).substring(0, 3)}</FileIcon>
-              <FileDetails>
-                <FileName>{getFileName(file)}</FileName>
-                <FilePath>{file}</FilePath>
-              </FileDetails>
-            </FileItem>
-          ))}
-        </FileList>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <SelectFilesBtn onClick={handleSelectFiles} style={{ fontSize: 13, padding: '8px 16px' }}>
-            Add More Files
-          </SelectFilesBtn>
-          <SelectFilesBtn
-            onClick={() => {
-              setSelectedFiles([]);
-              setActiveFile(null);
-            }}
-            style={{
-              fontSize: 13,
-              padding: '8px 16px',
-              background: 'var(--glass-bg)',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-light)',
-            }}
-          >
-            Clear
-          </SelectFilesBtn>
-        </div>
-      </MetadataCard>
-
-      <MetadataCard>
-        <CardTitle>Metadata: {getFileName(active)}</CardTitle>
-        <MetadataPanel>
-          <MetadataGrid>
-            <MetadataField>
-              <FieldLabel>File Name</FieldLabel>
-              <FieldValue>{getFileName(active)}</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>File Type</FieldLabel>
-              <FieldValue>{ext}</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Full Path</FieldLabel>
-              <FieldValue style={{ wordBreak: 'break-all' }}>{active}</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Size</FieldLabel>
-              <FieldValue>--</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Dimensions</FieldLabel>
-              <FieldValue>--</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Camera</FieldLabel>
-              <FieldValue>--</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Date Taken</FieldLabel>
-              <FieldValue>--</FieldValue>
-            </MetadataField>
-            <MetadataField>
-              <FieldLabel>Date Modified</FieldLabel>
-              <FieldValue>--</FieldValue>
-            </MetadataField>
-          </MetadataGrid>
-        </MetadataPanel>
-        <PlaceholderNote>
-          Metadata extraction requires the backend handler (coming in a future update). File
-          selection and path display are fully functional.
-        </PlaceholderNote>
-      </MetadataCard>
+      <Card>
+        <Title>Metadata evidence</Title>
+        <Intro>
+          Each file&apos;s creation-date evidence appears in the Organize preview before any copy or
+          move begins. The preview shows the selected date, its source, confidence, warnings, and
+          exact destination path.
+        </Intro>
+        <EvidenceGrid>
+          <EvidenceCard>
+            <h4>Embedded metadata</h4>
+            <p>
+              Camera, image, video, and container date fields are evaluated without rewriting the
+              original file.
+            </p>
+          </EvidenceCard>
+          <EvidenceCard>
+            <h4>Filename evidence</h4>
+            <p>
+              Recognized date patterns can support a result when embedded metadata is absent or
+              conflicting.
+            </p>
+          </EvidenceCard>
+          <EvidenceCard>
+            <h4>Filesystem birth time</h4>
+            <p>
+              Creation time is lower-confidence supporting evidence. Modified time is not treated as
+              ground truth.
+            </p>
+          </EvidenceCard>
+        </EvidenceGrid>
+        <TruthNote>
+          Files with unresolved or conflicting dates stay visible as warnings in the preview and are
+          routed for review. Metadata writeback is disabled, so the organizer does not stamp an
+          inferred date into the source media.
+        </TruthNote>
+      </Card>
     </ViewContainer>
   );
 }

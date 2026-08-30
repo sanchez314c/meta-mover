@@ -2,6 +2,7 @@
   "name": "meta-mover",
   "version": "1.0.0",
   "description": "Professional Media Organization Suite - Complete Multi-Platform Build System",
+  "desktopName": "com.speedheathens.metamover",
   "main": "dist/main/index.js",
   "homepage": "https://github.com/sanchez314c/meta-mover#readme",
   "author": {
@@ -30,19 +31,17 @@
     "react"
   ],
   "scripts": {
-    "dev": "npm run build:dev && electron . --dev --no-sandbox",
-    "start": "electron . --no-sandbox",
-    "start:prod": "NODE_ENV=production electron . --no-sandbox",
-    "build": "npm run clean:dist && npm run build:main && npm run build:preload && npm run build:renderer && npm run build:worker",
+    "dev": "npm run package:stage-tools && npm run build:dev && electron . --dev",
+    "start": "electron .",
+    "start:prod": "NODE_ENV=production electron .",
+    "build": "npm run clean:dist && npm run build:main && npm run build:preload && npm run build:renderer",
     "build:main": "webpack --config config/webpack.main.config.js --mode production",
     "build:preload": "webpack --config config/webpack.preload.config.js --mode production",
     "build:renderer": "webpack --config config/webpack.renderer.config.js --mode production",
-    "build:dev": "npm run clean:dist && npm run build:main:dev && npm run build:preload:dev && npm run build:renderer:dev && npm run build:worker:dev",
+    "build:dev": "npm run clean:dist && npm run build:main:dev && npm run build:preload:dev && npm run build:renderer:dev",
     "build:main:dev": "webpack --config config/webpack.main.config.js --mode development",
     "build:preload:dev": "webpack --config config/webpack.preload.config.js --mode development",
     "build:renderer:dev": "webpack --config config/webpack.renderer.config.js --mode development",
-    "build:worker": "webpack --config config/webpack.worker.config.js --mode production",
-    "build:worker:dev": "webpack --config config/webpack.worker.config.js --mode development",
     "watch": "npm run build:dev && concurrently \"npm run watch:main\" \"npm run watch:renderer\" \"wait-on dist/main/index.js dist/renderer/index.html && electron .\"",
     "watch:main": "webpack --config config/webpack.main.config.js --mode development --watch",
     "watch:preload": "webpack --config config/webpack.preload.config.js --mode development --watch",
@@ -53,82 +52,48 @@
     "clean:temp": "rimraf temp && rimraf *.log && rimraf npm-debug.log*",
     "clean:all": "npm run clean && rimraf node_modules && rimraf package-lock.json",
     "pack": "npm run build && electron-builder --dir",
-    "pack:mac": "npm run build && electron-builder --mac --dir",
-    "pack:win": "npm run build && electron-builder --win --dir",
     "pack:linux": "npm run build && electron-builder --linux --dir",
-    "dist": "npm run build && npm run dist:all",
-    "dist:all": "electron-builder --mac --win --linux",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:mac:dmg": "npm run build && electron-builder --mac dmg",
-    "dist:mac:pkg": "npm run build && electron-builder --mac pkg",
-    "dist:mac:mas": "npm run build && electron-builder --mac mas",
-    "dist:mac:mas-dev": "npm run build && electron-builder --mac mas-dev",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:win:nsis": "npm run build && electron-builder --win nsis",
-    "dist:win:msi": "npm run build && electron-builder --win msi",
-    "dist:win:appx": "npm run build && electron-builder --win appx",
-    "dist:win:portable": "npm run build && electron-builder --win portable",
-    "dist:win:zip": "npm run build && electron-builder --win zip",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:linux:appimage": "npm run build && electron-builder --linux AppImage",
-    "dist:linux:deb": "npm run build && electron-builder --linux deb",
-    "dist:linux:rpm": "npm run build && electron-builder --linux rpm",
-    "dist:linux:snap": "npm run build && electron-builder --linux snap",
-    "dist:linux:tar.gz": "npm run build && electron-builder --linux tar.gz",
-    "dist:linux:tar.xz": "npm run build && electron-builder --linux tar.xz",
-    "dist:linux:zip": "npm run build && electron-builder --linux zip",
-    "build-compile-dist": "./scripts/compile-build-dist.sh",
-    "build-compile-dist:verbose": "./scripts/compile-build-dist.sh --verbose",
-    "bloat-check": "./scripts/bloat-check.sh",
-    "bloat-check:detailed": "./scripts/bloat-check.sh --detailed",
-    "bloat-check:fix": "./scripts/bloat-check.sh --fix",
-    "temp-cleanup": "./scripts/temp-cleanup.sh",
-    "temp-cleanup:aggressive": "./scripts/temp-cleanup.sh --aggressive",
-    "temp-cleanup:dry-run": "./scripts/temp-cleanup.sh --dry-run",
+    "dist:linux:deb": "npm run build && electron-builder --linux deb --x64",
+    "dist:linux:rpm": "npm run build && electron-builder --linux rpm --x64",
     "prepack": "npm run build",
     "predist": "npm run build",
-    "postpack": "npm run bloat-check",
-    "postdist": "npm run bloat-check --report",
-    "postinstall": "electron-builder install-app-deps",
     "lint": "eslint src --ext .ts,.tsx --fix",
     "lint:check": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "typecheck": "tsc --noEmit",
     "typecheck:watch": "tsc --noEmit --watch",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "test:ci": "jest --ci --coverage --watchAll=false",
+    "test": "jest --config config/jest.config.js",
+    "test:watch": "jest --config config/jest.config.js --watch",
+    "test:coverage": "jest --config config/jest.config.js --coverage",
+    "test:ci": "npm run package:stage-tools && jest --config config/jest.config.js --ci --coverage --watchAll=false",
+    "package:stage-tools": "node scripts/stage-bundled-tools.js",
+    "package:build-portable-perl": "node scripts/build-portable-perl.js",
+    "native:build": "node scripts/build-launch-broker.js",
+    "native:broker:build": "node scripts/build-launch-broker.js",
+    "native:verify": "cargo fmt --manifest-path native/fs-helper/Cargo.toml -- --check && cargo clippy --manifest-path native/fs-helper/Cargo.toml --locked --all-targets -- -D warnings && cargo test --manifest-path native/fs-helper/Cargo.toml --locked && cargo fmt --manifest-path native/launch-broker/Cargo.toml -- --check && cargo clippy --manifest-path native/launch-broker/Cargo.toml --locked --all-targets -- -D warnings && cargo test --manifest-path native/launch-broker/Cargo.toml --locked",
+    "package:integrity:source": "node scripts/verify-package-integrity.js --source src/main --config config",
+    "package:integrity": "npm run package:stage-tools && node scripts/verify-package-integrity.js --source src/main --config config --dist dist/main --resources .build-tools/tools",
+    "package:integrity:release": "node scripts/verify-package-integrity.js --packaged-release release",
+    "verify": "npm run format:check && npm run lint:check && npm run typecheck && npm run native:verify && npm run package:integrity:source && npm run test:ci",
     "security:audit": "npm audit",
-    "security:audit:fix": "npm audit fix",
-    "deps:check": "npm-check-updates",
-    "deps:update": "npm-check-updates -u && npm install",
-    "bundle:analyze": "webpack-bundle-analyzer dist/renderer/main.js",
-    "bundle:stats": "webpack --config config/webpack.renderer.config.js --mode production --json > bundle-stats.json"
+    "security:audit:fix": "npm audit fix"
   },
   "devDependencies": {
-    "@electron/notarize": "^2.3.2",
-    "@electron/rebuild": "^3.6.0",
+    "@electron/asar": "4.3.0",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
-    "@types/jest": "^29.5.12",
-    "@types/lodash": "^4.17.20",
+    "@types/jest": "30.0.0",
     "@types/node": "^20.11.30",
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
-    "@types/uuid": "^10.0.0",
-    "@types/winston": "^2.4.4",
     "@typescript-eslint/eslint-plugin": "^7.4.0",
     "@typescript-eslint/parser": "^7.4.0",
     "concurrently": "^8.2.2",
-    "copy-webpack-plugin": "^12.0.2",
     "css-loader": "^7.1.2",
-    "css-minimizer-webpack-plugin": "^6.0.0",
-    "electron-builder": "^24.6.4",
-    "electron-builder-notarize": "^1.5.1",
-    "electron-devtools-installer": "^3.2.0",
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.29.1",
@@ -137,56 +102,28 @@
     "eslint-plugin-react": "^7.34.1",
     "eslint-plugin-react-hooks": "^4.6.0",
     "file-loader": "^6.2.0",
-    "fork-ts-checker-webpack-plugin": "^9.0.2",
     "html-webpack-plugin": "^5.3.2",
-    "i18next": "^25.3.2",
-    "jest": "^29.7.0",
-    "jest-environment-jsdom": "^29.7.0",
-    "mini-css-extract-plugin": "^2.8.1",
-    "npm-check-updates": "^16.14.15",
+    "jest": "30.5.0",
+    "jest-environment-jsdom": "30.5.0",
     "prettier": "^3.2.5",
     "rimraf": "^5.0.5",
-    "sass": "^1.72.0",
-    "sass-loader": "^14.1.1",
-    "source-map-loader": "^5.0.0",
     "style-loader": "^4.0.0",
-    "styled-components": "^6.1.19",
-    "terser-webpack-plugin": "^5.3.10",
-    "ts-jest": "^29.1.2",
+    "styled-components": "6.5.3",
+    "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
     "ts-loader": "^9.5.0",
-    "ts-node": "^10.9.2",
     "typescript": "^5.2.2",
-    "url-loader": "^4.1.1",
-    "wait-on": "^7.2.0",
+    "wait-on": "9.1.0",
     "webpack": "^5.89.0",
-    "webpack-bundle-analyzer": "^4.10.1",
     "webpack-cli": "^5.1.4",
-    "webpack-dev-server": "^5.0.4",
-    "webpack-merge": "^5.10.0"
-  },
-  "dependencies": {
+    "exiftool-vendored": "37.2.0",
+    "winston": "3.19.0",
     "@reduxjs/toolkit": "^2.8.2",
-    "@types/sharp": "^0.31.1",
-    "dmg-builder": "^24.13.3",
-    "electron": "^38.1.0",
-    "electron-log": "^5.1.1",
-    "electron-store": "^8.1.0",
-    "electron-updater": "^6.1.8",
-    "exifr": "^7.1.3",
-    "ffprobe-static": "^3.1.0",
-    "lodash": "^4.17.21",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-i18next": "^15.6.1",
-    "react-redux": "^9.2.0",
-    "redux": "^5.0.1",
-    "sharp": "^0.34.5",
-    "sqlite3": "^5.1.7"
+    "react-redux": "^9.2.0"
   },
-  "optionalDependencies": {
-    "7zip-bin": "^5.2.0",
-    "dmg-license": "^1.0.11"
-  },
+  "dependencies": {},
   "build": {
     "appId": "com.speedheathens.metamover",
     "productName": "META Mover",
@@ -194,10 +131,13 @@
     "copyright": "Copyright © 2025 SpeedHeathens",
     "buildVersion": "1.0.0.${env.BUILD_NUMBER}",
     "compression": "maximum",
+    "asar": true,
+    "npmRebuild": false,
+    "forceCodeSigning": true,
+    "beforePack": "scripts/stage-bundled-tools.js",
     "directories": {
       "buildResources": "resources",
-      "output": "release",
-      "app": "."
+      "output": "release"
     },
     "extraMetadata": {
       "name": "META Mover",
@@ -205,61 +145,37 @@
     },
     "files": [
       "dist/**/*",
-      "resources/**/*",
+      "!**/*.py",
+      "!**/*.pyc",
+      "!**/*.pyo",
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,__pycache__,thumbs.db,.gitignore,.gitattributes,.editorconfig,*.swp,*.tmp,*.log}"
     ],
-    "extraFiles": [
+    "extraResources": [
       {
-        "from": "scripts",
-        "to": "scripts",
+        "from": ".build-tools/tools",
+        "to": "tools",
         "filter": [
           "**/*"
         ]
       }
     ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "sanchez314c",
-        "repo": "meta-mover"
-      }
-    ],
-    "detectUpdateChannel": true,
-    "generateUpdatesFilesForAllChannels": true,
+    "publish": null,
     "mac": {
       "category": "public.app-category.photography",
       "icon": "resources/icons/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "notarize": false,
-      "identity": null,
+      "notarize": true,
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
       "darkModeSupport": true,
       "minimumSystemVersion": "10.15.0",
       "target": [
         {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64",
-            "universal"
-          ]
-        },
-        {
           "target": "pkg",
           "arch": [
             "x64",
-            "arm64",
-            "universal"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64",
-            "universal"
+            "arm64"
           ]
         }
       ],
@@ -275,35 +191,12 @@
         "NSPhotoLibraryUsageDescription": "META Mover needs photo library access to organize your photos."
       }
     },
-    "dmg": {
-      "background": "resources/dmg/background.png",
-      "title": "${productName} ${version}",
-      "iconSize": 100,
-      "window": {
-        "width": 600,
-        "height": 420
-      },
-      "contents": [
-        {
-          "x": 150,
-          "y": 220,
-          "type": "file"
-        },
-        {
-          "x": 450,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
     "pkg": {
       "license": "resources/license.txt",
-      "allowAnywhere": true,
-      "allowCurrentUserHome": true,
-      "allowRootDirectory": false,
-      "installLocation": "/Applications",
-      "identity": null
+      "allowAnywhere": false,
+      "allowCurrentUserHome": false,
+      "allowRootDirectory": true,
+      "installLocation": "/Applications"
     },
     "win": {
       "target": [
@@ -311,211 +204,81 @@
           "target": "nsis",
           "arch": [
             "x64",
-            "ia32",
-            "arm64"
-          ]
-        },
-        {
-          "target": "msi",
-          "arch": [
-            "x64",
-            "ia32"
-          ]
-        },
-        {
-          "target": "appx",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64",
-            "ia32"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "ia32",
             "arm64"
           ]
         }
       ],
       "icon": "resources/icons/icon.ico",
-      "publisherName": "SpeedHeathens",
       "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": false,
-      "signDlls": false,
-      "verifyUpdateCodeSignature": false,
-      "rfc3161TimeStampServer": "http://timestamp.digicert.com",
-      "timeStampServer": "http://timestamp.digicert.com"
+      "signAndEditExecutable": true,
+      "signExecutable": true,
+      "signExts": [
+        ".dll"
+      ],
+      "verifyUpdateCodeSignature": true,
+      "signtoolOptions": {
+        "publisherName": "SpeedHeathens",
+        "rfc3161TimeStampServer": "https://timestamp.digicert.com",
+        "timeStampServer": "https://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "allowElevation": true,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "resources/icons/installer.ico",
-      "uninstallerIcon": "resources/icons/uninstaller.ico",
-      "installerHeaderIcon": "resources/icons/installer-header.ico",
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "META Mover",
       "runAfterFinish": true,
-      "deleteAppDataOnUninstall": true,
+      "deleteAppDataOnUninstall": false,
       "license": "resources/license.txt",
-      "warningsAsErrors": false,
-      "displayLanguageSelector": true,
-      "installerLanguages": [
-        "en_US",
-        "de_DE",
-        "fr_FR",
-        "es_ES",
-        "it_IT",
-        "ja_JP",
-        "ko_KR",
-        "zh_CN"
-      ],
-      "multiLanguageInstaller": true,
+      "warningsAsErrors": true,
+      "displayLanguageSelector": false,
+      "multiLanguageInstaller": false,
       "packElevateHelper": true,
-      "menuCategory": "Photography",
-      "include": "resources/nsis/installer.nsh"
-    },
-    "msi": {
-      "oneClick": false,
-      "perMachine": true,
-      "upgradeCode": "{12345678-1234-1234-1234-123456789012}",
-      "warningsAsErrors": false
-    },
-    "appx": {
-      "applicationId": "SpeedHeathens.METAMover",
-      "identityName": "SpeedHeathens.METAMover",
-      "publisher": "CN=SpeedHeathens",
-      "publisherDisplayName": "SpeedHeathens",
-      "displayName": "META Mover",
-      "backgroundColor": "transparent",
-      "showNameOnTiles": true,
-      "languages": [
-        "en-US"
-      ]
+      "menuCategory": "Photography"
     },
     "linux": {
       "target": [
         {
-          "target": "AppImage",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
           "target": "deb",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "rpm",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "snap",
           "arch": [
             "x64"
           ]
         },
         {
-          "target": "tar.gz",
+          "target": "rpm",
           "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "tar.xz",
-          "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
       "icon": "resources/icons",
       "category": "Photography",
+      "syncDesktopName": true,
       "desktop": {
-        "Name": "META Mover",
-        "Comment": "Professional Media Organization Suite",
-        "GenericName": "Media Organizer",
-        "Keywords": "photo;video;media;organize;metadata;exif;",
-        "StartupWMClass": "META Mover",
-        "MimeType": "image/jpeg;image/png;image/tiff;video/mp4;video/mov;"
+        "entry": {
+          "Name": "META Mover",
+          "Comment": "Professional Media Organization Suite",
+          "GenericName": "Media Organizer",
+          "Keywords": "photo;video;media;organize;metadata;exif;",
+          "StartupWMClass": "com.speedheathens.metamover",
+          "MimeType": "image/jpeg;image/png;image/tiff;video/mp4;video/mov;"
+        }
       },
       "synopsis": "Professional Media Organization Suite",
-      "description": "META Mover v1.0 is a comprehensive media organization tool that helps you organize, manage, and process your photo and video collections with advanced metadata handling and corruption detection.",
+      "description": "META Mover v1.0 organizes photo and video collections using provenance-aware metadata handling.",
       "maintainer": "sanchez314c <sanchez314c@speedheathens.com>"
     },
     "deb": {
+      "packageName": "meta-mover",
       "priority": "optional",
-      "depends": [
-        "gconf2",
-        "gconf-service",
-        "libnotify4",
-        "libappindicator1",
-        "libxtst6",
-        "libnss3",
-        "libasound2",
-        "libdrm2",
-        "libxcomposite1",
-        "libxdamage1",
-        "libxrandr2",
-        "libgbm1",
-        "xdg-utils"
-      ],
       "compression": "xz"
     },
     "rpm": {
-      "depends": [
-        "libXScrnSaver",
-        "libXtst6",
-        "xdg-utils",
-        "gtk3",
-        "nss",
-        "GConf2",
-        "libXrandr",
-        "alsa-lib"
-      ],
+      "packageName": "meta-mover",
       "compression": "xz"
-    },
-    "snap": {
-      "grade": "stable",
-      "confinement": "strict",
-      "plugs": [
-        "desktop",
-        "desktop-legacy",
-        "home",
-        "x11",
-        "unity7",
-        "browser-support",
-        "network",
-        "gsettings",
-        "audio-playback",
-        "opengl",
-        "wayland"
-      ],
-      "environment": {
-        "DISABLE_WAYLAND": "1",
-        "TMPDIR": "$XDG_RUNTIME_DIR"
-      },
-      "summary": "Professional Media Organization Suite",
-      "description": "META Mover v1.0 is a comprehensive media organization tool that helps you organize, manage, and process your photo and video collections with advanced metadata handling and corruption detection.",
-      "autoStart": false
     },
     "protocols": [
       {
@@ -564,29 +327,6 @@
       }
     ]
   },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "jsdom",
-    "setupFilesAfterEnv": [
-      "<rootDir>/src/setupTests.ts"
-    ],
-    "testMatch": [
-      "**/__tests__/**/*.(ts|tsx|js)",
-      "**/*.(test|spec).(ts|tsx|js)"
-    ],
-    "collectCoverageFrom": [
-      "src/**/*.(ts|tsx)",
-      "!src/**/*.d.ts",
-      "!src/main/index.ts",
-      "!src/preload/index.ts"
-    ],
-    "coverageDirectory": "coverage",
-    "coverageReporters": [
-      "text",
-      "lcov",
-      "html"
-    ]
-  },
   "eslintConfig": {
     "extends": [
       "plugin:@typescript-eslint/recommended",
@@ -605,11 +345,14 @@
     ],
     "rules": {
       "prettier/prettier": "error",
-      "@typescript-eslint/no-unused-vars": ["error", {
-        "varsIgnorePattern": "^_",
-        "argsIgnorePattern": "^_",
-        "caughtErrorsIgnorePattern": "^_"
-      }],
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          "varsIgnorePattern": "^_",
+          "argsIgnorePattern": "^_",
+          "caughtErrorsIgnorePattern": "^_"
+        }
+      ],
       "react/react-in-jsx-scope": "off"
     },
     "settings": {
@@ -637,8 +380,13 @@
     ]
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=22.12.0",
+    "npm": ">=10.9.0"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "overrides": {
+    "handlebars": "4.7.9",
+    "shell-quote": "1.10.0",
+    "websocket-driver": "0.7.5"
+  },
+  "packageManager": "npm@10.9.0"
 }

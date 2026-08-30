@@ -1,47 +1,36 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Report a reproducible META Mover failure
 title: '[BUG] '
 labels: bug
 assignees: ''
-
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## What happened?
 
-**To Reproduce**
-Steps to reproduce the behavior:
+## What did you expect?
+
+## Reproduction steps
+
 1.
 2.
 3.
 
-**Expected behavior**
-What you expected to happen.
+## Environment
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+- META Mover version:
+- OS and version:
+- Architecture:
+- Install format or source build:
+- Operation: copy or move
+- Filesystem and source/destination devices:
 
-**Environment**
-- OS: [e.g. macOS 14.0, Windows 11, Ubuntu 22.04]
-- META Mover Version: [e.g. 1.0.0]
-- Installation Method: [e.g. DMG installer, built from source]
-- Node.js Version (if built from source): [e.g. v20.17.0]
+## Evidence
 
-**Logs**
-Please paste relevant log output from:
-- macOS: `~/Library/Logs/META Mover/`
-- Windows: `%APPDATA%/META Mover/logs/`
-- Linux: `~/.config/META Mover/logs/`
+- Preview warnings:
+- Exact error:
+- Relevant redacted logs:
+- Did the source remain present?
+- Did a destination or `.meta-mover` residue remain present?
 
-```
-Paste logs here
-```
-
-**Additional context**
-Add any other context about the problem here.
-
-**Media Files Tested**
-- File types affected: [e.g. JPEG, PNG, MP4, MOV]
-- File size range: [e.g. 1-10MB]
-- Corrupted files involved: [yes/no]
+Do not attach private media, secrets, or unredacted local paths. Report security issues privately through `SECURITY.md`.

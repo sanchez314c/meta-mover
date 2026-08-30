@@ -1,20 +1,14 @@
 # Contributing
 
-Full contributing guide is in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
-
-## Quick Reference
+Read [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) before changing processing, metadata, filesystem, or package code.
 
 ```bash
-# Setup
-git clone https://github.com/sanchez314c/meta-mover.git
-cd meta-mover
-npm install
-npm run dev
-
-# Before submitting a PR
-npm run lint && npm run typecheck && npm test
+npm ci
+npm run verify
+npm run build
+npm run package:integrity
 ```
 
-Contributions go to the `develop` branch via pull request. See the full guide for commit format, code standards, and architecture notes.
+New behavior starts with a failing test. Processing and transaction changes must preserve the preview, root-binding, no-clobber, source-conservation, and immutable-evidence contracts. Never add a host tool lookup or runtime installer.
 
-For security issues, email sanchez314c@speedheathens.com — do not open a public GitHub issue.
+Report security issues privately as described in [SECURITY.md](SECURITY.md).

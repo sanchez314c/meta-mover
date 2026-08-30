@@ -1,8 +1,0 @@
-CRITICAL TYPE SAFETY REPAIR: Fix all TypeScript null safety and type access errors in meta-mover project. Focus on:
-
-1. FileOrganizer.ts: Fix 'width'/'height' property access on string types (lines 237)
-2. MetadataExtractor.ts: Add null checks for ffprobeData and fix VideoMetadata interface (lines 273-295)  
-3. ProcessingEngine.ts: Resolve duplicate function implementations and JobRecord type conflicts (lines 274, 292, 321)
-4. Add proper type definitions for missing interfaces
-
-Provide exact code fixes with proper null checks, type guards, and interface definitions.

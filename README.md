@@ -1,52 +1,48 @@
 # META Mover
 
-Desktop app for organizing large media collections. Built with Electron, React 19, TypeScript, and Redux Toolkit.
+META Mover is a local Electron app for sorting mixed media by the best available creation-date evidence. It reads embedded metadata, filename dates, and filesystem timestamps, then shows the proposed result before touching media.
 
-It scans a source folder, reads metadata from photos and videos, and moves them into a `{type}/{year}/YYYY-MM-DD_HH-MM-SS.ext` structure at your destination. It handles corrupted files, conflicting filenames, iOS/macOS screenshots, MPO files, and cameras with dead CMOS batteries gracefully.
+It does not rewrite metadata or declare an uncertain timestamp to be fact. Ambiguous files go to `_Needs Review` with their evidence and warnings intact.
 
-**Version**: 1.0.0
-**Platforms**: macOS, Windows, Linux
-**Author**: sanchez314c
-**License**: MIT
+Inventory covers every regular file in the selected source folders. Recognized formats enter metadata planning. Unsupported or unrecognized files remain unchanged and appear as explicit skipped `Needs Review` rows instead of disappearing from the report.
 
----
+## Safety model
 
-## Quick Start
+- Preview is required and does not mutate media.
+- Copy is the default. Move requires an explicit acknowledgement.
+- Source and destination roots must be separate, canonical directories.
+- One or more source folders can be added, reviewed, and removed before preview.
+- Targets are reserved without overwrite. Conflicts can be skipped or renamed.
+- Every copy is staged, byte-counted, SHA-256 checked, and published atomically.
+- Move deletes the source only after the verified destination and journal record are durable.
+- Jobs, evidence, and recovery records use JSONL files. No media metadata is changed.
+
+## Self-contained runtime
+
+Release packages carry ExifTool, a bundled Perl runtime where needed, a Rust filesystem helper, and a Rust launch broker. META Mover does not install Python, FFmpeg, ExifTool, or other host tools while it runs.
+
+The current local package proof covers Linux x64 `deb` and `rpm` builds. macOS and Windows have native CI gates, but release support remains blocked until signed packages and platform attestors are proved on those systems. AppImage and portable packages are not supported.
+
+## Build from source
+
+Requirements: Node.js 22.12 or newer, npm 10.9, Rust 1.85.1, Git, and the native compiler toolchain for the current OS.
 
 ```bash
-git clone https://github.com/sanchez314c/meta-mover.git
-cd meta-mover
-npm install
-npm run dev          # Linux: ./run-source-linux.sh
+npm ci
+npm run package:stage-tools
+npm run dev
 ```
 
-See [docs/QUICK_START.md](docs/QUICK_START.md) for more detail.
+Run the full source gate:
 
-## Documentation
+```bash
+npm run verify
+npm run build
+npm run package:integrity
+```
 
-| Doc | What it covers |
-|-----|---------------|
-| [docs/QUICK_START.md](docs/QUICK_START.md) | Clone, install, and run in 5 minutes |
-| [docs/INSTALLATION.md](docs/INSTALLATION.md) | Full installation for all platforms |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, components, IPC, data flow |
-| [docs/API.md](docs/API.md) | IPC channels, Redux slices, shared types |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | All config options and where settings live |
-| [docs/TECHSTACK.md](docs/TECHSTACK.md) | Dependencies and versions |
-| [docs/BUILD_COMPILE.md](docs/BUILD_COMPILE.md) | Webpack build pipeline |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Building and distributing release artifacts |
-| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Git branching, commit format, release process |
-| [docs/TESTING.md](docs/TESTING.md) | Test strategy and how to run tests |
-| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Worker threads, memory, tuning |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors and fixes |
-| [docs/FAQ.md](docs/FAQ.md) | Frequently asked questions |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | How to contribute |
-| [docs/SECURITY.md](docs/SECURITY.md) | Security architecture |
-| [docs/PRD.md](docs/PRD.md) | Product requirements and business rules |
-| [docs/LEARNINGS.md](docs/LEARNINGS.md) | Architecture decisions and porting notes |
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
-
-Full index: [docs/DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md)
+See [Quick Start](docs/QUICK_START.md), [Architecture](docs/ARCHITECTURE.md), and the [documentation index](docs/DOCUMENTATION_INDEX.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -136,8 +136,8 @@ export function HeroCardSection({
               Smart Organization
             </h3>
             <p>
-              Automatically organize photos by date, event, or custom rules. Templates support year,
-              month, device, and resolution grouping.
+              Organize media from defensible creation dates. Ambiguous files are isolated for review
+              instead of being given a guessed timestamp.
             </p>
           </FeatureCard>
           <FeatureCard>
@@ -160,8 +160,8 @@ export function HeroCardSection({
               Metadata Management
             </h3>
             <p>
-              Extract and manage EXIF, XMP, and other metadata. Repair corrupted tags and sync
-              timestamps across file systems.
+              Read-only metadata extraction records every date candidate, source tag, confidence,
+              and final resolution without changing source metadata.
             </p>
           </FeatureCard>
           <FeatureCard>
@@ -184,8 +184,8 @@ export function HeroCardSection({
               Duplicate Detection
             </h3>
             <p>
-              Find and manage duplicate files intelligently using perceptual hashing, metadata
-              comparison, and content fingerprinting.
+              SHA-256 content fingerprints identify exact duplicates while deterministic collision
+              handling prevents destination overwrites.
             </p>
           </FeatureCard>
           <FeatureCard>
@@ -207,8 +207,8 @@ export function HeroCardSection({
               Batch Processing
             </h3>
             <p>
-              Process thousands of files quickly with multi-threaded workers, GPU acceleration
-              support, and corruption detection built in.
+              Process large batches with bounded worker concurrency, SHA-256 verification, and
+              transactional copy and move safety.
             </p>
           </FeatureCard>
         </FeatureGrid>

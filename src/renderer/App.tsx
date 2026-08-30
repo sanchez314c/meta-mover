@@ -2,22 +2,51 @@ import React, { useEffect, useCallback, Component, ErrorInfo, ReactNode } from '
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from './store';
 import { initializeApp } from './store/slices/appSlice';
+import { applyProcessingEvent } from './store/slices/jobsSlice';
+import type { ProcessingEvent } from '../shared/types/processing';
 
 // Error Boundary to catch rendering crashes
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
-  static getDerivedStateFromError(error: Error) { return { error }; }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('React Error Boundary caught:', error, info.componentStack);
   }
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 32, color: '#ef4444', background: '#1a1a2e', height: '100%', fontFamily: 'monospace', overflow: 'auto' }}>
+        <div
+          style={{
+            padding: 32,
+            color: '#ef4444',
+            background: '#1a1a2e',
+            height: '100%',
+            fontFamily: 'monospace',
+            overflow: 'auto',
+          }}
+        >
           <h2 style={{ color: '#14b8a6' }}>META Mover crashed</h2>
-          <pre style={{ color: '#e2e8f0', whiteSpace: 'pre-wrap', marginTop: 16 }}>{this.state.error.message}</pre>
-          <pre style={{ color: '#94a3b8', whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}>{this.state.error.stack}</pre>
-          <button onClick={() => this.setState({ error: null })} style={{ marginTop: 16, padding: '8px 16px', background: '#14b8a6', color: '#0f0f23', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+          <pre style={{ color: '#e2e8f0', whiteSpace: 'pre-wrap', marginTop: 16 }}>
+            {this.state.error.message}
+          </pre>
+          <pre style={{ color: '#94a3b8', whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}>
+            {this.state.error.stack}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{
+              marginTop: 16,
+              padding: '8px 16px',
+              background: '#14b8a6',
+              color: '#0f0f23',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+              fontWeight: 600,
+            }}
+          >
             Try Again
           </button>
         </div>
@@ -26,12 +55,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
     return this.props.children;
   }
 }
-import {
-  setActiveView,
-  openModal,
-  closeModal,
-  removeNotification,
-} from './store/slices/uiSlice';
+import { setActiveView, openModal, closeModal, removeNotification } from './store/slices/uiSlice';
 import { setTheme } from './store/slices/settingsSlice';
 // @ts-expect-error — no type declarations for PNG import
 import appIconSrc from './icon-titlebar.png';
@@ -74,17 +98,29 @@ function App() {
     async function loadSettings() {
       if (!window.electronAPI) return;
       try {
-        const config = await window.electronAPI.getConfig();
-        if (config && typeof config === 'object') {
-          const cfg = config as Record<string, unknown>;
-          if (typeof cfg.theme === 'string')
-            dispatch(setTheme(cfg.theme as 'light' | 'dark' | 'system'));
+        const response = await window.electronAPI.getConfig();
+        if (response.success && response.data) {
+          dispatch(setTheme(response.data.theme));
         }
       } catch {
         // Settings load failure is non-fatal; defaults remain in place
       }
     }
     loadSettings();
+  }, [dispatch]);
+
+  // Processing events are global application state. Keeping the only renderer
+  // subscription here preserves progress when the user changes views and makes
+  // listener cleanup deterministic.
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api) return;
+
+    const handleProcessingEvent = (event: ProcessingEvent) => {
+      dispatch(applyProcessingEvent(event));
+    };
+
+    return api.onProcessingEvent(handleProcessingEvent);
   }, [dispatch]);
 
   // Keyboard handler for closing about modal
@@ -139,33 +175,33 @@ function App() {
 
   return (
     <ErrorBoundary>
-    <AppContainer>
-      <TitleBarComponent
-        appIconSrc={appIconSrc}
-        onAboutOpen={() => dispatch(openModal('about'))}
-        onSettingsOpen={() => dispatch(setActiveView('settings'))}
-        onMinimize={() => window.electronAPI?.windowMinimize()}
-        onMaximize={() => window.electronAPI?.windowMaximize()}
-        onClose={() => window.electronAPI?.windowClose()}
-      />
-
-      <AppBody>
-        <SidebarComponent
-          activeTab={activeView as NavTab}
-          onTabChange={(tab) => dispatch(setActiveView(tab))}
+      <AppContainer>
+        <TitleBarComponent
+          appIconSrc={appIconSrc}
+          onAboutOpen={() => dispatch(openModal('about'))}
+          onSettingsOpen={() => dispatch(setActiveView('settings'))}
+          onMinimize={() => window.electronAPI?.windowMinimize()}
+          onMaximize={() => window.electronAPI?.windowMaximize()}
+          onClose={() => window.electronAPI?.windowClose()}
         />
-        <MainContent>{renderContent()}</MainContent>
-      </AppBody>
 
-      <StatusBarComponent status={status} statusText={statusText} itemCountText="" />
+        <AppBody>
+          <SidebarComponent
+            activeTab={activeView as NavTab}
+            onTabChange={(tab) => dispatch(setActiveView(tab))}
+          />
+          <MainContent>{renderContent()}</MainContent>
+        </AppBody>
 
-      <AboutModalComponent
-        isOpen={aboutOpen}
-        onClose={() => dispatch(closeModal('about'))}
-        onOpenGithub={handleOpenGithub}
-        appIconSrc={appIconSrc}
-      />
-    </AppContainer>
+        <StatusBarComponent status={status} statusText={statusText} itemCountText="" />
+
+        <AboutModalComponent
+          isOpen={aboutOpen}
+          onClose={() => dispatch(closeModal('about'))}
+          onOpenGithub={handleOpenGithub}
+          appIconSrc={appIconSrc}
+        />
+      </AppContainer>
     </ErrorBoundary>
   );
 }

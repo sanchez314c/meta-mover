@@ -1,148 +1,39 @@
-# Quick Start Guide
+# Quick start
 
-Get META Mover running in 5 minutes.
+## From source
 
-## Prerequisites
-
-- Node.js 18.0.0 or higher
-- npm 9.0.0 or higher
-
-## Installation
-
-### 1. Clone Repository
+Install Node.js 22.12 or newer, npm 10.9, Rust 1.85.1, Git, and the native compiler tools for your OS.
 
 ```bash
 git clone https://github.com/sanchez314c/meta-mover.git
 cd meta-mover
-```
-
-### 2. Install Dependencies
-
-```bash
-npm install
-```
-
-### 3. Launch Application
-
-```bash
+npm ci
+npm run package:stage-tools
 npm run dev
 ```
 
-The application will build and launch automatically.
+`npm ci` uses the locked registry graph. Tool staging copies package-managed ExifTool plus the current-platform Rust binaries into `.build-tools/tools`. It does not install system packages.
 
-## First Use
+## First run
 
-### Basic Workflow
+1. Select one or more source folders.
+2. Select a separate destination folder.
+3. Keep Copy selected unless source deletion is intended.
+4. Choose Skip or Rename for destination conflicts.
+5. Generate the preview.
+6. Review the chosen date, provenance, warnings, and target for every row.
+7. Start the job. Move requires an explicit destructive-operation acknowledgement.
 
-1. **Select Source Folder**
-   - Click "Select Source" button
-   - Choose the folder containing media files to organize
+Uncertain dates target `_Needs Review`. The app does not rewrite the file to make an inferred date look authoritative.
 
-2. **Set Destination Folder**
-   - Click "Select Destination" button
-   - Choose where organized files should be placed
+Unsupported or unrecognized regular files are not hidden. They appear as skipped `Needs Review` rows and remain unchanged at the source.
 
-3. **Configure Options**
-   - Date format: YYYY-MM-DD or custom format
-   - Duplicate handling: Skip, Replace, or Rename
-   - Corruption detection: Enable/Disable
-
-4. **Start Processing**
-   - Click "Start" button
-   - Monitor progress in real-time
-   - Review results when complete
-
-### Platform-Specific Run Scripts
-
-#### Linux
+## Verify the checkout
 
 ```bash
-./run-source-linux.sh
-```
-
-#### macOS
-
-```bash
-./run-source-mac.sh
-```
-
-#### Windows
-
-```bat
-run-source-windows.bat
-```
-
-## Development Workflow
-
-### Watch Mode
-
-For active development with auto-reload:
-
-```bash
-npm run watch
-```
-
-### Production Build
-
-To test production builds locally:
-
-```bash
+npm run verify
 npm run build
-npm start
+npm run package:integrity
 ```
 
-## Common Tasks
-
-### Run Tests
-
-```bash
-npm test
-```
-
-### Check Code Quality
-
-```bash
-npm run lint
-npm run typecheck
-```
-
-### Format Code
-
-```bash
-npm run format
-```
-
-## Next Steps
-
-- Read the [Development Guide](./DEVELOPMENT.md) for detailed setup
-- Review [Workflow Guide](./WORKFLOW.md) for best practices
-- Check [API Documentation](./API.md) for architecture details
-
-## Troubleshooting
-
-### Build Fails
-
-```bash
-npm run clean:all
-npm install
-npm run build:dev
-```
-
-### Electron Won't Launch
-
-Ensure Node.js version is 18.0.0 or higher:
-
-```bash
-node --version
-```
-
-### Permission Issues on Linux
-
-```bash
-chmod +x run-source-linux.sh
-```
-
-## Support
-
-- Issues: https://github.com/sanchez314c/meta-mover/issues
-- Documentation: https://github.com/sanchez314c/meta-mover#readme
+The current verified package path is Linux x64 `deb` or `rpm`. AppImage and portable builds are intentionally unsupported.

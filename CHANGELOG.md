@@ -5,9 +5,148 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-29
+
+### Changed
+
+- Updated the build and test dependency graph to fixed Electron 44.0.0, electron-builder 26.15.3, styled-components 6.5.3, Jest 30.5.0, ts-jest 29.4.12, and wait-on 9.1.0 releases. Full and production npm audits now report zero vulnerabilities without security overrides.
+- Declared the crash-test TypeScript loader and active Winston logger explicitly, eliminating reliance on packages left behind by an older install.
+- Migrated Linux desktop and Windows signing configuration to electron-builder 26 while preserving deb/rpm, signed pkg, and signed per-machine NSIS policy.
+- Replaced active project documentation with the current evidence-ranked preview, no-clobber transaction, JSONL persistence, immutable metadata, and packaged native-runtime contracts.
+- Limited documentation and issue templates to verified Linux x64 package claims. macOS and Windows remain signed native package gates; AppImage and portable installs are unsupported.
+- Moved duplicate and obsolete reports, agent notes, audit snapshots, package matrices, and templates to path-preserving RAID pre-trash with a recovery map.
+- Retired the unreachable Python/SQLite processing stack, duplicate TypeScript organizer and worker pipeline, obsolete validation/tool-resolution duplicates, Conda configuration, unsafe launchers, and superseded packaging scripts into timestamped RAID pre-trash rather than deleting them.
+- Reduced the declared application graph to four bundled runtime dependencies and a focused build-only toolchain. ExifTool remains a build-time staging dependency; its executable, Perl runtime, native filesystem helper, and launch broker ship under application resources.
+- Limited release packaging to the currently verified Linux x64 `deb` and `rpm` formats. macOS configuration now permits only signed `/Applications` `pkg` output, and Windows configuration permits only signed per-machine NSIS output; neither is published until native signed CI proves it.
+- Replaced the Linux source launcher with a fail-fast launcher that stages bundled tools, builds the three active bundles, preserves Electron sandboxing, never kills ambient processes, and never installs dependencies implicitly.
+- Extended package integrity policy to reject retired dependencies, worker builds, updater metadata, portable/user-writable formats, unsigned signable artifacts, and non-root installer configurations.
+- Replaced host Perl capture with a static Linux x64 Perl 5.42.0 runtime and an 11-file ExifTool module closure stored inside the app.
+- Added final deb/rpm extraction and containment verification before release checksums, explicit updater suppression, immutable GitHub Action revisions, and valid `meta-mover` package metadata for both native formats.
+- Replaced the legacy Electron entry composition with the canonical config, JSONL history, evidence, bundled runtime health, metadata, preview, revalidation, native transaction, coordinator, and IPC graph.
+- Added one lifecycle owner for secure renderer creation and ordered, failure-complete shutdown. Browser windows now use sandboxing, context isolation, disabled Node integration, strict navigation, and IPC registration before renderer load.
+- Added a strict core IPC owner for dialog, system, window, path, and external-link channels.
+- Wired the application client and runtime health to packaged-tools manifest schema 3. Both now require the exact broker/helper inventory and binding; schema 2 fails closed.
+- Made the launch broker the only TypeScript-launched filesystem program. Runtime health reuses the client boundary instead of hashing the helper and then launching its pathname independently.
+- Added bounded broker identity and helper handshake startup with private pipes, `shell: false`, an empty `PATH`, and owned-process termination.
+- Added a standalone Rust launch broker that validates the exact packaged filesystem-helper identity before launch; the application client and runtime health now consume that boundary.
+- Advanced packaged tool resources to schema 3 with an exact broker entry bound to its own digest and compiled helper identity.
+- Added native broker build, test, and staged relay gates to Linux, macOS, and Windows CI and release jobs.
+- Routed transaction media mutations and recovery through the packaged native filesystem helper using capability roots and validated path components. Raw-path mutation is no longer a fallback.
+- Made the transaction executor own and close one serialized Core/helper per canonical destination and exact source-root set.
+- Journaled source-delete intent, caller delete ID, helper identity, and receipt path before transmission. Unknown deletion remains recoverable until helper reconciliation proves source retained or deleted.
+- Kept content-addressed conservation objects as permanent recovery evidence and extended the 1,000-file conservation gate to both copy and move with injected post-commit faults.
+- Raised the supported runtime floor to Node 22.12.0 and npm 10.9.0.
+- Replaced the Git-dependent Electron rebuild chain with exact registry package `@electron/rebuild` 4.2.0.
+- Kept vendored ExifTool and removed the unused FFmpeg and FFprobe package dependencies.
+- Made the standalone Jest configuration authoritative and enforced coverage thresholds.
+- Rebuilt CI and tagged-release workflows as hard gates without permissive failure paths.
+- Reworked transactional recovery to bind nested mutations to held destination-parent identities and preserve portable exact-target recovery.
+- Made core and journal lock publication atomic and ownership-aware through candidate and quarantine records.
+- Corrected executor accounting so incomplete moves cannot be reported as successful processing.
+- Avoided unchanged-tail full reads on the normal durable journal append path while retaining locked repair when another writer changes the journal size.
+- Added a pinned Rust 1.85.1 native filesystem helper and native Linux, macOS, and Windows CI matrix for capability-relative mutations that Node cannot perform safely.
+- Made Linux helper releases static PIE executables and reject staged helpers with a dynamic interpreter.
+- Consolidated transaction cleanup ownership into named, failure-preserving close and value probes so admission and execution errors retain their original cause while every acquired resource is settled.
+
+### Fixed
+
+- Removed the hidden clean-test dependency on a pre-existing ignored `.build-tools` directory. `npm run test:ci` now stages the packaged native runtime before Jest, and a fresh registry-only checkout passes all 842 tests without prior build state.
+- Persisted the full immutable date-decision audit trail instead of only reduced preview rows. Private evidence now records every scored candidate, complete `DateResolutionRecord`, and exact operation ID/source/target/byte mapping under strict deterministic schemas. Raw embedded metadata stays out of renderer DTOs and ordinary job history.
+
+- Bound preview metadata decisions to the exact SHA-256 bytes recorded in the preview. ExifTool now receives the private snapshot through a held no-follow descriptor over stdin, and its tag result carries a checked digest and byte-count receipt. Source or snapshot pathname swap and restoration cannot substitute different metadata. Cancellation, concurrent failures, bounded child termination, and phase-aware temp cleanup are covered.
+- Made an oversized filesystem-helper response authoritative when the child closes stdin at the same time. A provisional `EPIPE` now waits for drained stdout or a 250 ms bound, so runtime health reports the exact 65,536-byte protocol violation instead of a scheduling-dependent transport error.
+- Made the concrete non-macOS BrowserWindow close event and the app-level last-window event enter the asynchronous shutdown barrier directly. Runtime owners now settle before the final permitted `app.quit()` call instead of depending on a second Electron quit event to start cleanup. A telemetry failure can no longer interrupt that final exit path.
+- Prevented a quit request during deferred runtime construction from leaking a live runtime or creating a renderer after application exit began.
+- Kept internal destination evidence out of public preview rows and aligned review-required date counts between preview and immutable evidence persistence.
+- Removed the corruption-detection field from the live processing contract. IPC, coordinator, evidence, and new history writes reject the unknown key for every value; renderer and runtime composition no longer manufacture it. Only schema 2 config migration and schema 1 history decoding may drop the legacy boolean, with history migration warnings.
+- Prevented helper launch from trusting PATH or an unchecked packaged pathname. Linux executes an independently re-hashed, sealed anonymous snapshot; macOS executes a separately reopened read-only, re-hashed, unlinked `UF_IMMUTABLE` snapshot; Windows denies helper/ancestor replacement, rejects reparse points, uses an inherited-handle allowlist, and contains the child tree in a kill-on-close job.
+- Rejected launch brokers staged outside the literal `tools/launch-broker/<target>` parent layout.
+- Made transactional tool staging validate the broker beneath a literal private `tools` directory before promoting that exact directory into package resources.
+- Made broker identity, every schema-3 manifest object, binary hash, and relayed helper protocol fail closed on duplicate keys, unknown fields, tampering, target drift, build drift, signer-policy drift, or helper drift.
+- Replaced the two pure-TypeScript filesystem architecture gates with helper-backed exact source deletion and portable capability-relative nested recovery.
+- Prevented source deletion from becoming terminal from pathname absence or an ambiguous helper outcome; only applied or reconciled receipts can produce `source-deleted`.
+- Prevented a cached destination Core from accepting operations under a different validated source-root capability set.
+- Prevented managed cleanup from re-identifying and deleting a replacement after an exact identity mismatch. Only a helper-proven one-link transition on the same stable object and durable expected hash can refresh cleanup identity.
+- Kept incomplete or mismatched source-delete intent nonterminal and preserved its committed journal fact instead of inferring completion from source-path absence.
+- Treated the native helper's `target-exists` precondition as the same no-clobber collision as Node `EEXIST` across transaction reservation, publication, conservation, and restoration paths.
+- Prevented concurrent JobHistoryStore initialization from leaking `ENOENT` when a contended reclaimer disappears between pathname observation and no-follow open. The contender now retries and reports `STORE_LOCKED` for the live owner.
+- Preserved valid JSONL history when torn-tail repair is interrupted after truncation.
+- Prevented recovery from following a nested ancestor swapped after validation.
+- Bound retained-source recovery to recorded filesystem identity instead of pathname existence.
+- Terminalized committed recovery when an occupied destination fails hash verification.
+- Synced staging and reservation parents after cleanup before durable completion.
+- Removed quadratic durable journal rescanning exposed by the 1,000-file conservation proof.
+- Added a dependency-injected `ApplicationRuntime` lifecycle abstraction for the intended main-process graph. Electron entry-point wiring remains pending.
+- Fan coordinator persistence hooks out to both durable job history and per-job evidence.
+- Fixed startup rollback and shutdown ordering so every acquired owner is settled even when another cleanup step fails.
+- Preserved accepted blank lines when truncating a torn final journal record.
+- Prevented live journal and core lock publishers from failing when a contender removes the already-published candidate alias.
+- Counted a source as retained only when its captured identity remains at the source path; a replacement pathname no longer inflates conservation accounting.
+- Closed every trusted-directory handle acquired before a later startup identity failure.
+- Prevented live journal/core lock release quarantines from being restored by contenders as crash residue.
+- Rejected multiply linked source inputs before any transaction guard can alter their link count.
+- Made committed-copy recovery complete normally and made finalized failed recovery stable across repeated startups.
+- Attempted every journal/core resource close and core-lock release even when an earlier close reports an error.
+- Added a strict TypeScript client for the packaged native filesystem helper. It verifies the exact manifest target, protocol/build version, file identity, containment, digest, and executable mode before launching with private piped standard streams.
+- Bound verified Linux execution to inherited child fd 3 and `/proc/self/fd/3`. Other platforms require an injected deny-write-delete or authenticated-package launch lease and reject a bare pathname trust claim.
+- Closed the broker's identity-to-relay mutation window with an explicit shared launch-trust policy. Packaged Linux accepts only a protected root-owned system install or a protected outer AppImage plus matching read-only inherited mount; writable portable and unpacked trees fail closed. Packaged macOS and Windows require a platform-bound production attestor and otherwise refuse launch.
+- Wired the packaged ExifTool adapter into that trust boundary. Packaged Linux selects the immutable system-root policy by default, packaged macOS and Windows reject missing native attestors before reading resources, explicit non-packaged runs use the development policy, and a development policy cannot enter a packaged launch.
+- Prevented runtime health from executing Perl or ExifTool before package trust succeeds. Linux system installs now attest the complete packaged tools tree as root-owned, protected, and free of symbolic or special entries before any bundled process starts; a writable-root side-effect canary remains untouched on rejection.
+- Bound helper operations to named roots and path components after a one-time handshake. Ambient paths, unsafe components, malformed or oversized NDJSON, duplicate/unknown keys, mismatched UUIDs, and incomplete root proofs fail closed.
+- Capped broker identity capture before buffer allocation, consumed its handshake deadline only once, observed identity rejection during asynchronous lease cleanup, and required the owned broker's lifecycle close before timeout or output-limit failure can settle. Process completion now follows Node's `close` event so spawn failures cannot hang while waiting for an `exit` event Node never emits.
+- Defined process-boundary uncertainty explicitly: transport failure, EOF, crash, malformed output, active abort, and abnormal shutdown reject active work as non-retryable `UNKNOWN` and never retry a mutator.
+- Made helper drain/close idempotent, ordered, and bounded: reject late admission, drain queued work, send one close, end stdin, require a zero exit, and escalate only the exact helper from TERM to KILL on deadline.
+- Required native filesystem-helper health alongside ExifTool before preview or processing can report ready. Runtime health now rejects missing or extra staged tools, wrong helper target/path/protocol/build metadata, unknown or duplicate manifest keys, digest or link tampering, special support-tree entries, non-executable helpers, crashes, stream failures, timeouts, oversized output, invalid UTF-8, malformed or unterminated NDJSON, wrong Rust targets, and non-exact capability reports.
+- Made build-time helper probing and package directory hashing enforce the same strict protocol and special-entry rejection rules as application runtime health.
+- Implemented strict helper framing, no-follow retained roots, no-replace operations, exact identity and SHA-256 checks, deterministic quarantine deletion, and explicit unknown outcomes for partial or ambiguous mutations.
+- Corrected Windows helper durability access, delete sharing, root directory validation, and aligned rename buffers before native CI validation.
+- Prevented Windows quarantine deletion from reporting success while open file or directory handles could still defer namespace removal.
+- Prevented EOF-terminated partial JSON from executing and prevented partial directory creation from claiming `not-applied` after a durable prefix remains.
+- Extended native source deletion with a caller-owned durable `deleteId`, a control-capability receipt path, and a strict `reconcile_source_delete` client method. Transport UUIDs remain internal and cannot equal the durable delete ID.
+- Added typed receipt-backed delete and reconciliation results. The client rejects invalid state, quarantine, receipt, durability, or capability-relative residue combinations as non-retryable protocol `UNKNOWN`.
+- Made the helper create and sync an immutable control-root delete receipt after quarantine revalidation and before unlink. Reconciliation uses that evidence to finish or confirm deletion across every crash boundary without deleting a source replacement.
+- Preserved source, quarantine, and receipt objects on mismatched markers, special files, unexpected directory contents, or ambiguous absent state. Errors expose only capability-relative residue metadata.
+- Rejected source and receipt namespace aliases before mutation by opening both final entries through retained parents and comparing native object IDs. Hard links plus case-insensitive, normalized, and Windows short-name aliases cannot bypass the guard. Delete-time reconciliation errors now match the strict client schema exactly.
+- Added fail-closed coverage for incomplete native staging, reservation, publication, duplicate-protection, and destination-hash receipts; helper loss after durable delete intent; journal peer growth and torn first records; lock publication alias loss; quarantine replacement; guard restoration; and conservation-object alias cleanup.
+- Raised the configured transaction coverage gate to a passing 92.08 percent statements, 87.22 percent branches, 94.14 percent functions, and 93.69 percent lines without lowering Jest thresholds.
+- Removed verified staging guards before terminalizing source-retained delete reconciliation or post-pending cancellation. Failed exact cleanup remains nonterminal and is retried during startup recovery.
+- Made concurrent transaction Core shutdown callers join one cached close promise, so none can report completion before the journal, helper, directory handles, and writer lock finish closing.
+- Kept recovery guards when a committed destination is missing or unverified. Cleanup now requires both a durable delete intent and a matching committed destination, preserving the verified copy needed for restoration.
+- Raised the current configured transaction coverage result to 92.30 percent statements, 87.54 percent branches, 93.75 percent functions, and 93.91 percent lines without changing thresholds.
+
+### Validation
+
+- Replayed the exact final tree from an empty temporary checkout: locked install, runtime staging, 44 suites and 842 tests, 89.36 percent statement coverage, 84.87 percent branch coverage, zero npm vulnerabilities, and no open-handle warning. Fresh extracted Linux packages passed containment with DEB SHA-256 `b34dced9ee7a46a741605fb01484e1e75b7d736df74a5b56529c1f4bce9c763c` and RPM SHA-256 `a90f31687c79f012d35e073435c7b492fda57cae24243fa57d565416dfe96c16`.
+- Added a real staged integration test from processing IPC through metadata preview and native transactional copy. The focused composition, service, evidence, smoke, and executor grid passes 108 tests; runtime composition coverage remains above 80 percent on every metric.
+- Added 171 focused client/runtime/adapter tests for schema 3 inventory, helper and broker tamper, compiled identity and signer drift, helper-hash binding, broker-only launch, packaged/development trust separation, packaged adapter policy selection, Linux ownership, symlink, writable-ancestor, AppImage mount and outer-image rejection, successful attestation sharing, failed-attestation eviction, empty-PATH relay, launch leases, strict framing, allocation bounds, handshake timeout, delayed cleanup rejection, real spawn failure, stream errors, and observed TERM-to-KILL close. Focused coverage is 90.42 percent statements, 83.38 percent branches, 93.83 percent functions, and 93.03 percent lines. Package integrity brings the reachable scoped graph to 183 passing tests.
+- Proved the actual Linux x64 staged broker is static PIE, contains no dynamic interpreter, matches its manifest SHA-256, and relays protocol 1 from the compiled helper hash. Native macOS CI additionally gates immutable unlinked execution, while Windows CI gates handle exclusion, exact pre-resume termination, descendant-tree kill-on-close, and the real relay.
+- Added a deterministic lock interposition test that reproduces the reclaimer `lstat` to `open` race without timing assumptions.
+- Proved the prior lockfile failed clean install with `EALLOWGIT`; the regenerated lockfile installs successfully without changing global npm configuration.
+- Confirmed the staged ExifTool and Perl runtime launch from package-managed paths.
+- Added a tested package-integrity gate that stages ExifTool and a build-host Perl interpreter under application resources, checks version, SHA-256, containment, executable mode, native OS/architecture, loader and shared-library evidence, rejects Python artifacts and host-tool lookup, and inspects unpacked packages before installer creation.
+- Removed the Python scripts directory from packaged artifacts.
+- Added direct ASAR inspection so transitive Python files and missing native ABI payloads fail the release gate. The Linux package now contains zero Python ASAR entries.
+- Reduced the npm audit result from 4 critical and 42 high findings to 1 critical and 40 high findings using non-major dependency corrections only.
+- Added nine focused composition tests covering construction order, concrete persistence fanout, delayed and multiple sink failures, partial-start cleanup, IPC rollback, idempotent shutdown, and multiple cleanup failures.
+- Removed the inert corruption-detection setting and capability from persisted config, settings, dependency health, and runtime phases; schema 2 config is atomically rewritten as schema 3 without the retired value.
+- Deleted the deprecated corruption-detection transport bridge. Fourteen focused contract, IPC, coordinator, evidence, history, renderer, planner, revalidation, runtime, and integration suites pass 165 tests; current writes reject the key while explicit persisted migrations drop it.
+- Made native tool staging fail closed for cross-OS, cross-architecture, or unsupported runtime inspection and removed the cross-host `dist:all` command.
+- Fixed locale-dependent Perl library hashing that made a valid staged runtime fail its own application health check.
+- Bound the ExifTool module tree into the staged manifest and rejected symbolic-link, hard-link, identity-drift, and support-module tampering during package and runtime validation.
+- Added deterministic publication-barrier regressions for both journal and core locks, an exact blank-prefix crash test, captured-source accounting assertions, and a durable append read-count assertion.
+- Added release-quarantine, hardlink-alias, mode-aware recovery, repeated-startup, and failure-complete close regressions.
+- Added executable architecture gates for final source-unlink interposition and non-Linux nested recovery containment. They remain RED pending a native directory-relative conditional-mutation helper; Move remains gated.
+- Added 58 focused native-client tests covering every frozen operation DTO, packaged-resource tampering, launch leases and cleanup failures, immediate post-spawn errors, a real child-process stream/error/termination path, handshake/root proof, 65,536-byte framing, malformed results, native identity/UUID enforcement, abort timing, process failures, one-request serialization, ambient-path exclusion, and shutdown ordering. Focused coverage is 89.77 percent statements, 82.53 percent branches, 87.39 percent functions, and 92.34 percent lines.
+- Added 53 bundled-runtime health tests plus four staging/package admission attacks. Runtime health coverage is 90.43 percent statements, 80 percent branches, 91.93 percent functions, and 93.23 percent lines; the combined runtime/package gate passes 65 tests.
+- Added 12 pinned Rust integration protocols covering framing, lifecycle, capability confinement, hostile paths, no-clobber operations, exact quarantine deletion, request-bound residue, malformed identity, partial-directory outcomes, fault cleanup, root replacement, and exact helper termination. Linux formatting, clippy with warnings denied, tests, static release probe, staging, and direct package verification pass locally.
+- Added a Windows-native deletion regression that requires the request-bound quarantine name to be reusable before the helper reports success; it is compiled locally for the pinned MSVC target and runs in the configured Windows CI job.
+- Expanded the native-client protocol suite to 76 focused tests for durable delete IDs, control-root receipts, source-retained and deleted reconciliation, preserved replacements, exact receipt evidence, malformed result combinations, ambient-path-free residue details, and the delete-to-reconcile error handoff.
+- Expanded the native-helper runtime suite from 12 to 25 Linux integration tests. New cases cover canonical durable IDs, control-root receipt confinement, exact and alternate-name source/receipt aliases, receipt collision, source-retained cleanup, exact-entry completion with and without a receipt, replacement preservation, absent-state convergence, and fail-closed mismatched or special residue. Linux tests and clippy pass; Windows MSVC and macOS x86-64 all-target check and clippy gates pass from this host.
+
 ## [1.1.0] - 2026-03-28 00:34
 
 ### Added (Python Processing Bridge — Full Pipeline)
+
 - Created `scripts/media_organizer.py` — headless/JSON-progress mode for the proven Python media organizer
 - Created `src/main/services/PythonProcessingBridge.ts` — subprocess wrapper that spawns Python script and bridges JSON stdout into Electron IPC events
 - Created `src/renderer/components/ProcessingLauncher.tsx` — new default "Organize" tab with source/dest folder pickers, live progress bar, completion summary, dependency check
@@ -15,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `checkDependencies` to preload bridge and ElectronAPI type definition
 
 ### Changed
+
 - Rewired `IPCHandler.ts` to use `PythonProcessingBridge` instead of broken `ProcessingEngine`
 - Rewired `main/index.ts` lifecycle (before-quit, will-quit) to use `PythonProcessingBridge`
 - Replaced decorative HeroCard landing page with functional ProcessingLauncher
@@ -22,11 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleaned dead state/callbacks from `App.tsx` (selectedFolder, fileCount, handleSelectFolder, dual IPC listeners)
 
 ### Fixed
+
 - Resolved dual IPC listener registration issue (App.tsx and ProcessingView.tsx both registered progress/complete/error listeners)
 
 ## [1.0.11] - 2026-03-27 13:45
 
 ### Changed (Neo-Noir Glass Monitor Restyle — Step 9)
+
 - Applied Neo-Noir Glass Monitor design system across all UI components
 - Added `disable-gpu-compositing` Linux flag to main process (correct flag per spec — NOT disable-gpu)
 - Added `body::before` pseudo-element for rounded window shadow (replaces flat OS shadow)
@@ -46,6 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.10] - 2026-03-27
 
 ### Fixed (Wire Audit — Step 8)
+
 - **DuplicatesView**: Removed fake progress bar animation (`setInterval` simulating scan progress with no backend call). Replaced with honest "Feature coming soon" banner. Folder selection IPC wire (`selectDirectory`) retained.
 - **BatchView**: All 4 operation cards (Batch Rename, Date Correction, Format Conversion, Tag Management) now correctly marked `$disabled` with "Coming Soon" badges. Previously Rename and Date Correction appeared interactive (hover transform, pointer cursor) but had no onClick handlers or backend connections.
 - **Notification memory leak**: Added auto-dismiss `useEffect` in App.tsx — notifications with a `duration` field are now automatically removed from Redux state after their timeout expires. Previously `addNotification` was dispatched but `removeNotification` was never called, causing unbounded accumulation.
@@ -53,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SettingsView dead field**: Removed `batchSize` from `LocalSettings` interface and UI. The field was stored in local state and rendered in a NumberInput but was never mapped to any config key in `saveProcessingOptions` — saves were silently dropped.
 
 ### Verified (No Dead Wires Found)
+
 - All 22 `window.electronAPI.*` calls in renderer trace cleanly through preload → IPCHandler → backend
 - All window control IPC channels (`window:minimize`, `window:maximize`, `window:close`) handled in main/index.ts setupCoreIPC
 - `open-external` handler present in main/index.ts with protocol validation
@@ -60,6 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.9] - 2026-03-27
 
 ### Removed (Dead Code Cleanup)
+
 - Deleted `LegacyMigration.ts` - exported class with no active callers (Python-era migration never triggered)
 - Deleted `MenuBuilder.ts` - entire file was commented out at its only import site
 - Deleted `LoadingSpinner.tsx` - component never imported anywhere in renderer
@@ -72,6 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.8] - 2026-03-27
 
 ### Fixed
+
 - GPU acceleration default aligned: settingsSlice initialState now matches ConfigManager and DEFAULT_CONFIG (both false)
 - SettingsView config key mismatch: now reads/writes correct nested keys (processingOptions.maxConcurrentJobs, organizationOptions.folderStructure, etc.) instead of non-existent flat keys
 - ProcessingView is now reachable from sidebar navigation (Processing tab added)
@@ -84,11 +230,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed timer leak in DuplicatesView: setInterval is now cleared on component unmount
 - Tightened CSP: removed unsafe-inline from script-src (styles still allow it for styled-components)
 - DatabaseManager stub methods now log warnings instead of silently swallowing calls
-- Removed 4 stale .backup.* files from src/ tree
+- Removed 4 stale .backup.\* files from src/ tree
 
 ## [1.0.7] - 2026-03-17
 
 ### Fixed
+
 - Fixed 7 of 8 broken IPC channels (preload/main channel name mismatches)
 - Fixed SQL injection surface in DatabaseManager column name interpolation
 - Fixed dialog:openDirectory cancel handling (returned undefined instead of null)
@@ -97,6 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed duplicate IPC handler registrations between index.ts and IPCHandler.ts
 
 ### Added
+
 - Worker thread implementation (ProcessingWorker.ts) with webpack build pipeline
 - Worker health monitoring with max 3 restarts per worker, graceful fallback
 - File cache system for incremental processing (skips unchanged files on re-run)
@@ -109,12 +257,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CSP updated to allow GitHub auto-updater connections
 
 ### Removed
+
 - Dead code: simple.ts (61 lines), themes.ts (188 lines), i18n.ts (57 lines)
 - Duplicate constants file consolidated into single source
 - ThemeProvider wrapper (all styles use CSS variables)
 - Unused i18n module (no component used useTranslation)
 
 ### Changed
+
 - App.tsx decomposed from 979 lines to 129 lines (7 extracted components)
 - IPC channels standardized to namespace:action convention
 - Preload bridge expanded with complete API surface (config, jobs, processing control)
@@ -125,11 +275,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Neo-Noir Glass Monitor Design System — Full Restyle
 
 #### Renderer / UI
+
 - `src/renderer/styles/GlobalStyles.ts` — Added complete `:root` CSS custom property token system (50+ tokens: backgrounds, typography, accents, borders, glass, gradients, layered shadows, radius, spacing, transitions). Replaced all hardcoded hex values with CSS variables.
 - `src/renderer/App.tsx` — Replaced all hardcoded color/shadow values throughout every styled-component with CSS variables (`var(--*)`). Hero card now uses ambient radial-gradient mesh (`::after`). Glass card `::before` inner highlight uses `var(--glass-highlight)`. All hover shadows use layered `--shadow-card-hover`. Status bar left side uses `● Ready` dot indicator. About modal wired to `software@jasonpaulmichaels.co` and GitHub pill badge linking `sanchez314c/meta-mover`. About modal closes on X, overlay click, and Escape key. Sidebar has no logo section — nav items start at `margin-top: 4px`. Window controls are circular 28px. TitleBar controls z-index: 200, drag handle z-index: 50.
 - `src/renderer/index.html` — Loading screen now uses `:root` CSS variables, matching the full token system.
 
 #### Main Process (already compliant — verified)
+
 - `src/main/index.ts` — `frame: false`, `transparent: true`, `backgroundColor: '#00000000'`, `hasShadow: false`, `resizable: true` confirmed. Linux flags (`enable-transparent-visuals`, `disable-gpu-compositing`, `no-sandbox`) confirmed present before `app.whenReady()`.
 
 ## [1.0.5] - 2026-03-14 17:13:14
@@ -137,16 +289,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Forensic Code Quality Audit — Full Fix Pass
 
 #### Security (CRITICAL)
+
 - `src/main/services/IPCHandler.ts` — fixed path traversal validation that was a complete no-op (resolved path always starts with itself). Now checks for null bytes and verifies absolute paths
 - `src/main/services/IPCHandler.ts` — added whitelist for `system:getPath` IPC channel to prevent arbitrary app path disclosure from renderer
 - `src/main/services/IPCHandler.ts` — added null byte and type validation to `system:openPath` before passing path to shell
 - `src/main/services/IPCHandler.ts` — moved misplaced `import { app }` from bottom of file to top-level import (was a hoisting hazard)
 
 #### Data Safety (CRITICAL)
+
 - `src/main/core/FileOrganizer.ts` — fixed data loss bug where `verifyFileIntegrity(file.path, finalPath)` was called after a move, reading a path that no longer exists. Now correctly validates destination size for moves vs SHA-256 comparison for copies
 - `src/main/utils/FileSystemUtils.ts` — fixed cross-device move race condition: now verifies copy size matches source before deleting source. Removes bad destination copy if sizes don't match, preserving the original
 
 #### TypeScript / Type Safety (HIGH + MEDIUM)
+
 - `src/main/utils/JobQueue.ts` — removed broken generic `JobQueue<T>` which had 10+ type errors due to unconstrained `T`. Replaced with concrete `Job` types
 - `src/main/services/ConfigManager.ts` — changed `get()`/`set()` from `any` to proper generic `K extends keyof AppConfig` signatures
 - `src/main/services/DatabaseManager.ts` — added definite assignment assertion to `db` property; changed `close()` from `void` to `Promise<void>` with proper callback
@@ -164,6 +319,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/main/core/ProcessingEngine.ts` — fixed unreachable `CANCELLED` comparison with explicit cast
 
 #### Constants / Import Fixes (HIGH)
+
 - `src/main/core/ProcessingEngine.ts` — fixed import to use `@shared/constants/index` (full constants with `MAX_WORKER_COUNT`, processing limits)
 - `src/main/core/CorruptionDetector.ts` — fixed import to use `@shared/constants/index` (full constants with `PLAYABILITY_TEST_DURATION`, `FFMPEG_PLAYABILITY_TIMEOUT`, `MIN_ACCEPTABLE_BITRATE`)
 - `src/main/core/FileOrganizer.ts` — fixed import to use `@shared/constants/index`
@@ -171,21 +327,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/main/services/LegacyMigration.ts` — fixed import to use `@shared/constants/index`
 
 #### Media Extraction (HIGH)
+
 - `src/main/utils/FFProbeWrapper.ts` — fixed false negatives: ffprobe writes informational messages to stderr even for valid files. Changed `if (code !== 0 || error)` to `if (code !== 0)` in both metadata methods
 
 #### Code Quality (LOW)
+
 - `src/main/services/ConfigManager.ts` — fixed `loadConfig()` to merge loaded config over defaults (prevents missing-key runtime errors on config version upgrades)
 - `src/main/utils/TemplateEngine.ts` — replaced inline `require('fs')` with top-level `import * as fs from 'fs'`
 
 #### Dependencies
+
 - Ran `npm audit fix` — resolved ajv ReDoS, node-forge ASN.1, qs DoS, webpack SSRF, svgo Billion Laughs, express/body-parser issues
 - Remaining vulnerabilities are build-tool-only (electron-builder, @electron/rebuild chain) and do not affect the running application
 
 #### Verification
+
 - `npm run typecheck` — exits 0, zero errors after all fixes
 - All shell scripts pass `bash -n` syntax validation
 
 #### Documentation
+
 - `AUDIT_REPORT.md` — full forensic audit report written to project root
 
 ## [1.0.4] - 2026-03-14 UTC
@@ -193,6 +354,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Repository Compliance Audit — Full Mode
 
 #### Changed
+
 - `src/main/index.ts` — injected Linux transparency/sandbox switches (`enable-transparent-visuals`, `disable-gpu-compositing`, `no-sandbox`) before `app.whenReady()`. Updated dev server port from 3000 to 58594
 - `config/webpack.renderer.config.js` — updated devServer port from 8080 to 58594
 - `.nvmrc` — updated Node version from 18 to 24
@@ -202,6 +364,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run-source-windows.bat` — full rewrite with port management, zombie kill, port cleanup
 
 #### Verified Compliant (no changes needed)
+
 - `package.json` — author, scripts, GitHub URLs all correct
 - `.gitignore` — all required entries present
 - `archive/`, `docs/`, `resources/icons/`, `tests/`, `legacy/` — all directories exist
@@ -212,6 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation Standardization — 27-File Standard
 
 #### Added
+
 - `CODE_OF_CONDUCT.md` at repository root (Contributor Covenant v2.1, moved from `docs/`)
 - `docs/DEPLOYMENT.md` — platform toolchain setup, artifact listing, release checklist, auto-update config
 - `docs/PRD.md` — full product requirements with processing pipeline details, business rules, format list
@@ -219,6 +383,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/TODO.md` — UI wiring tasks, test coverage gaps, technical debt tracking
 
 #### Changed
+
 - `SECURITY.md` — updated supported versions (1.0.x), real contact email, documented actual security architecture (contextIsolation, InputValidator, path traversal prevention, navigation lock)
 - `AGENTS.md` — complete rewrite with real codebase content: full directory map, all development commands, IPC channel reference, processing pipeline phases, key business rules
 - `LICENSE` — updated copyright to "Copyright (c) 2026 Jason Paul Michaels"
@@ -235,6 +400,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Repository Compliance Audit (FULL mode)
 
 #### Changed
+
 - **Flattened** `v1.0.01/` version folder to repository root (renamed to v1.0.0)
 - **Renamed** `build-resources/` to `resources/` (standard convention)
 - **Updated** all `build-resources` path references in package.json build config
@@ -244,6 +410,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Consolidated** `versions/Python-Legacy/` into `legacy/Python-Legacy/`
 
 #### Added
+
 - `AGENTS.md` (copied from CLAUDE.md)
 - `.nvmrc` (Node.js 18)
 - `VERSION_MAP.md` (complete version inventory)
@@ -253,6 +420,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `archive/20260208_113948.tar.gz` (pre-audit backup)
 
 #### Removed
+
 - OS junk files (`._*` macOS resource forks)
 - Empty `logs/` directory
 - `v1.0.01/` version folder (flattened to root)
@@ -261,9 +429,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.1] - 2026-02-08 11:43 UTC
 
 ### Added
+
 - **Documentation Suite**: Created DEVELOPMENT.md, QUICK_START.md, and WORKFLOW.md in docs/ directory
 
 ### Changed
+
 - Version bump: All version references changed from 3.0.0 to 1.0.0 across package.json, constants, App.tsx, FileOrganizer, ConfigManager, LegacyMigration, Logger, CLAUDE.md, CHANGELOG.md
 
 ## [1.0.0] - 2026-02-07 22:00 UTC
@@ -271,6 +441,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Legacy Logic Port - Complete alignment with media-organizer-enhanced-v2.3.0-safe-optimized.py
 
 #### Added
+
 - **ART media type**: New `MediaType.ART` enum value with support for `.psd`, `.ai`, `.indd`, `.cdr`, `.dwg`, `.eps` formats (`media.ts`, `constants/index.ts`)
 - **Subsecond metadata**: `subsecond` and `isScreenshot` fields on `MediaMetadata` interface (`media.ts`)
 - **`artFiles` counter**: Added to `ProcessingStatistics` interface for ART media type breakdown (`media.ts`)
@@ -284,6 +455,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MPO to JPEG conversion**: FileOrganizer renames `.mpo` files to `.jpg` during organization
 
 #### Changed
+
 - **DateExtractor**: Complete rewrite with all legacy patterns:
   - Century correction: years 1000-1999 → last 2 digits + 2000; 100-999 → +2000; 1-99 → +2000
   - Date validation bounds: 1990-01-01 to current year Dec 31
@@ -312,6 +484,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Constants**: Processing limits updated — `FFPROBE_TIMEOUT: 30`, `FFMPEG_PLAYABILITY_TIMEOUT: 15`, `EXIFTOOL_TIMEOUT: 30`, `PLAYABILITY_TEST_DURATION: 5`, `MIN_ACCEPTABLE_BITRATE: 10000`
 
 #### Files Modified
+
 - `src/shared/types/media.ts`
 - `src/shared/constants/index.ts`
 - `src/main/utils/DateExtractor.ts`
@@ -324,6 +497,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - 2024-09-XX
 
 ### Added
+
 - Initial TypeScript/React rewrite from legacy Python
 - Modern Electron architecture
 - Professional media organization features
@@ -333,64 +507,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internationalization support
 
 ### Changed
+
 - Migrated from Python legacy versions to TypeScript
 - Improved performance and stability
 - Enhanced user interface
 
 ### Removed
+
 - Legacy Python implementations (kept in versions/ for reference)
 
 ## [2.0.0] - 2024-XX-XX
 
 ### Added
+
 - Enhanced media processing capabilities
 - GPU acceleration support
 - Advanced metadata extraction
 
 ### Changed
+
 - Improved file organization algorithms
 - Better error handling
 
 ## [1.9.4] - 2024-XX-XX
 
 ### Fixed
+
 - Various bug fixes in media organization
 - Improved date extraction accuracy
 
 ## [1.9.0] - 2024-XX-XX
 
 ### Added
+
 - New media formats support
 - Enhanced reporting features
 
 ### Changed
+
 - Performance optimizations
 
 ## [1.8.3] - 2024-XX-XX
 
 ### Fixed
+
 - Critical bugs in file processing
 - Memory usage improvements
 
 ## [1.8.1] - 2024-XX-XX
 
 ### Added
+
 - Basic video processing
 - Audio organization features
 
 ## [1.7.0] - 2024-XX-XX
 
 ### Added
+
 - Initial media organization features
 - Basic file moving capabilities
 - Metadata extraction
 
 ### Changed
+
 - Improved file discovery algorithms
 
 ## [1.0.0] - 2024-XX-XX
 
 ### Added
+
 - Initial release
 - Basic media file organization
 - Python-based implementation
+
+## 2026-08-30 exhaustive inventory and multi-source correction
+
+- Stopped silently dropping unrecognized regular files. Preview now reports each as a skipped `Needs Review` row and leaves its source unchanged.
+- Consolidated supported-format classification and reporting onto one duplicate-free registry.
+- Added ordered, deduplicated multi-folder source selection with accessible per-folder removal controls.
+- Added regressions for unsupported and extensionless files, registry parity, non-mutating unsupported planning, and exact multi-source preview requests.
+- Made inventory status and nullable media kind a discriminated union, and counted unsupported rows in unresolved-date totals.
+
+## 2026-08-30 truthful per-file terminal outcomes
+
+- Stopped reporting jobs with failed file operations as completed.
+- Added a partial terminal state for mixed results and a failed terminal with per-file statistics when every planned operation fails.
+- Made processed-file counts equal committed successes in live progress, persisted history, Redux state, and terminal UI.
+- Added visible succeeded, skipped, failed, and total counts plus the source path and error for every failed file.
+- Made history and evidence stores reject contradictory completion statistics or failed-path counts.
+- Added mixed-result, all-failure, persistence, replay, Redux, and UI regressions.
+
+## 2026-08-30 native cross-platform runtime trust correction
+
+- Added built-in production package attestors for macOS and Windows instead of requiring an unwired injected policy.
+- Replaced the incomplete Linux Perl closure and added macOS materialization with pinned Perl 5.42.3 plus its full core library and a nine-format package probe.
+- Added native x64/arm64 CI containment gates for macOS and Windows, plus exact signer binding and signed/notarized final-installer extraction checks.
+- Kept platform claims evidence-bound: Linux x64 is locally proven; macOS and Windows remain gated on their native runners.
+
+## 2026-08-30 post-mutation persistence outcome correction
+
+- Preserved committed executor outcomes before the fallible ledger append so audit persistence failures cannot erase filesystem mutations from job totals.
+- Added conserved statistics and exact failed source paths to coordinator-failed terminal events, durable history, and evidence manifests.
+- Counted operations not admitted after a coordinator failure as failed without reclassifying already committed or skipped work.
+- Kept the specific `HISTORY_PERSISTENCE_FAILED` terminal error code and prevented unsafe blind-retry messaging after a committed mutation.
+- Relaxed failed-terminal evidence validation only for system-level failures with conserved mixed outcomes. All-file operation failures require both statistics and every failed path.
+- Added regressions for a successful mutation followed by an evidence append failure, stopped-job path accounting, two-worker in-flight settlement, omitted all-file details, and durable system-failure evidence.
+
+## 2026-08-30 cancelled Move residue truth correction
+
+- Stopped reducing a post-commit cancelled Move to a zero-byte failure.
+- Added conserved cancellation statistics for successful, skipped, failed, cancelled, and unattempted files, including committed residue bytes.
+- Added exact per-file cancellation outcomes for every preview row, including conflict skips and unsupported files with no destination. Outcomes include planned bytes, committed bytes, state, retained-source status, and error.
+- Added `operation-cancelled` to immutable evidence. Evidence now binds terminal outcomes to preview rows, audited operations, and ledger entries. JSONL history persists preview rows and rejects substituted paths, destinations, planned bytes, or skip states.
+- Kept floating-local and date-only creation evidence valid in persisted preview rows. Rejected partial or retained-source completed Moves and required evidence terminal errors to match ledger, skipped-row, or not-attempted truth exactly.
+- Rejected impossible normalized calendar dates, executable rows with null destinations, skipped outcomes that claim source removal, and partial-byte committed-destination residue. Zero-byte committed residue remains valid and explicit.
+- Rejected skipped executor and evidence-ledger outcomes that claim nonzero committed bytes.
+- Normalized an absent failed-operation error before ledger persistence, rejected blank optional errors on every executor outcome, and applied the same admission rule to evidence ledgers so cancellation terminal errors remain exact.
+- Enforced impossible-date, full-commit-byte, and executable-target invariants at coordinator and evidence admission, before durable sinks can diverge.
+- Restricted `destination-committed-source-retained` to Move operations at coordinator, evidence, and history boundaries.
+- Exposed cancellation residue in durable history, Redux, the active terminal card, and job history without calling it a successful Move.
+- Preserved zero-byte post-commit Move residue as an explicit committed-destination state across executor, coordinator, evidence, history, Redux, and both UIs. Unsupported rows display `(no destination)` instead of a blank target.
+- Added executor, coordinator, evidence, persistence, history, Redux, and UI regressions. The focused grid passes 214 tests with open-handle detection.

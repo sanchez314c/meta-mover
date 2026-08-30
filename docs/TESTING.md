@@ -1,95 +1,43 @@
 # Testing
 
-How to run tests for META Mover and what the current state of the test suite looks like.
-
-## Test Stack
-
-- **Jest** — test runner and assertion library
-- **ts-jest** — TypeScript support in Jest
-- **@testing-library/react** — component testing
-- **@testing-library/jest-dom** — DOM matchers
-- **@testing-library/user-event** — user interaction simulation
-- **jest-environment-jsdom** — browser environment simulation
-
-## Running Tests
+## Required source gate
 
 ```bash
-npm test                  # Run all tests
-npm run test:watch        # Watch mode (re-runs on file changes)
-npm run test:coverage     # Run with coverage report
-npm run test:ci           # CI mode: no watch, coverage required
+npm run verify
 ```
 
-## Current State
+This runs formatting, ESLint, strict TypeScript checks, Rust formatting, Rust clippy with warnings denied, Rust tests, source package policy, and Jest with coverage thresholds.
 
-The `tests/` directory exists but is largely empty. This is a known gap — see `docs/TODO.md` for the full list. The highest-priority missing tests are:
+Then prove build and runtime staging:
 
-- `DateExtractor` — century correction, filename regex patterns, `isAlreadyProcessed()`, `formatFilenameWithDate()`
-- `FileOrganizer` — `determineOutputPath()` per media type and corruption level, `sanitizeFilename()`, conflict counter
-- `CorruptionDetector` — empty file → CATASTROPHIC, VidBeast false-positive clear rule, MINOR → NONE decision
-- `MetadataExtractor` — date field priority order, screenshot detection patterns, century correction
-- `ProcessingEngine` — full 6-phase pipeline integration test on a fixture set
-
-## File Organization
-
-Tests live next to the source files they test, using `.test.ts` or `.spec.ts` suffixes:
-
-```
-src/
-├── main/
-│   ├── core/
-│   │   ├── MetadataExtractor.ts
-│   │   └── MetadataExtractor.test.ts   ← put tests here
-│   └── utils/
-│       ├── DateExtractor.ts
-│       └── DateExtractor.test.ts
-└── renderer/
-    └── components/
-        ├── ErrorBoundary.tsx
-        └── ErrorBoundary.test.tsx
+```bash
+npm run build
+npm run package:integrity
 ```
 
-You can also use `__tests__/` subdirectories if you prefer grouping.
+## Test layout
 
-## Coverage Target
+- `tests/unit`: contracts, date resolution, inventory, planning, security, services, UI, runtime, native client, and package policy
+- `tests/integration`: canonical application composition and transaction execution
+- `native/fs-helper/tests`: capability, no-follow, no-clobber, durability, deletion, and reconciliation protocols
+- `native/launch-broker`: immutable launch and platform handle tests
 
-80% coverage across `src/main/core/` and `src/main/utils/`. The `jest.collectCoverageFrom` in `package.json` controls what gets measured.
+## Non-negotiable regressions
 
-After running `npm run test:coverage`, the report lands in `coverage/lcov-report/index.html`.
+Processing changes must prove:
 
-## Writing a Test
+- preview performs no mutation
+- dates preserve offsets and fractional precision
+- uncertain dates route to `_Needs Review`
+- source and destination roots cannot overlap
+- source or destination drift after preview fails closed
+- parallel same-name files cannot overwrite one another
+- copy retains every source
+- move deletes only after verified publication and durable intent
+- crash recovery never guesses source deletion from path absence
+- cancellation emits one terminal state and leaves no untracked staging object
+- packaged execution uses only manifest-bound tools
 
-Quick example for `DateExtractor`:
+Jest coverage thresholds are defined in `config/jest.config.js`. Never lower a gate to make a change pass.
 
-```typescript
-import { DateExtractor } from '@main/utils/DateExtractor';
-
-describe('DateExtractor', () => {
-  describe('correctCentury', () => {
-    it('maps year 112 to 2112', () => {
-      const result = DateExtractor.correctCentury(new Date('0112-06-15'));
-      expect(result.getFullYear()).toBe(2112);
-    });
-
-    it('leaves years >= 2000 unchanged', () => {
-      const date = new Date('2024-01-01');
-      expect(DateExtractor.correctCentury(date).getFullYear()).toBe(2024);
-    });
-  });
-});
-```
-
-## Mocking IPC in Tests
-
-Main process code that calls `ipcMain` needs to be mocked in unit tests. Use Jest's manual mocks or `jest.mock()`:
-
-```typescript
-jest.mock('electron', () => ({
-  ipcMain: { handle: jest.fn(), on: jest.fn() },
-  app: { getPath: jest.fn().mockReturnValue('/tmp') },
-}));
-```
-
-## CI Integration
-
-`npm run test:ci` runs Jest with `--ci --coverage --watchAll=false`. This mode fails if any snapshot becomes outdated without being regenerated. Use it locally before pushing to catch issues early.
+Native macOS and Windows runtime claims require their native CI jobs. A cross-compile from Linux is useful compile evidence, not runtime proof.

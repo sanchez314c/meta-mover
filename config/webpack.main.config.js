@@ -29,12 +29,6 @@ module.exports = {
       },
     ],
   },
-  externals: {
-    // Native modules must be externalized - they contain binaries that can't be bundled
-    'sharp': 'commonjs sharp',
-    'sqlite3': 'commonjs sqlite3',
-    'better-sqlite3': 'commonjs better-sqlite3',
-  },
   node: {
     __dirname: false,
     __filename: false,

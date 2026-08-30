@@ -1,63 +1,35 @@
-# Security
+# Security architecture
 
-Security policy and architecture details for META Mover.
+See the root [security policy](../SECURITY.md) for private reporting.
 
-See the root [SECURITY.md](../SECURITY.md) for the vulnerability reporting process.
+## Threat model
 
-## Security Architecture
+META Mover accepts attacker-controlled filenames, metadata, directory contents, and renderer input. It assumes the signed application package and OS account are trusted. It does not assume media metadata is true.
 
-META Mover is a local desktop application — it does not send files or metadata to any remote server. All processing happens on-device.
+## Controls
 
-### Context Isolation
+- Renderer: sandboxed, context isolated, no Node integration, no insecure content
+- IPC: named preload methods, strict DTO keys, bounded values, serializable plain objects
+- Navigation: denied unless the main process explicitly opens an allowed external URL
+- Roots: canonical, disjoint, no-follow, identity-bound
+- Inputs: regular files only; symlinks, hard links, special files, aliases, and path escapes fail closed
+- Preview: source fingerprints and destination observations are revalidated before execution
+- Publication: staged, synced, SHA-256 verified, exclusive, and no-clobber
+- Move: receipt-backed deletion of the exact validated source identity
+- Recovery: ambiguous state stays visible and preserves objects
+- Tools: exact schema-3 manifest, SHA-256 checks, strict identity probe, immutable broker launch
+- Environment: empty tool `PATH`; no host executable fallback or runtime installation
 
-`contextIsolation: true` and `nodeIntegration: false` are enforced in `src/main/index.ts`. The renderer process (React UI) has no direct access to Node.js APIs.
+## Package trust
 
-### Preload Bridge
+Hashes prove package integrity after a trust root is established. They do not authenticate a writable package tree.
 
-`src/preload/index.ts` uses `contextBridge.exposeInMainWorld('electronAPI', ...)` to expose a narrow, typed API to the renderer. The renderer can only call methods explicitly listed in the preload — no arbitrary IPC is possible.
+- Linux production accepts protected root-owned installs under system locations used by `deb` and `rpm` packages.
+- macOS needs a signed, notarized `/Applications` install plus a native signing and ACL attestor.
+- Windows needs a signed per-machine Program Files install plus WinVerifyTrust and ACL evidence.
 
-### IPC Input Validation
+User-writable extraction, AppImage, archive, and portable layouts are rejected.
 
-`InputValidator` in `src/main/services/IPCHandler.ts` sanitizes all renderer-originated input before it reaches processing logic:
+## Data handling
 
-- Job IDs are validated against `/^[a-zA-Z0-9_-]+$/` and capped at 100 characters
-- Config keys are validated against the `AppConfig` schema
-- File paths are resolved and checked for null bytes before use
-
-### Path Traversal Prevention
-
-`src/main/core/FileDiscovery.ts` resolves all paths with `path.resolve()` and verifies each entry stays within the scanned directory root before adding it to results. Paths containing null bytes are rejected.
-
-### Navigation Lock
-
-`src/main/index.ts` calls `event.preventDefault()` on `will-navigate` and sets `setWindowOpenHandler` to `deny`. This prevents the renderer from navigating to external URLs, which is a common Electron attack vector.
-
-### No Remote Code
-
-META Mover makes no network requests during media processing. The only network activity is auto-update checks via `electron-updater`, which only runs in production mode and only communicates with the GitHub releases endpoint.
-
-## Attack Surface
-
-| Surface | Mitigation |
-|---------|------------|
-| Malicious media files | Errors in `MetadataExtractor` and `CorruptionDetector` are caught and logged — corrupt files are quarantined rather than crashing the process |
-| Path traversal via file input | `FileDiscovery` validates all resolved paths stay within source root; `IPCHandler` rejects null bytes |
-| IPC injection from renderer | `InputValidator` sanitizes all renderer input |
-| External URL navigation | Blocked via `will-navigate` event handler |
-| SQL injection | Column names in `DatabaseManager` are validated against a whitelist before interpolation; values use parameterized queries |
-
-## Dependencies
-
-Run a security audit against current dependencies:
-
-```bash
-npm run security:audit
-```
-
-Auto-fix non-breaking vulnerabilities:
-
-```bash
-npm run security:audit:fix
-```
-
-Some vulnerabilities in the build tool chain (`electron-builder`, `@electron/rebuild`) do not affect the running application and are tracked separately.
+Media and metadata stay local. META Mover does not upload files, check for updates, or rewrite embedded metadata. Evidence and history can contain full local paths and metadata, so treat the application data directory as sensitive.
