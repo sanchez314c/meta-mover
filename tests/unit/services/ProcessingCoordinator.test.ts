@@ -86,6 +86,210 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('ProcessingCoordinator preview contract', () => {
+  it('publishes validated planner progress in sequence before preview-ready', async () => {
+    const plannedOperations = operations(2);
+    const coordinator = new ProcessingCoordinator({
+      planner: {
+        plan: jest.fn(async (_request, _signal, reportProgress) => {
+          await reportProgress?.({
+            phase: 'metadata',
+            filesProcessed: 0,
+            totalFiles: 2,
+            percentage: 0,
+            currentFile: '/source/a.jpg',
+          });
+          await reportProgress?.({
+            phase: 'metadata',
+            filesProcessed: 1,
+            totalFiles: 2,
+            percentage: 50,
+            currentFile: '/source/b.jpg',
+          });
+          await reportProgress?.({
+            phase: 'organization',
+            filesProcessed: 2,
+            totalFiles: 2,
+            percentage: 100,
+          });
+          return { operations: plannedOperations, summary: summaryFor(plannedOperations) };
+        }),
+      },
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const events: ProcessingEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+
+    await coordinator.createPreview({ sourcePaths: ['/source'], destinationPath: '/destination' });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      ProcessingEventKind.PREVIEW_STARTED,
+      ProcessingEventKind.PREVIEW_PROGRESS,
+      ProcessingEventKind.PREVIEW_PROGRESS,
+      ProcessingEventKind.PREVIEW_PROGRESS,
+      ProcessingEventKind.PREVIEW_READY,
+    ]);
+    expect(events[2]).toMatchObject({
+      sequence: 3,
+      payload: {
+        filesProcessed: 1,
+        totalFiles: 2,
+        percentage: 50,
+        currentFile: '/source/b.jpg',
+      },
+    });
+  });
+
+  it('rejects incomplete progress telemetry instead of publishing preview-ready', async () => {
+    const plannedOperations = operations(2);
+    const coordinator = new ProcessingCoordinator({
+      planner: {
+        plan: jest.fn(async (_request, _signal, reportProgress) => {
+          await reportProgress?.({
+            phase: 'metadata',
+            filesProcessed: 0,
+            totalFiles: 2,
+            percentage: 0,
+            currentFile: '/source/a.jpg',
+          });
+          await reportProgress?.({
+            phase: 'metadata',
+            filesProcessed: 1,
+            totalFiles: 2,
+            percentage: 50,
+            currentFile: '/source/b.jpg',
+          });
+          return { operations: plannedOperations, summary: summaryFor(plannedOperations) };
+        }),
+      },
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const events: ProcessingEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+
+    await expect(
+      coordinator.createPreview({ sourcePaths: ['/source'], destinationPath: '/destination' })
+    ).rejects.toMatchObject({ code: CoordinatorErrorCode.INVALID_PLAN });
+    expect(events.some((event) => event.kind === ProcessingEventKind.PREVIEW_READY)).toBe(false);
+  });
+
+  it('aborts an active preview by job id and reports cancellation without mutating files', async () => {
+    const planner: PreviewPlannerPort = {
+      plan: jest.fn(
+        async (_request, signal) =>
+          await new Promise((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('operator stopped preview');
+                error.name = 'AbortError';
+                reject(error);
+              },
+              { once: true }
+            );
+          })
+      ),
+    };
+    const coordinator = new ProcessingCoordinator({
+      planner,
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+      idGenerator: (kind) => `${kind}-cancel-preview`,
+    });
+    const events: ProcessingEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const pending = coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+    });
+    await waitUntil(() => events.some((event) => event.kind === 'preview-started'));
+
+    await coordinator.cancelProcessing('job-cancel-preview', 'Stopped by user');
+
+    await expect(pending).rejects.toMatchObject({ code: CoordinatorErrorCode.PREVIEW_CANCELLED });
+    expect(events.map((event) => event.kind)).toEqual([
+      ProcessingEventKind.PREVIEW_STARTED,
+      ProcessingEventKind.JOB_FAILED,
+    ]);
+    expect(events[1]).toMatchObject({
+      payload: { error: { code: CoordinatorErrorCode.PREVIEW_CANCELLED, recoverable: true } },
+    });
+  });
+
+  it('rejects overlapping preview analysis instead of creating untrackable jobs', async () => {
+    const planner: PreviewPlannerPort = {
+      plan: jest.fn(
+        async (_request, signal) =>
+          await new Promise((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('stopped');
+                error.name = 'AbortError';
+                reject(error);
+              },
+              { once: true }
+            );
+          })
+      ),
+    };
+    const coordinator = new ProcessingCoordinator({
+      planner,
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+      idGenerator: (kind) => `${kind}-active`,
+    });
+    const first = coordinator.createPreview({
+      sourcePaths: ['/source/first'],
+      destinationPath: '/destination',
+    });
+    await waitUntil(() => (planner.plan as jest.Mock).mock.calls.length === 1);
+
+    await expect(
+      coordinator.createPreview({
+        sourcePaths: ['/source/second'],
+        destinationPath: '/destination',
+      })
+    ).rejects.toMatchObject({ code: CoordinatorErrorCode.PREVIEW_ALREADY_ACTIVE });
+    expect(planner.plan).toHaveBeenCalledTimes(1);
+
+    await coordinator.cancelProcessing('job-active', 'test cleanup');
+    await expect(first).rejects.toMatchObject({ code: CoordinatorErrorCode.PREVIEW_CANCELLED });
+  });
+
+  it('fails closed when planner progress omits the current unfinished file', async () => {
+    const coordinator = new ProcessingCoordinator({
+      planner: {
+        plan: jest.fn(async (_request, _signal, reportProgress) => {
+          await reportProgress?.({
+            phase: 'metadata',
+            filesProcessed: 0,
+            totalFiles: 2,
+            percentage: 0,
+          });
+          return { operations: [], summary: summaryFor([]) };
+        }),
+      },
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+
+    await expect(
+      coordinator.createPreview({ sourcePaths: ['/source'], destinationPath: '/destination' })
+    ).rejects.toMatchObject({ code: CoordinatorErrorCode.INVALID_PLAN });
+  });
+
   it('preserves validated root identities into the planner request', async () => {
     const planner = plannerFor([]);
     const validatedRoots = {
@@ -110,7 +314,11 @@ describe('ProcessingCoordinator preview contract', () => {
       validatedRoots: typeof validatedRoots;
     });
 
-    expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ validatedRoots }));
+    expect(planner.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ validatedRoots }),
+      expect.any(AbortSignal),
+      expect.any(Function)
+    );
   });
 
   it('generates raw UUID job and preview identifiers by default', async () => {
@@ -155,6 +363,32 @@ describe('ProcessingCoordinator preview contract', () => {
     expect(settled).toBe(false);
     persisted.resolve();
     await expect(pending).resolves.toMatchObject({ summary: summaryFor([]) });
+  });
+
+  it('rejects cancellation after preview analysis enters durable finalization', async () => {
+    const persisted = deferred<void>();
+    const recordPreview = jest.fn(() => persisted.promise);
+    const coordinator = new ProcessingCoordinator({
+      planner: plannerFor([]),
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      history: { recordPreview },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+      idGenerator: (kind) => `${kind}-finalizing`,
+    });
+    const pending = coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+    });
+    await waitUntil(() => recordPreview.mock.calls.length === 1);
+
+    await expect(
+      coordinator.cancelProcessing('job-finalizing', 'Stopped by user')
+    ).rejects.toMatchObject({ code: CoordinatorErrorCode.PREVIEW_FINALIZING });
+
+    persisted.resolve();
+    await expect(pending).resolves.toMatchObject({ previewId: 'preview-finalizing' });
   });
 
   it('fails closed when preview creation persistence rejects', async () => {
@@ -787,7 +1021,7 @@ describe('ProcessingCoordinator preview contract', () => {
     expect(planner.plan).not.toHaveBeenCalled();
   });
 
-  it('reserves generated ids while a preview planner is still running', async () => {
+  it('rejects overlapping analysis before generated ids can be reused', async () => {
     const gate = deferred<{
       operations: readonly PlannedOperation[];
       summary: PreviewSummaryDTO;
@@ -813,7 +1047,7 @@ describe('ProcessingCoordinator preview contract', () => {
     gate.resolve({ operations: [], summary: summaryFor([]) });
 
     await expect(second).rejects.toMatchObject({
-      code: CoordinatorErrorCode.INVALID_CONFIGURATION,
+      code: CoordinatorErrorCode.PREVIEW_ALREADY_ACTIVE,
     });
     await expect(first).resolves.toMatchObject({
       jobId: 'job-reserved',
@@ -2237,7 +2471,7 @@ describe('ProcessingCoordinator execution contract', () => {
     });
   });
 
-  it('waits for an admitted preview before shutdown completes and prevents its later start', async () => {
+  it('aborts an admitted preview before shutdown completes', async () => {
     const planGate = deferred<{ operations: PlannedOperation[]; summary: PreviewSummaryDTO }>();
     const planner: PreviewPlannerPort = { plan: jest.fn(() => planGate.promise) };
     const coordinator = new ProcessingCoordinator({
@@ -2262,14 +2496,10 @@ describe('ProcessingCoordinator execution contract', () => {
     expect(settled).toBe(false);
 
     planGate.resolve({ operations: [], summary: summaryFor([]) });
-    const preview = await pendingPreview;
+    await expect(pendingPreview).rejects.toMatchObject({
+      code: CoordinatorErrorCode.PREVIEW_CANCELLED,
+    });
     await expect(shutdown).resolves.toBeUndefined();
-    await expect(
-      coordinator.startProcessing({
-        previewId: preview.previewId,
-        acknowledgeDestructiveOperation: false,
-      })
-    ).rejects.toMatchObject({ code: CoordinatorErrorCode.COORDINATOR_SHUTDOWN });
   });
 
   it('aborts active execution before waiting for a blocked preview admission', async () => {
@@ -2324,7 +2554,9 @@ describe('ProcessingCoordinator execution contract', () => {
     await waitUntil(() => abortObserved);
 
     blockedPlan.resolve({ operations: [], summary: summaryFor([]) });
-    await pendingPreview;
+    await expect(pendingPreview).rejects.toMatchObject({
+      code: CoordinatorErrorCode.PREVIEW_CANCELLED,
+    });
     await expect(shutdown).resolves.toBeUndefined();
   });
 

@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 
 jest.mock('../../../src/renderer/icon-titlebar.png', () => 'icon-titlebar.png');
@@ -18,12 +18,16 @@ jest.mock('../../../src/renderer/components/AboutModal', () => ({
 jest.mock('../../../src/renderer/components/ProcessingLauncher', () => ({
   ProcessingLauncher: () => <div data-testid="launcher" />,
 }));
+jest.mock('../../../src/renderer/components/views/SettingsView', () => ({
+  SettingsView: () => <div data-testid="settings-view" />,
+}));
 
 import App from '../../../src/renderer/App';
 import appSlice from '../../../src/renderer/store/slices/appSlice';
 import jobsReducer from '../../../src/renderer/store/slices/jobsSlice';
 import settingsSlice from '../../../src/renderer/store/slices/settingsSlice';
 import uiSlice from '../../../src/renderer/store/slices/uiSlice';
+import { setActiveView } from '../../../src/renderer/store/slices/uiSlice';
 import type { ProcessingEvent } from '../../../src/shared/types/processing';
 
 describe('App processing event bridge', () => {
@@ -136,5 +140,35 @@ describe('App processing event bridge', () => {
 
     view.unmount();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the organizer mounted while another view is active', async () => {
+    window.electronAPI = {
+      getSystemInfo: jest.fn().mockResolvedValue({}),
+      getConfig: jest.fn().mockResolvedValue({ success: false }),
+      onProcessingEvent: jest.fn(() => jest.fn()),
+    } as unknown as Window['electronAPI'];
+    const store = configureStore({
+      reducer: {
+        app: appSlice.reducer,
+        jobs: jobsReducer,
+        settings: settingsSlice,
+        ui: uiSlice,
+      },
+    });
+    render(
+      <Provider store={store}>
+        <App />
+      </Provider>
+    );
+
+    const launcher = screen.getByTestId('launcher');
+    expect(launcher.parentElement).not.toHaveAttribute('hidden');
+    act(() => {
+      store.dispatch(setActiveView('settings'));
+    });
+    expect(screen.getByTestId('settings-view')).toBeInTheDocument();
+    expect(launcher).toBeInTheDocument();
+    expect(launcher.parentElement).toHaveAttribute('hidden');
   });
 });

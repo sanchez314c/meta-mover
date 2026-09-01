@@ -58,4 +58,13 @@ describe('ProcessingRootValidator', () => {
       /source/i
     );
   });
+
+  it('rejects with AbortError before starting cancelled root analysis', async () => {
+    const controller = new AbortController();
+    controller.abort('Stopped by user');
+
+    await expect(
+      new ProcessingRootValidator().validate([source], destination, controller.signal)
+    ).rejects.toMatchObject({ name: 'AbortError', message: 'Stopped by user' });
+  });
 });

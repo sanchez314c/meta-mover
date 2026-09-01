@@ -39,7 +39,9 @@ import {
   DateEvidenceDTO,
   DateEvidenceSource,
   OperationMode,
+  PreviewProgressDTO,
   PreviewRowDTO,
+  ProcessingPhase,
 } from '../../shared/types/processing';
 import { classifyMediaExtension, normalizedFileExtension } from '../../shared/constants';
 
@@ -91,7 +93,7 @@ export interface SnapshotCleanupFilesystem {
 }
 
 export interface MediaInventoryPort {
-  inventory(sourcePaths: readonly string[]): Promise<InventoryMediaFile[]>;
+  inventory(sourcePaths: readonly string[], signal?: AbortSignal): Promise<InventoryMediaFile[]>;
 }
 
 export interface MetadataCollectionPort {
@@ -105,7 +107,8 @@ export interface DestinationProbePort {
 export interface ProcessingRootValidationPort {
   validate(
     sourcePaths: readonly string[],
-    destinationPath: string
+    destinationPath: string,
+    signal?: AbortSignal
   ): Promise<ValidatedProcessingRoots>;
 }
 
@@ -119,6 +122,10 @@ export interface MediaPreviewPlannerDependencies {
   platform?: NodeJS.Platform;
   maxCollisionAttempts?: number;
 }
+
+export type PreviewProgressReporter = (
+  progress: Readonly<PreviewProgressDTO>
+) => Promise<void> | void;
 
 class FilesystemDestinationProbe implements DestinationProbePort {
   async inspect(targetPath: string): Promise<DestinationSnapshot> {
@@ -621,15 +628,18 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
 
   async plan(
     request: Readonly<PreviewPlanningRequest>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    reportProgress?: PreviewProgressReporter
   ): Promise<PreviewPlan> {
     throwIfAborted(signal);
-    const roots = await this.roots.validate(request.sourcePaths, request.destinationPath);
+    const roots = await this.roots.validate(request.sourcePaths, request.destinationPath, signal);
     if (request.validatedRoots !== undefined) {
       assertProcessingRootIdentitiesUnchanged(request.validatedRoots, roots);
     }
     throwIfAborted(signal);
-    const files = (await this.inventory.inventory(roots.sourcePaths)).map((file) => ({ ...file }));
+    const files = (await this.inventory.inventory(roots.sourcePaths, signal)).map((file) => ({
+      ...file,
+    }));
     files.forEach(validateInventoryFile);
     files.sort(
       (left, right) =>
@@ -648,7 +658,31 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
     let skippedFiles = 0;
     let unresolvedDates = 0;
 
-    for (const file of files) {
+    const publishProgress = async (
+      filesProcessed: number,
+      phase: ProcessingPhase,
+      currentFile?: string
+    ): Promise<void> => {
+      if (!reportProgress) return;
+      const totalFiles = files.length;
+      await reportProgress({
+        phase,
+        filesProcessed,
+        totalFiles,
+        percentage: totalFiles === 0 ? 100 : (filesProcessed / totalFiles) * 100,
+        ...(currentFile === undefined ? {} : { currentFile }),
+      });
+      throwIfAborted(signal);
+    };
+
+    await publishProgress(
+      0,
+      files.length === 0 ? ProcessingPhase.ORGANIZATION : ProcessingPhase.METADATA,
+      files[0]?.filePath
+    );
+
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+      const file = files[fileIndex];
       throwIfAborted(signal);
       if (!isSupportedInventoryFile(file)) {
         const warning = unsupportedWarning(file);
@@ -671,6 +705,11 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
           },
           warnings: [warning],
         });
+        await publishProgress(
+          fileIndex + 1,
+          fileIndex + 1 === files.length ? ProcessingPhase.ORGANIZATION : ProcessingPhase.METADATA,
+          files[fileIndex + 1]?.filePath
+        );
         continue;
       }
       const fileId = `${file.device}:${file.inode}`;
@@ -816,6 +855,11 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
           ) as unknown as PlannedOperation['payload'],
         });
       }
+      await publishProgress(
+        fileIndex + 1,
+        fileIndex + 1 === files.length ? ProcessingPhase.ORGANIZATION : ProcessingPhase.METADATA,
+        files[fileIndex + 1]?.filePath
+      );
     }
 
     const operation = request.options.operation;

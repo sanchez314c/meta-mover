@@ -60,8 +60,26 @@ describe('PathPolicy', () => {
     await expect(resolveDirectoryRoot(linkPath, 'sourcePath')).rejects.toMatchObject({
       code: 'ROOT_SYMBOLIC_LINK',
     });
-    await expect(resolveDirectoryRoot(`${linkPath}${path.sep}`, 'sourcePath')).rejects.toMatchObject({
+    await expect(
+      resolveDirectoryRoot(`${linkPath}${path.sep}`, 'sourcePath')
+    ).rejects.toMatchObject({
       code: 'ROOT_SYMBOLIC_LINK',
+    });
+  });
+
+  it('preserves AbortError when cancellation arrives during root resolution', async () => {
+    let abortChecks = 0;
+    const signal = {
+      get aborted() {
+        abortChecks += 1;
+        return abortChecks >= 3;
+      },
+      reason: 'Stopped during root analysis',
+    } as AbortSignal;
+
+    await expect(resolveDirectoryRoot(source, 'sourcePath', signal)).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'Stopped during root analysis',
     });
   });
 

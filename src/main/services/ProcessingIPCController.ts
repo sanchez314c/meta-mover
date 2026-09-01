@@ -5,7 +5,6 @@ import {
   ProcessingCoordinatorError,
 } from './ProcessingCoordinator';
 import { BundledRuntimeHealth } from '../tools/BundledRuntimeHealth';
-import { ProcessingRootValidator, ValidatedProcessingRoots } from '../security/ProcessingRoots';
 import {
   CancelProcessingRequestDTO,
   ConflictPolicy,
@@ -61,13 +60,6 @@ export interface ConfigIpcPort {
   reset(): Promise<AppConfig | unknown>;
 }
 
-export interface ProcessingRootValidationPort {
-  validate(
-    sourcePaths: readonly string[],
-    destinationPath: string
-  ): Promise<ValidatedProcessingRoots>;
-}
-
 export interface ProcessingIPCDependencies {
   ipc: IpcRegistrarPort;
   coordinator: ProcessingCoordinatorPort;
@@ -75,7 +67,6 @@ export interface ProcessingIPCDependencies {
   history: HistoryListPort;
   config: ConfigIpcPort;
   publishEvent(event: Readonly<ProcessingEvent>): void;
-  roots?: ProcessingRootValidationPort;
 }
 
 class IPCValidationError extends Error {
@@ -233,11 +224,8 @@ export class ProcessingIPCController {
   private registered = false;
   private accepting = false;
   private readonly ownedChannels = new Set<ProcessingIpcChannel>();
-  private readonly roots: ProcessingRootValidationPort;
 
-  constructor(private readonly dependencies: ProcessingIPCDependencies) {
-    this.roots = dependencies.roots ?? new ProcessingRootValidator();
-  }
+  constructor(private readonly dependencies: ProcessingIPCDependencies) {}
 
   register(): void {
     if (this.registered || this.ownedChannels.size > 0 || this.unsubscribe) {
@@ -246,21 +234,9 @@ export class ProcessingIPCController {
     try {
       this.handle('processing:preview', async (value) => {
         const request = parsePreview(value);
-        let roots: ValidatedProcessingRoots;
-        try {
-          roots = await this.roots.validate(request.sourcePaths, request.destinationPath);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Preview roots are invalid';
-          throw new IPCValidationError(message);
-        }
         return {
           success: true,
-          data: await this.dependencies.coordinator.createPreview({
-            ...request,
-            sourcePaths: roots.sourcePaths,
-            destinationPath: roots.destinationPath,
-            validatedRoots: roots,
-          }),
+          data: await this.dependencies.coordinator.createPreview(request),
         };
       });
       this.handle('processing:start', async (value) => ({

@@ -143,6 +143,14 @@ export interface PreviewSummaryDTO {
   totalBytes: number;
 }
 
+export interface PreviewProgressDTO {
+  phase: ProcessingPhase;
+  filesProcessed: number;
+  totalFiles: number;
+  percentage: number;
+  currentFile?: string;
+}
+
 export interface PreviewResultDTO {
   jobId: string;
   previewId: string;
@@ -247,6 +255,7 @@ export interface ProcessingCancellationStatisticsDTO extends ProcessingStatistic
 
 export const ProcessingEventKind = {
   PREVIEW_STARTED: 'preview-started',
+  PREVIEW_PROGRESS: 'preview-progress',
   PREVIEW_READY: 'preview-ready',
   JOB_QUEUED: 'job-queued',
   JOB_STARTED: 'job-started',
@@ -277,6 +286,11 @@ export type PreviewStartedEvent = ProcessingEventBase<
 export type PreviewReadyEvent = ProcessingEventBase<
   typeof ProcessingEventKind.PREVIEW_READY,
   { previewId: string; summary: PreviewSummaryDTO }
+>;
+
+export type PreviewProgressEvent = ProcessingEventBase<
+  typeof ProcessingEventKind.PREVIEW_PROGRESS,
+  PreviewProgressDTO
 >;
 
 export type JobQueuedEvent = ProcessingEventBase<
@@ -337,6 +351,7 @@ export type JobCancelledEvent = ProcessingEventBase<
 
 export type ProcessingEvent =
   | PreviewStartedEvent
+  | PreviewProgressEvent
   | PreviewReadyEvent
   | JobQueuedEvent
   | JobStartedEvent

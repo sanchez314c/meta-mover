@@ -1,5 +1,14 @@
 import { resolveRootPair } from './PathPolicy';
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error(
+    typeof signal.reason === 'string' ? signal.reason : 'Root analysis cancelled'
+  );
+  error.name = 'AbortError';
+  throw error;
+}
+
 export interface ProcessingRootIdentity {
   path: string;
   device: number;
@@ -83,8 +92,10 @@ export function assertProcessingRootIdentitiesUnchanged(
 export class ProcessingRootValidator {
   async validate(
     sourcePaths: readonly string[],
-    destinationPath: string
+    destinationPath: string,
+    signal?: AbortSignal
   ): Promise<ValidatedProcessingRoots> {
+    throwIfAborted(signal);
     if (!Array.isArray(sourcePaths) || sourcePaths.length === 0) {
       throw new Error('At least one source root is required');
     }
@@ -93,7 +104,9 @@ export class ProcessingRootValidator {
     let canonicalDestination: string | undefined;
     let destinationIdentity: ProcessingRootIdentity | undefined;
     for (const sourcePath of sourcePaths) {
-      const pair = await resolveRootPair(sourcePath, destinationPath);
+      throwIfAborted(signal);
+      const pair = await resolveRootPair(sourcePath, destinationPath, signal);
+      throwIfAborted(signal);
       const currentDestinationIdentity = `${pair.destination.device}:${pair.destination.inode}`;
       if (
         destinationIdentity !== undefined &&
@@ -119,6 +132,7 @@ export class ProcessingRootValidator {
     const sourceIdentities = [...canonicalSources.values()].sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
+    throwIfAborted(signal);
 
     return {
       sourcePaths: sourceIdentities.map((identity) => identity.path),

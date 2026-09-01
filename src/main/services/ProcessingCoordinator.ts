@@ -18,6 +18,7 @@ import {
   ProcessingOptionsDTO,
   ProcessingPhase,
   ProcessingStatisticsDTO,
+  PreviewProgressDTO,
   PreviewRequestDTO,
   PreviewResultDTO,
   PreviewRowDTO,
@@ -90,7 +91,11 @@ export interface PreparedPreview {
 }
 
 export interface PreviewPlannerPort {
-  plan(request: Readonly<PreviewPlanningRequest>): Promise<PreviewPlan>;
+  plan(
+    request: Readonly<PreviewPlanningRequest>,
+    signal?: AbortSignal,
+    reportProgress?: (progress: Readonly<PreviewProgressDTO>) => Promise<void> | void
+  ): Promise<PreviewPlan>;
 }
 
 export interface PreviewRevalidationResult {
@@ -187,6 +192,9 @@ export const CoordinatorErrorCode = {
   PREVIEW_EXPIRED: 'PREVIEW_EXPIRED',
   PREVIEW_CONSUMED: 'PREVIEW_CONSUMED',
   PREVIEW_DRIFT: 'PREVIEW_DRIFT',
+  PREVIEW_ALREADY_ACTIVE: 'PREVIEW_ALREADY_ACTIVE',
+  PREVIEW_CANCELLED: 'PREVIEW_CANCELLED',
+  PREVIEW_FINALIZING: 'PREVIEW_FINALIZING',
   REVALIDATION_FAILED: 'REVALIDATION_FAILED',
   MOVE_ACK_REQUIRED: 'MOVE_ACK_REQUIRED',
   JOB_NOT_FOUND: 'JOB_NOT_FOUND',
@@ -223,6 +231,11 @@ interface PreviewEntry extends EventContext {
   readonly prepared: Readonly<PreparedPreview>;
   starting: boolean;
   consumed: boolean;
+}
+
+interface ActivePreview extends EventContext {
+  readonly controller: AbortController;
+  cancellable: boolean;
 }
 
 interface ActiveJob extends EventContext {
@@ -383,6 +396,7 @@ export class ProcessingCoordinator {
   private readonly idGenerator: CoordinatorIdGenerator;
   private readonly onHookError?: (error: unknown) => void;
   private readonly previews = new Map<string, PreviewEntry>();
+  private readonly activePreviews = new Map<string, ActivePreview>();
   private readonly activeJobs = new Map<string, ActiveJob>();
   private readonly reservedIds = new Set<string>();
   private readonly listeners = new Set<(event: Readonly<ProcessingEvent>) => void>();
@@ -465,6 +479,12 @@ export class ProcessingCoordinator {
         ? {}
         : { validatedRoots: requestSnapshot.validatedRoots }),
     };
+    if (this.activePreviews.size > 0) {
+      throw new ProcessingCoordinatorError(
+        CoordinatorErrorCode.PREVIEW_ALREADY_ACTIVE,
+        'Another preview analysis is already active'
+      );
+    }
     const jobId = this.generateUniqueId('job');
     let previewId: string;
     try {
@@ -473,108 +493,142 @@ export class ProcessingCoordinator {
       this.reservedIds.delete(jobId);
       throw error;
     }
-    const context: EventContext = {
+    const context: ActivePreview = {
       jobId,
       machine: new JobStateMachine(jobId),
       nextSequence: 1,
       historyReady: false,
       eventQueue: Promise.resolve(),
+      controller: new AbortController(),
+      cancellable: true,
     };
+    this.activePreviews.set(jobId, context);
 
-    await this.publish(context, ProcessingEventKind.PREVIEW_STARTED, {
-      sourceCount: normalizedRequest.sourcePaths.length,
-      destinationPath: normalizedRequest.destinationPath,
-    });
-
-    let plan: PreviewPlan;
     try {
-      plan = snapshotSerializable(
-        await this.planner.plan(freezeDeep(snapshotSerializable(plannerRequest, 'request'))),
-        'preview plan'
-      );
-      this.validatePlan(plan, effectiveOptions);
-    } catch (error) {
-      const failure =
-        error instanceof ProcessingCoordinatorError
-          ? error
-          : new ProcessingCoordinatorError(CoordinatorErrorCode.INVALID_PLAN, errorMessage(error));
-      await this.publish(context, ProcessingEventKind.JOB_FAILED, {
-        error: {
-          code: CoordinatorErrorCode.INVALID_PLAN,
-          message: failure.message,
-          recoverable: true,
-        },
+      await this.publish(context, ProcessingEventKind.PREVIEW_STARTED, {
+        sourceCount: normalizedRequest.sourcePaths.length,
+        destinationPath: normalizedRequest.destinationPath,
       });
-      throw failure;
-    }
 
-    const createdAtMs = this.now();
-    const expiresAtMs = createdAtMs + this.previewTtlMs;
-    const result: PreviewResultDTO = {
-      jobId,
-      previewId,
-      createdAt: this.toISOString(createdAtMs),
-      expiresAt: this.toISOString(expiresAtMs),
-      request: normalizedRequest,
-      effectiveOptions: { ...effectiveOptions },
-      summary: { ...plan.summary },
-      ...(plan.rows === undefined ? {} : { rows: plan.rows.map(publicPreviewRow) }),
-    };
-    const prepared = freezeDeep(
-      snapshotSerializable<PreparedPreview>(
-        {
-          result,
-          operations: plan.operations.map((operation) => ({ ...operation })),
-          audit: {
-            jobId,
-            previewId,
-            decisionRecords: (plan.decisionRecords ?? []).map((record) => ({ ...record })),
-            operationRecords: plan.operations.flatMap((operation, operationIndex) => {
-              const decision = plan.decisionRecords?.find((record) => {
-                const row = plan.rows?.[record.rowIndex];
-                return (
-                  record.sourcePath === operation.sourcePath &&
-                  row?.targetPath === operation.targetPath &&
-                  row.fingerprint.size === operation.bytes
-                );
-              });
-              return decision === undefined
-                ? []
-                : [
-                    {
-                      operationIndex,
-                      operationId: operation.id,
-                      sourcePath: operation.sourcePath,
-                      targetPath: operation.targetPath,
-                      bytes: operation.bytes,
-                      decisionRowIndex: decision.rowIndex,
-                    },
-                  ];
-            }),
+      let previousProgress: PreviewProgressDTO | undefined;
+      let plan: PreviewPlan;
+      try {
+        plan = snapshotSerializable(
+          await this.planner.plan(
+            freezeDeep(snapshotSerializable(plannerRequest, 'request')),
+            context.controller.signal,
+            async (reportedProgress) => {
+              const progress = snapshotSerializable(
+                reportedProgress,
+                'preview progress'
+              ) as PreviewProgressDTO;
+              this.validatePreviewProgress(progress, previousProgress);
+              previousProgress = { ...progress };
+              await this.publish(context, ProcessingEventKind.PREVIEW_PROGRESS, progress);
+            }
+          ),
+          'preview plan'
+        );
+        if (context.controller.signal.aborted) {
+          throw this.previewCancelledError(context.controller.signal.reason);
+        }
+        this.validatePlan(plan, effectiveOptions);
+        this.validateCompletedPreviewProgress(previousProgress, plan.summary.totalFiles);
+        context.cancellable = false;
+      } catch (error) {
+        const cancelled = context.controller.signal.aborted || isAbortError(error);
+        const failure = cancelled
+          ? this.previewCancelledError(context.controller.signal.reason)
+          : error instanceof ProcessingCoordinatorError
+            ? error
+            : new ProcessingCoordinatorError(
+                CoordinatorErrorCode.INVALID_PLAN,
+                errorMessage(error)
+              );
+        await this.publish(context, ProcessingEventKind.JOB_FAILED, {
+          error: {
+            code: failure.code,
+            message: failure.message,
+            recoverable: true,
           },
-        },
-        'preview plan'
-      )
-    );
-    const entry: PreviewEntry = {
-      ...context,
-      previewId,
-      expiresAtMs,
-      prepared,
-      starting: false,
-      consumed: false,
-    };
+        });
+        throw failure;
+      }
 
-    await this.persistHistory('preview creation', () =>
-      this.history?.recordPreview?.(prepared.result, prepared.audit)
-    );
-    entry.historyReady = true;
-    await this.publish(entry, ProcessingEventKind.PREVIEW_READY, {
-      previewId,
-      summary: prepared.result.summary,
-    });
-    this.previews.set(previewId, entry);
-    return prepared.result;
+      const createdAtMs = this.now();
+      const expiresAtMs = createdAtMs + this.previewTtlMs;
+      const result: PreviewResultDTO = {
+        jobId,
+        previewId,
+        createdAt: this.toISOString(createdAtMs),
+        expiresAt: this.toISOString(expiresAtMs),
+        request: normalizedRequest,
+        effectiveOptions: { ...effectiveOptions },
+        summary: { ...plan.summary },
+        ...(plan.rows === undefined ? {} : { rows: plan.rows.map(publicPreviewRow) }),
+      };
+      const prepared = freezeDeep(
+        snapshotSerializable<PreparedPreview>(
+          {
+            result,
+            operations: plan.operations.map((operation) => ({ ...operation })),
+            audit: {
+              jobId,
+              previewId,
+              decisionRecords: (plan.decisionRecords ?? []).map((record) => ({ ...record })),
+              operationRecords: plan.operations.flatMap((operation, operationIndex) => {
+                const decision = plan.decisionRecords?.find((record) => {
+                  const row = plan.rows?.[record.rowIndex];
+                  return (
+                    record.sourcePath === operation.sourcePath &&
+                    row?.targetPath === operation.targetPath &&
+                    row.fingerprint.size === operation.bytes
+                  );
+                });
+                return decision === undefined
+                  ? []
+                  : [
+                      {
+                        operationIndex,
+                        operationId: operation.id,
+                        sourcePath: operation.sourcePath,
+                        targetPath: operation.targetPath,
+                        bytes: operation.bytes,
+                        decisionRowIndex: decision.rowIndex,
+                      },
+                    ];
+              }),
+            },
+          },
+          'preview plan'
+        )
+      );
+      const entry: PreviewEntry = {
+        jobId: context.jobId,
+        machine: context.machine,
+        nextSequence: context.nextSequence,
+        historyReady: context.historyReady,
+        eventQueue: context.eventQueue,
+        previewId,
+        expiresAtMs,
+        prepared,
+        starting: false,
+        consumed: false,
+      };
+
+      await this.persistHistory('preview creation', () =>
+        this.history?.recordPreview?.(prepared.result, prepared.audit)
+      );
+      entry.historyReady = true;
+      await this.publish(entry, ProcessingEventKind.PREVIEW_READY, {
+        previewId,
+        summary: prepared.result.summary,
+      });
+      this.previews.set(previewId, entry);
+      return prepared.result;
+    } finally {
+      this.activePreviews.delete(jobId);
+    }
   }
 
   public startProcessing(
@@ -728,6 +782,19 @@ export class ProcessingCoordinator {
   }
 
   public async cancelProcessing(jobId: string, reason?: string): Promise<void> {
+    const preview = this.activePreviews.get(jobId);
+    if (preview) {
+      if (!preview.cancellable) {
+        throw new ProcessingCoordinatorError(
+          CoordinatorErrorCode.PREVIEW_FINALIZING,
+          'Preview analysis is already finalizing'
+        );
+      }
+      if (!preview.controller.signal.aborted) {
+        preview.controller.abort(reason ?? 'Preview analysis stopped');
+      }
+      return;
+    }
     const job = this.activeJobs.get(jobId);
     if (job === undefined) {
       throw new ProcessingCoordinatorError(
@@ -765,6 +832,11 @@ export class ProcessingCoordinator {
   }
 
   private async shutdownOnce(): Promise<void> {
+    for (const preview of this.activePreviews.values()) {
+      if (preview.cancellable && !preview.controller.signal.aborted) {
+        preview.controller.abort('application shutdown');
+      }
+    }
     const cancelActiveJobs = (): Promise<PromiseSettledResult<void>[]> =>
       Promise.allSettled(
         [...this.activeJobs.values()].map((job) =>
@@ -1587,6 +1659,86 @@ export class ProcessingCoordinator {
         'planner summary does not match its canonical rows and operations'
       );
     }
+  }
+
+  private validatePreviewProgress(
+    progress: PreviewProgressDTO,
+    previous?: PreviewProgressDTO
+  ): void {
+    const allowedPhases = new Set<ProcessingPhase>([
+      ProcessingPhase.METADATA,
+      ProcessingPhase.ORGANIZATION,
+    ]);
+    const expectedPercentage =
+      progress.totalFiles === 0 ? 100 : (progress.filesProcessed / progress.totalFiles) * 100;
+    if (
+      typeof progress !== 'object' ||
+      progress === null ||
+      !allowedPhases.has(progress.phase) ||
+      !Number.isSafeInteger(progress.filesProcessed) ||
+      progress.filesProcessed < 0 ||
+      !Number.isSafeInteger(progress.totalFiles) ||
+      progress.totalFiles < 0 ||
+      progress.filesProcessed > progress.totalFiles ||
+      !Number.isFinite(progress.percentage) ||
+      Math.abs(progress.percentage - expectedPercentage) > Number.EPSILON ||
+      (progress.currentFile !== undefined &&
+        (typeof progress.currentFile !== 'string' || progress.currentFile.length === 0)) ||
+      (progress.totalFiles > 0 &&
+        progress.filesProcessed < progress.totalFiles &&
+        progress.currentFile === undefined) ||
+      (progress.filesProcessed === progress.totalFiles && progress.currentFile !== undefined) ||
+      (previous === undefined &&
+        !(
+          (progress.totalFiles === 0 &&
+            progress.phase === ProcessingPhase.ORGANIZATION &&
+            progress.filesProcessed === 0) ||
+          (progress.totalFiles > 0 &&
+            progress.phase === ProcessingPhase.METADATA &&
+            progress.filesProcessed === 0)
+        )) ||
+      (previous !== undefined &&
+        (progress.totalFiles !== previous.totalFiles ||
+          progress.filesProcessed !== previous.filesProcessed + 1 ||
+          previous.phase === ProcessingPhase.ORGANIZATION)) ||
+      (progress.phase === ProcessingPhase.METADATA &&
+        progress.filesProcessed >= progress.totalFiles) ||
+      (progress.phase === ProcessingPhase.ORGANIZATION &&
+        progress.filesProcessed !== progress.totalFiles)
+    ) {
+      throw new ProcessingCoordinatorError(
+        CoordinatorErrorCode.INVALID_PLAN,
+        'planner returned invalid or regressive preview progress'
+      );
+    }
+  }
+
+  private validateCompletedPreviewProgress(
+    progress: PreviewProgressDTO | undefined,
+    summaryTotalFiles: number
+  ): void {
+    if (progress === undefined) return;
+    if (
+      progress.phase !== ProcessingPhase.ORGANIZATION ||
+      progress.filesProcessed !== progress.totalFiles ||
+      progress.totalFiles !== summaryTotalFiles ||
+      progress.percentage !== 100 ||
+      progress.currentFile !== undefined
+    ) {
+      throw new ProcessingCoordinatorError(
+        CoordinatorErrorCode.INVALID_PLAN,
+        'planner progress did not complete or match the preview summary'
+      );
+    }
+  }
+
+  private previewCancelledError(reason: unknown): ProcessingCoordinatorError {
+    const detail = typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
+    return new ProcessingCoordinatorError(
+      CoordinatorErrorCode.PREVIEW_CANCELLED,
+      'Preview analysis stopped',
+      detail === undefined ? [] : [detail]
+    );
   }
 
   private isValidPreviewRow(row: PreviewRowDTO): boolean {

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Preview analysis now publishes real discovery and per-file metadata progress with the current path, stable counts, and an accessible determinate or indeterminate progress indicator.
+- The organizer stays mounted across navigation so an active preview, its Stop control, and its completed result are not lost when changing tabs.
 - Updated the build and test dependency graph to fixed Electron 44.0.0, electron-builder 26.15.3, styled-components 6.5.3, Jest 30.5.0, ts-jest 29.4.12, and wait-on 9.1.0 releases. Full and production npm audits now report zero vulnerabilities without security overrides.
 - Declared the crash-test TypeScript loader and active Winston logger explicitly, eliminating reliance on packages left behind by an older install.
 - Migrated Linux desktop and Windows signing configuration to electron-builder 26 while preserving deb/rpm, signed pkg, and signed per-machine NSIS policy.
@@ -50,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Added Stop Preview through the typed cancellation path. Cancellation now reaches recursive inventory as well as metadata work and does not mutate source media.
+- Added a strict finalization cutoff so a late Stop request reports `PREVIEW_FINALIZING` instead of falsely claiming success.
+- Rejected regressive, partial, mismatched, and overlapping preview progress before `preview-ready`; duplicate rapid Build Preview requests no longer create untrackable jobs.
+- Prevented delayed preview events after an IPC failure from leaving the launcher stuck on Building Preview with a disabled Stop control.
 - Materialized the independently reviewed refit into the original `main` repository only after its staged Git tree exactly matched the sealed refit tree. Removed baseline paths remain recoverable from path-preserving RAID Pre-Trash.
 - Removed the hidden clean-test dependency on a pre-existing ignored `.build-tools` directory. `npm run test:ci` now stages the packaged native runtime before Jest, and a fresh registry-only checkout passes all 842 tests without prior build state.
 - Persisted the full immutable date-decision audit trail instead of only reduced preview rows. Private evidence now records every scored candidate, complete `DateResolutionRecord`, and exact operation ID/source/target/byte mapping under strict deterministic schemas. Raw embedded metadata stays out of renderer DTOs and ordinary job history.

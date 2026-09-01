@@ -42,4 +42,37 @@ describe('JobStateMachine transition preflight', () => {
       lastSequence: 1,
     });
   });
+
+  it('accepts ordered preview progress only while preview analysis is active', () => {
+    const jobId = 'preview-progress-job';
+    const machine = new JobStateMachine(jobId);
+    expect(
+      machine.accept({
+        kind: ProcessingEventKind.PREVIEW_STARTED,
+        jobId,
+        sequence: 1,
+        emittedAt: '2026-08-31T20:00:00.000Z',
+        payload: { sourceCount: 1, destinationPath: '/destination' },
+      })
+    ).toMatchObject({ accepted: true });
+
+    expect(
+      machine.accept({
+        kind: ProcessingEventKind.PREVIEW_PROGRESS,
+        jobId,
+        sequence: 2,
+        emittedAt: '2026-08-31T20:00:01.000Z',
+        payload: {
+          phase: ProcessingPhase.METADATA,
+          filesProcessed: 1,
+          totalFiles: 4,
+          percentage: 25,
+          currentFile: '/source/b.jpg',
+        },
+      })
+    ).toMatchObject({
+      accepted: true,
+      snapshot: { status: JobStatus.PREVIEWING, lastSequence: 2 },
+    });
+  });
 });

@@ -188,6 +188,52 @@ describe('MediaPreviewPlanner', () => {
     expect(plan.rows?.every((row) => row.fingerprint.hash === digest)).toBe(true);
   });
 
+  it('reports exact preview progress and the next file without advancing before completion', async () => {
+    const files = [
+      inventoryFile({ filePath: '/source/b.jpg', inode: 12 }),
+      inventoryFile({ filePath: '/source/a.jpg', inode: 11 }),
+    ];
+    const progress = jest.fn();
+    const planner = new MediaPreviewPlanner({
+      inventory: { inventory: async () => files },
+      roots,
+      metadata: {
+        collectDetailed: async ({ fileId }) => ({
+          candidates: [embeddedCandidate(fileId)],
+          warnings: [],
+        }),
+      },
+      destination: availableDestination,
+      sourceContent,
+      now: () => Date.parse('2026-08-29T13:00:00.000Z'),
+    });
+
+    await planner.plan(request(), undefined, progress);
+
+    expect(progress.mock.calls.map(([event]) => event)).toEqual([
+      {
+        phase: 'metadata',
+        filesProcessed: 0,
+        totalFiles: 2,
+        percentage: 0,
+        currentFile: '/source/a.jpg',
+      },
+      {
+        phase: 'metadata',
+        filesProcessed: 1,
+        totalFiles: 2,
+        percentage: 50,
+        currentFile: '/source/b.jpg',
+      },
+      {
+        phase: 'organization',
+        filesProcessed: 2,
+        totalFiles: 2,
+        percentage: 100,
+      },
+    ]);
+  });
+
   it('routes unresolved dates to review without inventing a date', async () => {
     const planner = new MediaPreviewPlanner({
       inventory: { inventory: async () => [inventoryFile()] },
@@ -212,6 +258,7 @@ describe('MediaPreviewPlanner', () => {
     const metadata = jest.fn();
     const capture = jest.fn();
     const inspect = jest.fn();
+    const progress = jest.fn();
     const planner = new MediaPreviewPlanner({
       inventory: {
         inventory: async () => [
@@ -229,7 +276,7 @@ describe('MediaPreviewPlanner', () => {
       sourceContent: { capture },
     });
 
-    const plan = await planner.plan(request());
+    const plan = await planner.plan(request(), undefined, progress);
 
     expect(plan.operations).toEqual([]);
     expect(plan.summary).toMatchObject({
@@ -252,6 +299,21 @@ describe('MediaPreviewPlanner', () => {
     expect(metadata).not.toHaveBeenCalled();
     expect(capture).not.toHaveBeenCalled();
     expect(inspect).not.toHaveBeenCalled();
+    expect(progress.mock.calls.map(([event]) => event)).toEqual([
+      {
+        phase: 'metadata',
+        filesProcessed: 0,
+        totalFiles: 1,
+        percentage: 0,
+        currentFile: '/source/unknown.media',
+      },
+      {
+        phase: 'organization',
+        filesProcessed: 1,
+        totalFiles: 1,
+        percentage: 100,
+      },
+    ]);
   });
 
   it('surfaces metadata read warnings and skips occupied targets under skip policy', async () => {

@@ -24,6 +24,108 @@ function queued(jobId: string, sequence = 1): ProcessingEvent {
 }
 
 describe('jobsSlice processing event reduction', () => {
+  it('tracks preview discovery, exact progress, and cancellation independently from jobs', () => {
+    let state = reducer(
+      undefined,
+      applyProcessingEvent({
+        kind: 'preview-started',
+        jobId: 'preview-job',
+        sequence: 1,
+        emittedAt: '2026-08-31T20:00:00.000Z',
+        payload: { sourceCount: 2, destinationPath: '/destination' },
+      })
+    );
+    expect(state.previewBuild).toMatchObject({
+      jobId: 'preview-job',
+      status: 'previewing',
+      phase: 'discovery',
+      filesProcessed: 0,
+      totalFiles: 0,
+    });
+    expect(state.isProcessing).toBe(true);
+
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'preview-started',
+        jobId: 'overlapping-preview',
+        sequence: 1,
+        emittedAt: '2026-08-31T20:00:00.500Z',
+        payload: { sourceCount: 1, destinationPath: '/other-destination' },
+      })
+    );
+    expect(state.previewBuild?.jobId).toBe('preview-job');
+
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'preview-progress',
+        jobId: 'preview-job',
+        sequence: 2,
+        emittedAt: '2026-08-31T20:00:01.000Z',
+        payload: {
+          phase: 'metadata',
+          filesProcessed: 3,
+          totalFiles: 10,
+          percentage: 30,
+          currentFile: '/source/current.jpg',
+        },
+      })
+    );
+    expect(state.previewBuild).toMatchObject({
+      status: 'previewing',
+      phase: 'metadata',
+      filesProcessed: 3,
+      totalFiles: 10,
+      percentage: 30,
+      currentFile: '/source/current.jpg',
+      lastSequence: 2,
+    });
+
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'preview-progress',
+        jobId: 'preview-job',
+        sequence: 2,
+        emittedAt: '2026-08-31T20:00:01.500Z',
+        payload: {
+          phase: 'metadata',
+          filesProcessed: 9,
+          totalFiles: 10,
+          percentage: 90,
+          currentFile: '/source/stale.jpg',
+        },
+      })
+    );
+    expect(state.previewBuild).toMatchObject({
+      filesProcessed: 3,
+      percentage: 30,
+      currentFile: '/source/current.jpg',
+      lastSequence: 2,
+    });
+
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-failed',
+        jobId: 'preview-job',
+        sequence: 3,
+        emittedAt: '2026-08-31T20:00:02.000Z',
+        payload: {
+          error: {
+            code: 'PREVIEW_CANCELLED',
+            message: 'Preview analysis stopped',
+            recoverable: true,
+          },
+        },
+      })
+    );
+    expect(state.previewBuild?.status).toBe('cancelled');
+    expect(state.isProcessing).toBe(false);
+    expect(state.jobs).toEqual([]);
+  });
+
   it('keeps another admitted job active when an overlapping job completes', () => {
     let state = reducer(undefined, applyProcessingEvent(queued('job-a')));
     state = reducer(state, applyProcessingEvent(queued('job-b')));

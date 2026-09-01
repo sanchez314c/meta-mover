@@ -253,4 +253,25 @@ describe('MediaInventory', () => {
 
     await expect(inventory.inventory([root])).rejects.toMatchObject({ code: 'FILE_UNREADABLE' });
   });
+
+  it('stops discovery when the preview signal is aborted during a directory read', async () => {
+    const controller = new AbortController();
+    let inspections = 0;
+    const inventory = new MediaInventory({
+      readDirectory: async () => {
+        controller.abort('Stopped by user');
+        return [];
+      },
+      inspectPath: async (candidatePath) => {
+        inspections += 1;
+        return lstat(candidatePath);
+      },
+    });
+
+    await expect(inventory.inventory([root], controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'Stopped by user',
+    });
+    expect(inspections).toBe(2);
+  });
 });

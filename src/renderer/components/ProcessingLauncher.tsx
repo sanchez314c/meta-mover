@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSelector } from 'react-redux';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
 
 import type { AppConfig } from '../../main/services/AppConfigStore';
@@ -9,7 +9,8 @@ import type {
   ProcessingOptionsDTO,
   PreviewRowDTO,
 } from '../../shared/types/processing';
-import type { RootState } from '../store';
+import type { AppDispatch, RootState } from '../store';
+import { clearPreviewBuild } from '../store/slices/jobsSlice';
 
 const Container = styled.div`
   display: grid;
@@ -258,11 +259,26 @@ const ProgressTrack = styled.div`
   background: var(--bg-input);
   border-radius: 999px;
 `;
-const ProgressFill = styled.div<{ $percentage: number }>`
-  width: ${({ $percentage }) => `${Math.max(0, Math.min(100, $percentage))}%`};
+const ProgressFill = styled.div<{ $percentage: number; $indeterminate?: boolean }>`
+  width: ${({ $percentage, $indeterminate }) =>
+    $indeterminate ? '35%' : `${Math.max(0, Math.min(100, $percentage))}%`};
   height: 100%;
   background: var(--gradient-button);
   transition: width 180ms ease;
+  animation: ${({ $indeterminate }) =>
+    $indeterminate ? 'previewScan 1.1s ease-in-out infinite' : 'none'};
+  @keyframes previewScan {
+    from {
+      transform: translateX(-110%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    transform: none;
+  }
 `;
 const ProgressCopy = styled.div`
   display: flex;
@@ -277,6 +293,27 @@ const ActionRow = styled.div`
   margin-top: 16px;
   button {
     flex: 1;
+  }
+`;
+const CurrentFile = styled.div`
+  display: grid;
+  gap: 5px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  strong {
+    color: var(--text-muted);
+    font-size: 10px;
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+  }
+  span {
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
   }
 `;
 const FailureList = styled.ul`
@@ -306,19 +343,26 @@ function rowWarnings(row: PreviewRowDTO): string[] {
 }
 
 export function ProcessingLauncher() {
+  const dispatch = useDispatch<AppDispatch>();
   const jobs = useSelector((state: RootState) => state.jobs.jobs);
   const reduxActiveJobId = useSelector((state: RootState) => state.jobs.activeJobId);
-  const [stage, setStage] = useState<Stage>(reduxActiveJobId ? 'running' : 'select');
+  const previewBuild = useSelector((state: RootState) => state.jobs.previewBuild);
+  const [stage, setStage] = useState<Stage>(
+    reduxActiveJobId ? 'running' : previewBuild?.status === 'previewing' ? 'previewing' : 'select'
+  );
   const [sourcePaths, setSourcePaths] = useState<string[]>([]);
   const [destinationPath, setDestinationPath] = useState<string | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [health, setHealth] = useState<DependencyHealthDTO | null>(null);
   const [startupError, setStartupError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResultDTO | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(reduxActiveJobId);
   const [moveAcknowledged, setMoveAcknowledged] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
+  const [previewCancelPending, setPreviewCancelPending] = useState(false);
+  const previewRequestInFlight = useRef(false);
 
   const activeJob = useMemo(() => jobs.find((job) => job.id === activeJobId), [activeJobId, jobs]);
 
@@ -328,6 +372,21 @@ export function ProcessingLauncher() {
       setStage('running');
     }
   }, [reduxActiveJobId]);
+
+  useEffect(() => {
+    if (previewBuild?.status === 'previewing' && stage === 'select') {
+      setStage('previewing');
+      return;
+    }
+    if (
+      (previewBuild?.status === 'failed' || previewBuild?.status === 'cancelled') &&
+      stage === 'previewing' &&
+      !previewRequestInFlight.current
+    ) {
+      setPreviewCancelPending(false);
+      setStage('select');
+    }
+  }, [previewBuild?.status, stage]);
 
   useEffect(() => {
     let mounted = true;
@@ -369,11 +428,13 @@ export function ProcessingLauncher() {
   }, []);
 
   const invalidatePreview = useCallback(() => {
+    dispatch(clearPreviewBuild());
     setPreview(null);
     setMoveAcknowledged(false);
     setActionError(null);
+    setActionNotice(null);
     setStage('select');
-  }, []);
+  }, [dispatch]);
 
   const selectSource = useCallback(async () => {
     const selected = await window.electronAPI?.selectDirectory();
@@ -403,16 +464,32 @@ export function ProcessingLauncher() {
   const startAvailable = health?.capabilities.start.available === true;
   const previewBlockers = health?.capabilities.preview.blockers ?? [];
   const startBlockers = health?.capabilities.start.blockers ?? [];
-  const busy = stage === 'previewing' || stage === 'starting' || stage === 'running';
+  const previewActive = previewBuild?.status === 'previewing';
+  const previewFinalizing =
+    previewActive && previewBuild.phase === 'organization' && previewBuild.percentage === 100;
+  const busy =
+    previewActive || stage === 'previewing' || stage === 'starting' || stage === 'running';
   const canPreview =
     Boolean(sourcePaths.length > 0 && destinationPath && config && previewAvailable) && !busy;
 
   const buildPreview = useCallback(async () => {
     const api = window.electronAPI;
-    if (!api || sourcePaths.length === 0 || !destinationPath || !config || !previewAvailable)
+    if (
+      !api ||
+      sourcePaths.length === 0 ||
+      !destinationPath ||
+      !config ||
+      !previewAvailable ||
+      previewActive ||
+      previewRequestInFlight.current
+    )
       return;
+    previewRequestInFlight.current = true;
     setStage('previewing');
+    dispatch(clearPreviewBuild());
     setActionError(null);
+    setActionNotice(null);
+    setPreviewCancelPending(false);
     setPreview(null);
     setMoveAcknowledged(false);
     try {
@@ -422,7 +499,13 @@ export function ProcessingLauncher() {
         options: optionsFromConfig(config),
       });
       if (!response.success || !response.data) {
-        setActionError(response.error?.message ?? 'Preview failed.');
+        if (response.error?.code === 'PREVIEW_CANCELLED') {
+          setActionNotice('Preview analysis stopped. No files were changed.');
+        } else {
+          setActionError(response.error?.message ?? 'Preview failed.');
+        }
+        dispatch(clearPreviewBuild());
+        setPreviewCancelPending(false);
         setStage('select');
         return;
       }
@@ -430,9 +513,43 @@ export function ProcessingLauncher() {
       setStage('preview');
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Preview failed.');
+      dispatch(clearPreviewBuild());
+      setPreviewCancelPending(false);
       setStage('select');
+    } finally {
+      previewRequestInFlight.current = false;
     }
-  }, [config, destinationPath, previewAvailable, sourcePaths]);
+  }, [config, destinationPath, dispatch, previewActive, previewAvailable, sourcePaths]);
+
+  const cancelPreview = useCallback(async () => {
+    const api = window.electronAPI;
+    if (
+      !api ||
+      stage !== 'previewing' ||
+      previewBuild?.status !== 'previewing' ||
+      previewCancelPending
+    ) {
+      return;
+    }
+    setPreviewCancelPending(true);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await api.cancelProcessing({
+        jobId: previewBuild.jobId,
+        reason: 'Stopped by user',
+      });
+      if (!response.success) {
+        setActionError(response.error?.message ?? 'Preview cancellation request failed.');
+        setPreviewCancelPending(false);
+      }
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Preview cancellation request failed.'
+      );
+      setPreviewCancelPending(false);
+    }
+  }, [previewBuild, previewCancelPending, stage]);
 
   const startProcessing = useCallback(async () => {
     const api = window.electronAPI;
@@ -487,8 +604,11 @@ export function ProcessingLauncher() {
     setActiveJobId(null);
     setMoveAcknowledged(false);
     setCancelPending(false);
+    setPreviewCancelPending(false);
     setActionError(null);
-  }, []);
+    setActionNotice(null);
+    dispatch(clearPreviewBuild());
+  }, [dispatch]);
 
   const terminal =
     activeJob?.status === 'completed' ||
@@ -524,6 +644,7 @@ export function ProcessingLauncher() {
           </Banner>
         )}
         {actionError && <Banner $tone="error">{actionError}</Banner>}
+        {actionNotice && <Banner $tone="warning">{actionNotice}</Banner>}
         <FolderRow>
           <FolderLabel>Sources</FolderLabel>
           {sourcePaths.length === 0 ? (
@@ -572,6 +693,58 @@ export function ProcessingLauncher() {
           </FullButton>
         )}
       </HeroCard>
+
+      {stage === 'previewing' && (
+        <Card role="status" aria-live="polite" aria-atomic="false">
+          <CardTitle>Building preview</CardTitle>
+          <ProgressCopy>
+            <span>
+              {previewBuild && previewBuild.phase !== 'discovery'
+                ? `${previewBuild.filesProcessed} / ${previewBuild.totalFiles} files (${Math.round(previewBuild.percentage)}%)`
+                : 'Discovering files...'}
+            </span>
+            <span>
+              {previewBuild?.phase === 'metadata'
+                ? 'Reading metadata'
+                : previewBuild?.phase === 'organization'
+                  ? 'Finalizing preview'
+                  : 'Scanning sources'}
+            </span>
+          </ProgressCopy>
+          <ProgressTrack
+            role="progressbar"
+            aria-label="Preview analysis progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              previewBuild && previewBuild.phase !== 'discovery'
+                ? Math.round(previewBuild.percentage)
+                : undefined
+            }
+          >
+            <ProgressFill
+              $percentage={previewBuild?.percentage ?? 0}
+              $indeterminate={!previewBuild || previewBuild.phase === 'discovery'}
+            />
+          </ProgressTrack>
+          {previewBuild?.currentFile && (
+            <CurrentFile>
+              <strong>Current file</strong>
+              <span>{previewBuild.currentFile}</span>
+            </CurrentFile>
+          )}
+          <FullButton
+            $danger
+            type="button"
+            onClick={cancelPreview}
+            disabled={
+              previewBuild?.status !== 'previewing' || previewFinalizing || previewCancelPending
+            }
+          >
+            {previewCancelPending ? 'Stopping Preview...' : 'Stop Preview'}
+          </FullButton>
+        </Card>
+      )}
 
       {preview && stage !== 'running' && (
         <Card>

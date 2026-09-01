@@ -15,7 +15,6 @@ function harness(
   options: {
     autoRegister?: boolean;
     subscribe?: ProcessingIPCDependencies['coordinator']['subscribe'];
-    roots?: ProcessingIPCDependencies['roots'];
   } = {}
 ) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -47,18 +46,6 @@ function harness(
       reset: jest.fn().mockResolvedValue({ version: 2, theme: 'system' }),
     },
     publishEvent: (event) => published.push(event),
-    roots: options.roots ?? {
-      validate: async (sourcePaths, destinationPath) => ({
-        sourcePaths: [...sourcePaths],
-        destinationPath,
-        sourceIdentities: sourcePaths.map((rootPath, index) => ({
-          path: rootPath,
-          device: 1,
-          inode: index + 1,
-        })),
-        destinationIdentity: { path: destinationPath, device: 2, inode: 1 },
-      }),
-    },
   };
   const controller = new ProcessingIPCController(dependencies);
   if (options.autoRegister !== false) controller.register();
@@ -213,48 +200,13 @@ describe('ProcessingIPCController', () => {
     expect(test.published).toEqual([event]);
   });
 
-  it('canonicalizes preview roots through the security validator before coordination', async () => {
-    const validatedRoots = {
-      sourcePaths: ['/canonical/source'],
-      destinationPath: '/canonical/destination',
-      sourceIdentities: [{ path: '/canonical/source', device: 7, inode: 11 }],
-      destinationIdentity: { path: '/canonical/destination', device: 8, inode: 12 },
-    };
-    const validate = jest.fn().mockResolvedValue(validatedRoots);
-    const test = harness({ roots: { validate } });
+  it('admits parsed paths before asynchronous root analysis begins', async () => {
+    const test = harness();
 
     await expect(test.invoke('processing:preview', previewRequest())).resolves.toMatchObject({
       success: true,
     });
-    expect(validate).toHaveBeenCalledWith(['/source'], '/destination');
-    expect(test.dependencies.coordinator.createPreview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourcePaths: ['/canonical/source'],
-        destinationPath: '/canonical/destination',
-        validatedRoots,
-      })
-    );
-  });
-
-  it('uses the strict filesystem root validator when no override is injected', async () => {
-    const test = harness();
-    test.controller.dispose();
-    delete test.dependencies.roots;
-    const controller = new ProcessingIPCController(test.dependencies);
-    controller.register();
-
-    await expect(
-      test.invoke('processing:preview', {
-        ...previewRequest(),
-        sourcePaths: ['relative/source'],
-        destinationPath: 'relative/destination',
-      })
-    ).resolves.toMatchObject({
-      success: false,
-      error: { code: 'INVALID_IPC_REQUEST' },
-    });
-    expect(test.dependencies.coordinator.createPreview).not.toHaveBeenCalled();
-    controller.dispose();
+    expect(test.dependencies.coordinator.createPreview).toHaveBeenCalledWith(previewRequest());
   });
 
   it('rolls back every handler when registration fails and allows a clean retry', () => {
@@ -383,17 +335,7 @@ describe('ProcessingIPCController', () => {
     expect(test.dependencies.history.listJobs).toHaveBeenCalledWith(50);
   });
 
-  it('maps root validation and unexpected dependency failures without throwing transport errors', async () => {
-    const invalidRoots = harness({
-      roots: { validate: async () => Promise.reject(new Error('roots overlap')) },
-    });
-    await expect(
-      invalidRoots.invoke('processing:preview', previewRequest())
-    ).resolves.toMatchObject({
-      success: false,
-      error: { code: 'INVALID_IPC_REQUEST', message: 'roots overlap' },
-    });
-
+  it('maps unexpected dependency failures without throwing transport errors', async () => {
     const applicationFailure = harness();
     (applicationFailure.dependencies.health.getHealth as jest.Mock).mockRejectedValue(
       new Error('health unavailable')

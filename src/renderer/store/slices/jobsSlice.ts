@@ -36,12 +36,26 @@ export interface JobsState {
   jobs: Job[];
   activeJobId: string | null;
   isProcessing: boolean;
+  previewBuild: PreviewBuild | null;
+}
+
+export interface PreviewBuild {
+  jobId: string;
+  status: 'previewing' | 'ready' | 'failed' | 'cancelled';
+  phase: 'discovery' | 'metadata' | 'organization';
+  filesProcessed: number;
+  totalFiles: number;
+  percentage: number;
+  currentFile?: string;
+  error?: string;
+  lastSequence: number;
 }
 
 const initialState: JobsState = {
   jobs: [],
   activeJobId: null,
   isProcessing: false,
+  previewBuild: null,
 };
 
 function isActiveStatus(status: Job['status']): boolean {
@@ -50,7 +64,7 @@ function isActiveStatus(status: Job['status']): boolean {
 
 function refreshActivity(state: JobsState): void {
   const activeJobs = state.jobs.filter((job) => isActiveStatus(job.status));
-  state.isProcessing = activeJobs.length > 0;
+  state.isProcessing = activeJobs.length > 0 || state.previewBuild?.status === 'previewing';
   if (!state.activeJobId || !activeJobs.some((job) => job.id === state.activeJobId)) {
     state.activeJobId = activeJobs[0]?.id ?? null;
   }
@@ -87,9 +101,97 @@ const jobsSlice = createSlice({
       );
       refreshActivity(state);
     },
+    clearPreviewBuild: (state) => {
+      state.previewBuild = null;
+      refreshActivity(state);
+    },
     applyProcessingEvent: (state, action: PayloadAction<ProcessingEvent>) => {
       const event = action.payload;
-      if (event.kind === 'preview-started' || event.kind === 'preview-ready') return;
+      if (event.kind === 'preview-started') {
+        if (
+          state.previewBuild?.status === 'previewing' &&
+          state.previewBuild.jobId !== event.jobId
+        ) {
+          return;
+        }
+        if (
+          state.previewBuild?.jobId === event.jobId &&
+          event.sequence <= state.previewBuild.lastSequence
+        ) {
+          return;
+        }
+        state.previewBuild = {
+          jobId: event.jobId,
+          status: 'previewing',
+          phase: 'discovery',
+          filesProcessed: 0,
+          totalFiles: 0,
+          percentage: 0,
+          lastSequence: event.sequence,
+        };
+        refreshActivity(state);
+        return;
+      }
+      if (event.kind === 'preview-progress') {
+        const preview = state.previewBuild;
+        if (
+          !preview ||
+          preview.jobId !== event.jobId ||
+          preview.status !== 'previewing' ||
+          event.sequence <= preview.lastSequence
+        ) {
+          return;
+        }
+        state.previewBuild = {
+          jobId: event.jobId,
+          status: 'previewing',
+          phase: event.payload.phase as PreviewBuild['phase'],
+          filesProcessed: event.payload.filesProcessed,
+          totalFiles: event.payload.totalFiles,
+          percentage: event.payload.percentage,
+          ...(event.payload.currentFile === undefined
+            ? {}
+            : { currentFile: event.payload.currentFile }),
+          lastSequence: event.sequence,
+        };
+        refreshActivity(state);
+        return;
+      }
+      if (event.kind === 'preview-ready') {
+        if (
+          state.previewBuild?.jobId === event.jobId &&
+          event.sequence > state.previewBuild.lastSequence
+        ) {
+          state.previewBuild = {
+            ...state.previewBuild,
+            status: 'ready',
+            phase: 'organization',
+            filesProcessed: event.payload.summary.totalFiles,
+            totalFiles: event.payload.summary.totalFiles,
+            percentage: 100,
+            currentFile: undefined,
+            lastSequence: event.sequence,
+          };
+          refreshActivity(state);
+        }
+        return;
+      }
+      if (
+        event.kind === 'job-failed' &&
+        state.previewBuild?.jobId === event.jobId &&
+        state.previewBuild.status === 'previewing'
+      ) {
+        if (event.sequence <= state.previewBuild.lastSequence) return;
+        state.previewBuild = {
+          ...state.previewBuild,
+          status: event.payload.error.code === 'PREVIEW_CANCELLED' ? 'cancelled' : 'failed',
+          error: event.payload.error.message,
+          currentFile: undefined,
+          lastSequence: event.sequence,
+        };
+        refreshActivity(state);
+        return;
+      }
 
       const existingIndex = state.jobs.findIndex((job) => job.id === event.jobId);
       if (event.kind === 'job-queued') {
@@ -189,6 +291,7 @@ export const {
   removeJob,
   setActiveJob,
   clearCompletedJobs,
+  clearPreviewBuild,
   applyProcessingEvent,
 } = jobsSlice.actions;
 

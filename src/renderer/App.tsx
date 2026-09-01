@@ -158,16 +158,15 @@ function App() {
   const statusText =
     status === 'ready' ? 'Ready' : status === 'processing' ? 'Processing...' : 'Error';
 
-  const renderContent = () => {
+  const renderSecondaryContent = () => {
     switch (activeView) {
-      case 'organize':
-        return <ProcessingLauncher />;
       case 'processing':
         return <ProcessingView />;
       case 'metadata':
         return <MetadataView />;
       case 'settings':
         return <SettingsView />;
+      case 'organize':
       default:
         return null;
     }
@@ -190,7 +189,12 @@ function App() {
             activeTab={activeView as NavTab}
             onTabChange={(tab) => dispatch(setActiveView(tab))}
           />
-          <MainContent>{renderContent()}</MainContent>
+          <MainContent>
+            <div hidden={activeView !== 'organize'}>
+              <ProcessingLauncher />
+            </div>
+            {renderSecondaryContent()}
+          </MainContent>
         </AppBody>
 
         <StatusBarComponent status={status} statusText={statusText} itemCountText="" />

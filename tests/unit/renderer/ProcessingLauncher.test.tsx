@@ -1,11 +1,12 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 
 import { ProcessingLauncher } from '../../../src/renderer/components/ProcessingLauncher';
 import jobsReducer, {
   addJob,
+  applyProcessingEvent,
   setActiveJob,
   updateJob,
 } from '../../../src/renderer/store/slices/jobsSlice';
@@ -118,6 +119,14 @@ function createHarness() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 function installAPI(overrides: Partial<NonNullable<Window['electronAPI']>> = {}) {
   const selectDirectory = jest
     .fn()
@@ -179,6 +188,216 @@ describe('ProcessingLauncher', () => {
       previewId: 'preview-1',
       acknowledgeDestructiveOperation: false,
     });
+  });
+
+  it('shows real preview progress and stops the active analysis by preview job id', async () => {
+    const pendingPreview =
+      deferred<Awaited<ReturnType<NonNullable<Window['electronAPI']>['previewProcessing']>>>();
+    const api = installAPI({ previewProcessing: jest.fn(() => pendingPreview.promise) });
+    const user = userEvent.setup();
+    const { store, renderLauncher } = createHarness();
+    renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    expect(await screen.findByText('Discovering files...')).toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', { name: 'Preview analysis progress' })
+    ).not.toHaveAttribute('aria-valuenow');
+
+    act(() => {
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-started',
+          jobId: 'preview-job',
+          sequence: 1,
+          emittedAt: '2026-08-31T20:00:00.000Z',
+          payload: { sourceCount: 1, destinationPath: '/media/destination' },
+        })
+      );
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-progress',
+          jobId: 'preview-job',
+          sequence: 2,
+          emittedAt: '2026-08-31T20:00:01.000Z',
+          payload: {
+            phase: 'metadata',
+            filesProcessed: 3,
+            totalFiles: 10,
+            percentage: 30,
+            currentFile: '/media/source/current-photo.jpg',
+          },
+        })
+      );
+    });
+
+    expect(await screen.findByText('3 / 10 files (30%)')).toBeInTheDocument();
+    expect(screen.getByText('/media/source/current-photo.jpg')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Preview analysis progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '30'
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Stop Preview' }));
+    expect(api.cancelProcessing).toHaveBeenCalledWith({
+      jobId: 'preview-job',
+      reason: 'Stopped by user',
+    });
+
+    pendingPreview.resolve({
+      success: false,
+      error: {
+        code: 'PREVIEW_CANCELLED',
+        message: 'Preview analysis stopped',
+        recoverable: true,
+      },
+    });
+    expect(
+      await screen.findByText('Preview analysis stopped. No files were changed.')
+    ).toBeInTheDocument();
+  });
+
+  it('disables Stop Preview after analysis enters finalization', async () => {
+    const pendingPreview =
+      deferred<Awaited<ReturnType<NonNullable<Window['electronAPI']>['previewProcessing']>>>();
+    installAPI({ previewProcessing: jest.fn(() => pendingPreview.promise) });
+    const user = userEvent.setup();
+    const { store, renderLauncher } = createHarness();
+    renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    act(() => {
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-started',
+          jobId: 'preview-job',
+          sequence: 1,
+          emittedAt: '2026-08-31T20:00:00.000Z',
+          payload: { sourceCount: 1, destinationPath: '/media/destination' },
+        })
+      );
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-progress',
+          jobId: 'preview-job',
+          sequence: 2,
+          emittedAt: '2026-08-31T20:00:01.000Z',
+          payload: {
+            phase: 'organization',
+            filesProcessed: 10,
+            totalFiles: 10,
+            percentage: 100,
+          },
+        })
+      );
+    });
+
+    expect(screen.getByRole('button', { name: 'Stop Preview' })).toBeDisabled();
+  });
+
+  it('renders a completed empty-folder preview as determinate zero of zero', async () => {
+    const pendingPreview =
+      deferred<Awaited<ReturnType<NonNullable<Window['electronAPI']>['previewProcessing']>>>();
+    installAPI({ previewProcessing: jest.fn(() => pendingPreview.promise) });
+    const user = userEvent.setup();
+    const { store, renderLauncher } = createHarness();
+    renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    act(() => {
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-started',
+          jobId: 'empty-preview',
+          sequence: 1,
+          emittedAt: '2026-08-31T20:00:00.000Z',
+          payload: { sourceCount: 1, destinationPath: '/media/destination' },
+        })
+      );
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-progress',
+          jobId: 'empty-preview',
+          sequence: 2,
+          emittedAt: '2026-08-31T20:00:01.000Z',
+          payload: {
+            phase: 'organization',
+            filesProcessed: 0,
+            totalFiles: 0,
+            percentage: 100,
+          },
+        })
+      );
+    });
+
+    expect(screen.getByText('0 / 0 files (100%)')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Preview analysis progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '100'
+    );
+  });
+
+  it('submits only one preview request when Build Preview is activated twice rapidly', async () => {
+    const pendingPreview =
+      deferred<Awaited<ReturnType<NonNullable<Window['electronAPI']>['previewProcessing']>>>();
+    const api = installAPI({ previewProcessing: jest.fn(() => pendingPreview.promise) });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+    const build = screen.getByRole('button', { name: 'Build Preview' });
+
+    fireEvent.click(build);
+    fireEvent.click(build);
+
+    expect(api.previewProcessing).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a failed preview screen even when terminal events arrive after the IPC response', async () => {
+    installAPI({
+      previewProcessing: jest.fn().mockResolvedValue({
+        success: false,
+        error: { code: 'INVALID_PLAN', message: 'destinationPath cannot be inspected' },
+      }),
+    });
+    const user = userEvent.setup();
+    const { store, renderLauncher } = createHarness();
+    renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+    expect(await screen.findByText('destinationPath cannot be inspected')).toBeInTheDocument();
+
+    act(() => {
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'preview-started',
+          jobId: 'failed-preview',
+          sequence: 1,
+          emittedAt: '2026-08-31T21:00:00.000Z',
+          payload: { sourceCount: 1, destinationPath: '/missing' },
+        })
+      );
+    });
+    expect(await screen.findByText('Building preview')).toBeInTheDocument();
+
+    act(() => {
+      store.dispatch(
+        applyProcessingEvent({
+          kind: 'job-failed',
+          jobId: 'failed-preview',
+          sequence: 2,
+          emittedAt: '2026-08-31T21:00:01.000Z',
+          payload: {
+            error: { code: 'INVALID_PLAN', message: 'destinationPath cannot be inspected' },
+          },
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.queryByText('Building preview')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Build Preview' })).toBeEnabled();
   });
 
   it('adds, deduplicates, preserves, and accessibly removes multiple source folders', async () => {

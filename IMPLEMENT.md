@@ -400,3 +400,17 @@ Node's `fs` API exposes held `FileHandle` objects but no `openat`/`renameat`/`un
 - Moved every baseline path absent from the refit into path-preserving RAID Pre-Trash before modifying the original repository. No deleted source was discarded.
 - Applied the refit to the original `main` index and required `git write-tree` to equal the sealed refit tree before commit. The gate caught one rename-detected legacy audit artifact; it was preserved and the gate reran successfully.
 - Materialized the exact validated tree into the original repository as commit `878e56e3101aba04650e1443cc3053eda7c463b9`. Neither repository was pushed or published.
+
+## 2026-08-31 live preview progress and cancellation
+
+- User requested visible status while preview analysis runs, including current-file detail, then identified that analysis had no Stop control.
+- Chose backend-authored progress instead of a renderer animation. `preview-progress` events carry exact processed counts, totals, phase, percentage, and the current path.
+- Added cooperative cancellation from the renderer through the existing typed cancel IPC path. The same abort signal now reaches root validation, recursive inventory, source snapshotting, metadata extraction, and destination planning.
+- Added a linear cancellation cutoff. Stop succeeds only while analysis is cancellable. Once planning is complete, the coordinator reports `PREVIEW_FINALIZING` instead of claiming a cancellation that cannot occur.
+- Enforced the progress contract before `preview-ready`: zero-based start, stable totals, no regression, one-file increments, terminal organization phase, 100 percent completion, and total equality with the preview summary.
+- Limited the product to one active preview analysis. The coordinator rejects overlap, the renderer blocks rapid duplicate requests, and Redux refuses a second preview-started event from replacing the active job.
+- Kept the organizer mounted while other tabs are open. Progress, Stop Preview, and the final preview result survive navigation.
+- Added reduced-motion handling and accessible determinate or indeterminate progressbar semantics. Stop Preview disables during durable finalization.
+- Visible runtime testing reproduced delayed preview events arriving after a failed IPC response and leaving the launcher stuck on Building Preview. The launcher now returns to selection when a late terminal failed or cancelled state closes that preview.
+- Added tests across path and root validation, inventory, planner, coordinator, IPC, state machine, history validation, Redux, application navigation, and the launcher. The focused feature grid passes through the named Jest suites in the validation protocol.
+- No dependency was added. Source media remains read-only throughout preview and cancellation.

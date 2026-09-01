@@ -9,6 +9,8 @@ Inventory covers every regular file in the selected source folders. Recognized f
 ## Safety model
 
 - Preview is required and does not mutate media.
+- Preview shows live discovery and per-file metadata progress, including the current path.
+- Stop Preview cancels analysis during discovery or metadata work. It never changes source files.
 - Copy is the default. Move requires an explicit acknowledgement.
 - Source and destination roots must be separate, canonical directories.
 - One or more source folders can be added, reviewed, and removed before preview.

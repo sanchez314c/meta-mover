@@ -55,15 +55,17 @@ interface CancelProcessingRequestDTO {
 }
 ```
 
-Move requires `acknowledgeDestructiveOperation: true`. Cancellation stops new admission and lets an active atomic file transaction settle.
+Move requires `acknowledgeDestructiveOperation: true`. During preview, `cancelProcessing` uses the preview `jobId` to stop read-only analysis. Once the final progress event is emitted, cancellation closes and preview persistence finishes. During processing, cancellation stops new admission and lets an active atomic file transaction settle.
 
 ## Events
 
 `processing:event` emits strictly increasing per-job sequences:
 
-- `preview-started`, `preview-ready`
+- `preview-started`, `preview-progress`, `preview-ready`
 - `job-queued`, `job-started`, `job-progress`
 - `job-cancelling`
 - `job-completed`, `job-failed`, `job-cancelled`
 
 Every current DTO uses plain serializable values. Unknown keys, accessors, cyclic values, `undefined`, non-finite numbers, and class instances are rejected at boundaries.
+
+`preview-progress` reports `phase`, `filesProcessed`, `totalFiles`, `percentage`, and `currentFile` while a file is active. Discovery is indeterminate until inventory establishes the total. Progress must start at zero, advance without regression, and finish at 100 percent with the same total as the preview summary.

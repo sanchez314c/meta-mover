@@ -80,6 +80,8 @@ function statusForEvent(event: ProcessingEvent): JobStatus | null {
   switch (event.kind) {
     case ProcessingEventKind.PREVIEW_STARTED:
       return JobStatus.PREVIEWING;
+    case ProcessingEventKind.PREVIEW_PROGRESS:
+      return null;
     case ProcessingEventKind.PREVIEW_READY:
       return JobStatus.PREVIEW_READY;
     case ProcessingEventKind.JOB_QUEUED:
@@ -162,7 +164,11 @@ export class JobStateMachine {
     const nextStatus = statusForEvent(event);
 
     if (nextStatus === null) {
-      if (this.status !== JobStatus.PROCESSING) {
+      const progressStatus =
+        event.kind === ProcessingEventKind.PREVIEW_PROGRESS
+          ? JobStatus.PREVIEWING
+          : JobStatus.PROCESSING;
+      if (this.status !== progressStatus) {
         return this.reject('invalid-transition');
       }
     } else if (!TRANSITIONS[this.status].has(nextStatus)) {

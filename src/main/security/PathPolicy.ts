@@ -74,6 +74,15 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error(
+    typeof signal.reason === 'string' ? signal.reason : 'Path check cancelled'
+  );
+  error.name = 'AbortError';
+  throw error;
+}
+
 export function validateAbsolutePath(value: unknown, field: string): string {
   if (typeof value !== 'string') {
     throw new PathPolicyError('PATH_INVALID_TYPE', field, `${field} must be a string`);
@@ -97,8 +106,10 @@ export function validateAbsolutePath(value: unknown, field: string): string {
 
 export async function resolveDirectoryRoot(
   inputPath: unknown,
-  field: string
+  field: string,
+  signal?: AbortSignal
 ): Promise<CanonicalDirectoryRoot> {
+  throwIfAborted(signal);
   const normalizedPath = validateAbsolutePath(inputPath, field);
 
   let inputStats;
@@ -112,6 +123,7 @@ export async function resolveDirectoryRoot(
       `${field} cannot be inspected`
     );
   }
+  throwIfAborted(signal);
 
   if (inputStats.isSymbolicLink()) {
     throw new PathPolicyError('ROOT_SYMBOLIC_LINK', field, `${field} must not be a symbolic link`);
@@ -121,13 +133,20 @@ export async function resolveDirectoryRoot(
   }
 
   let realPath: string;
-  let canonicalStats;
   try {
     realPath = await fs.realpath(normalizedPath);
+  } catch {
+    throw new PathPolicyError('ROOT_UNREADABLE', field, `${field} cannot be resolved`);
+  }
+  throwIfAborted(signal);
+
+  let canonicalStats;
+  try {
     canonicalStats = await fs.stat(realPath);
   } catch {
     throw new PathPolicyError('ROOT_UNREADABLE', field, `${field} cannot be resolved`);
   }
+  throwIfAborted(signal);
 
   if (!canonicalStats.isDirectory()) {
     throw new PathPolicyError('ROOT_NOT_DIRECTORY', field, `${field} must resolve to a directory`);
@@ -172,12 +191,15 @@ export function rootsOverlap(
 
 export async function resolveRootPair(
   sourcePath: unknown,
-  destinationPath: unknown
+  destinationPath: unknown,
+  signal?: AbortSignal
 ): Promise<CanonicalRootPair> {
+  throwIfAborted(signal);
   const [source, destination] = await Promise.all([
-    resolveDirectoryRoot(sourcePath, 'sourcePath'),
-    resolveDirectoryRoot(destinationPath, 'destinationPath'),
+    resolveDirectoryRoot(sourcePath, 'sourcePath', signal),
+    resolveDirectoryRoot(destinationPath, 'destinationPath', signal),
   ]);
+  throwIfAborted(signal);
 
   if (rootsOverlap(source, destination)) {
     throw new PathPolicyError(

@@ -518,6 +518,7 @@ function isValidEventPayload(kind: ProcessingEvent['kind'], payload: unknown): b
         hasExactKeys(payload, ['phase']) &&
         Object.values(ProcessingPhase).includes(payload.phase as ProcessingPhase)
       );
+    case ProcessingEventKind.PREVIEW_PROGRESS:
     case ProcessingEventKind.JOB_PROGRESS:
       return (
         hasExactKeys(

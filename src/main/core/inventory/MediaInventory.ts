@@ -98,6 +98,15 @@ function validFileStats(stats: Stats): boolean {
   );
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error(
+    typeof signal.reason === 'string' ? signal.reason : 'Media inventory cancelled'
+  );
+  error.name = 'AbortError';
+  throw error;
+}
+
 export class MediaInventory {
   private readonly dependencies: InventoryDependencies;
 
@@ -105,7 +114,11 @@ export class MediaInventory {
     this.dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
   }
 
-  async inventory(sourcePaths: readonly string[]): Promise<InventoryMediaFile[]> {
+  async inventory(
+    sourcePaths: readonly string[],
+    signal?: AbortSignal
+  ): Promise<InventoryMediaFile[]> {
+    throwIfAborted(signal);
     if (!Array.isArray(sourcePaths) || sourcePaths.length === 0) {
       throw new MediaInventoryError(
         'SOURCE_PATH_INVALID',
@@ -117,15 +130,21 @@ export class MediaInventory {
     const files = new Map<string, InventoryMediaFile>();
     const roots: string[] = [];
     for (const sourcePath of sourcePaths) {
-      roots.push(await this.resolveRoot(sourcePath));
+      throwIfAborted(signal);
+      roots.push(await this.resolveRoot(sourcePath, signal));
     }
     roots.sort(comparePaths);
 
-    for (const root of roots) await this.scan(root, root, files);
+    for (const root of roots) {
+      throwIfAborted(signal);
+      await this.scan(root, root, files, signal);
+    }
+    throwIfAborted(signal);
     return [...files.values()].sort((left, right) => comparePaths(left.filePath, right.filePath));
   }
 
-  private async resolveRoot(sourcePath: string): Promise<string> {
+  private async resolveRoot(sourcePath: string, signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal);
     if (
       typeof sourcePath !== 'string' ||
       !path.isAbsolute(sourcePath) ||
@@ -148,6 +167,7 @@ export class MediaInventory {
         `Source cannot be inspected${errorCode(error) ? ` (${errorCode(error)})` : ''}`
       );
     }
+    throwIfAborted(signal);
     if (stats.isSymbolicLink()) {
       throw new MediaInventoryError(
         'SYMLINK_REJECTED',
@@ -164,7 +184,9 @@ export class MediaInventory {
     }
 
     const canonical = await this.dependencies.resolvePath(sourcePath);
+    throwIfAborted(signal);
     const canonicalStats = await this.dependencies.inspectPath(canonical);
+    throwIfAborted(signal);
     if (canonicalStats.dev !== stats.dev || canonicalStats.ino !== stats.ino) {
       throw new MediaInventoryError(
         'PATH_IDENTITY_CHANGED',
@@ -178,8 +200,10 @@ export class MediaInventory {
   private async scan(
     rootPath: string,
     directoryPath: string,
-    files: Map<string, InventoryMediaFile>
+    files: Map<string, InventoryMediaFile>,
+    signal?: AbortSignal
   ): Promise<void> {
+    throwIfAborted(signal);
     let entries: Dirent[];
     try {
       entries = await this.dependencies.readDirectory(directoryPath);
@@ -190,9 +214,11 @@ export class MediaInventory {
         `Directory cannot be read${errorCode(error) ? ` (${errorCode(error)})` : ''}`
       );
     }
+    throwIfAborted(signal);
     entries.sort((left, right) => comparePaths(left.name, right.name));
 
     for (const entry of entries) {
+      throwIfAborted(signal);
       if (!validEntryName(entry.name)) {
         throw new MediaInventoryError(
           'PATH_OUTSIDE_SOURCE',
@@ -211,6 +237,7 @@ export class MediaInventory {
           `Inventory entry cannot be inspected${errorCode(error) ? ` (${errorCode(error)})` : ''}`
         );
       }
+      throwIfAborted(signal);
       if (stats.isSymbolicLink()) {
         throw new MediaInventoryError(
           'SYMLINK_REJECTED',
@@ -219,7 +246,7 @@ export class MediaInventory {
         );
       }
       if (stats.isDirectory()) {
-        await this.scan(rootPath, entryPath, files);
+        await this.scan(rootPath, entryPath, files, signal);
         continue;
       }
       if (!stats.isFile()) continue;
@@ -240,6 +267,7 @@ export class MediaInventory {
         );
       }
       const canonical = await this.dependencies.resolvePath(entryPath);
+      throwIfAborted(signal);
       if (!isWithin(rootPath, canonical)) {
         throw new MediaInventoryError(
           'PATH_OUTSIDE_SOURCE',
@@ -248,6 +276,7 @@ export class MediaInventory {
         );
       }
       const canonicalStats = await this.dependencies.inspectPath(canonical);
+      throwIfAborted(signal);
       if (canonicalStats.dev !== stats.dev || canonicalStats.ino !== stats.ino) {
         throw new MediaInventoryError(
           'PATH_IDENTITY_CHANGED',
