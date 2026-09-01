@@ -114,6 +114,7 @@ function parseOptions(value: unknown): ProcessingOptionsDTO {
     'operation',
     'conflictPolicy',
     'folderStructure',
+    'appendScreenshotSuffix',
     'workerCount',
     'verifyIntegrity',
     'writeMetadataDates',
@@ -122,6 +123,7 @@ function parseOptions(value: unknown): ProcessingOptionsDTO {
     !Object.values(OperationMode).includes(options.operation as OperationMode) ||
     !Object.values(ConflictPolicy).includes(options.conflictPolicy as ConflictPolicy) ||
     !Object.values(FolderStructure).includes(options.folderStructure as FolderStructure) ||
+    typeof options.appendScreenshotSuffix !== 'boolean' ||
     !Number.isSafeInteger(options.workerCount) ||
     (options.workerCount as number) < 1 ||
     (options.workerCount as number) > 10 ||

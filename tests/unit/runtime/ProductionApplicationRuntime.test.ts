@@ -29,6 +29,7 @@ describe('ProductionApplicationRuntime', () => {
         organization: {
           conflictPolicy: ConflictPolicy.RENAME,
           folderStructure: FolderStructure.YEAR_MONTH,
+          appendScreenshotSuffix: false,
         },
       }),
       update: jest.fn(),
@@ -140,6 +141,7 @@ describe('ProductionApplicationRuntime', () => {
           folderStructure: FolderStructure.YEAR_MONTH,
           workerCount: 6,
           verifyIntegrity: true,
+          appendScreenshotSuffix: false,
           writeMetadataDates: false,
         },
       })

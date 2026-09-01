@@ -23,6 +23,7 @@ function configuration() {
     organization: {
       folderStructure: FolderStructure.YEAR_MONTH,
       conflictPolicy: ConflictPolicy.RENAME,
+      appendScreenshotSuffix: false,
     },
   };
 }

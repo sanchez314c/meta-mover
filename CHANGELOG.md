@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-08-29
+## [Unreleased] - 2026-09-01
+
+### Added
+
+- Added an opt-in screenshot filename label. Verified image screenshots now receive `-screen-shot` immediately before the extension in both trusted-date and `_Needs Review` targets.
+- Screenshot classification accepts explicit `Screenshot`, `Screen Shot`, or `Screen Capture` filename wording and exact iOS/macOS `UserComment` evidence, including the established CGRect partial-capture form. It does not guess from dimensions, file format, device brand, or generic desktop wording.
+- Added a Settings checkbox for screenshot labeling. The option defaults off, is included in the immutable preview and execution contract, and is visible in preview warnings when applied.
+- Existing schema-1 job history loads with screenshot labeling defaulted off. Current history, IPC, coordinator, and evidence records require the explicit boolean.
 
 ### Changed
 

@@ -22,6 +22,7 @@ export interface AppConfig {
   organization: {
     folderStructure: FolderStructure;
     conflictPolicy: ConflictPolicy;
+    appendScreenshotSuffix: boolean;
   };
 }
 
@@ -43,6 +44,7 @@ export const DEFAULT_APP_CONFIG: Readonly<AppConfig> = Object.freeze({
   organization: Object.freeze({
     folderStructure: FolderStructure.YEAR_MONTH,
     conflictPolicy: ConflictPolicy.RENAME,
+    appendScreenshotSuffix: false,
   }),
 });
 
@@ -356,7 +358,11 @@ function mergeUpdate(
     }
     const organization = input.organization;
     if (strictUnknown) {
-      rejectUnknown(organization, ['folderStructure', 'conflictPolicy'], 'organization.');
+      rejectUnknown(
+        organization,
+        ['folderStructure', 'conflictPolicy', 'appendScreenshotSuffix'],
+        'organization.'
+      );
     }
     if (organization.folderStructure !== undefined) {
       if (
@@ -371,6 +377,15 @@ function mergeUpdate(
         throw new AppConfigValidationError('organization.conflictPolicy must be skip or rename');
       }
       next.organization.conflictPolicy = organization.conflictPolicy as ConflictPolicy;
+    }
+    if (
+      organization.appendScreenshotSuffix !== undefined &&
+      typeof organization.appendScreenshotSuffix !== 'boolean'
+    ) {
+      throw new AppConfigValidationError('organization.appendScreenshotSuffix must be boolean');
+    }
+    if (organization.appendScreenshotSuffix !== undefined) {
+      next.organization.appendScreenshotSuffix = organization.appendScreenshotSuffix;
     }
   }
   return next;

@@ -26,6 +26,7 @@ const options = {
   folderStructure: FolderStructure.YEAR_MONTH,
   workerCount: 1,
   verifyIntegrity: true,
+  appendScreenshotSuffix: false,
   writeMetadataDates: false,
 };
 

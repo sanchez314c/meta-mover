@@ -633,6 +633,7 @@ function validateOptions(value: CanonicalJsonValue | undefined, label: string): 
       'operation',
       'conflictPolicy',
       'folderStructure',
+      'appendScreenshotSuffix',
       'workerCount',
       'verifyIntegrity',
       'writeMetadataDates',
@@ -641,6 +642,7 @@ function validateOptions(value: CanonicalJsonValue | undefined, label: string): 
       'operation',
       'conflictPolicy',
       'folderStructure',
+      'appendScreenshotSuffix',
       'workerCount',
       'verifyIntegrity',
       'writeMetadataDates',
@@ -653,6 +655,8 @@ function validateOptions(value: CanonicalJsonValue | undefined, label: string): 
     invalidSchema(`${label}.conflictPolicy is invalid`);
   if (!Object.values(FolderStructure).includes(options.folderStructure as FolderStructure))
     invalidSchema(`${label}.folderStructure is invalid`);
+  if (typeof options.appendScreenshotSuffix !== 'boolean')
+    invalidSchema(`${label}.appendScreenshotSuffix must be boolean`);
   if (!Number.isSafeInteger(options.workerCount) || (options.workerCount as number) <= 0)
     invalidSchema(`${label}.workerCount must be a positive safe integer`);
   if (typeof options.verifyIntegrity !== 'boolean')

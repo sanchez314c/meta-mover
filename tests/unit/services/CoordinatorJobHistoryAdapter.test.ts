@@ -23,6 +23,7 @@ const options = {
   folderStructure: FolderStructure.YEAR_MONTH,
   workerCount: 2,
   verifyIntegrity: true as const,
+  appendScreenshotSuffix: false,
   writeMetadataDates: false as const,
 };
 const summary = {

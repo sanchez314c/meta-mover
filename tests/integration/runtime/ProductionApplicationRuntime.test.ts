@@ -73,6 +73,7 @@ describe('ProductionApplicationRuntime integration', () => {
           folderStructure: FolderStructure.YEAR_MONTH,
           workerCount: 2,
           verifyIntegrity: true,
+          appendScreenshotSuffix: false,
           writeMetadataDates: false,
         },
       });
@@ -86,6 +87,7 @@ describe('ProductionApplicationRuntime integration', () => {
             folderStructure: FolderStructure.YEAR_MONTH,
             workerCount: 2,
             verifyIntegrity: true,
+            appendScreenshotSuffix: false,
             writeMetadataDates: false,
           },
         });

@@ -19,6 +19,7 @@ const options: ProcessingOptionsDTO = {
   folderStructure: FolderStructure.YEAR_MONTH,
   workerCount: 4,
   verifyIntegrity: true,
+  appendScreenshotSuffix: false,
   writeMetadataDates: false,
 };
 

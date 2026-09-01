@@ -263,6 +263,7 @@ const BUILTIN_DEFAULT_OPTIONS: ProcessingOptionsDTO = {
   operation: OperationMode.COPY,
   conflictPolicy: ConflictPolicy.RENAME,
   folderStructure: FolderStructure.YEAR_MONTH,
+  appendScreenshotSuffix: false,
   workerCount: 1,
   verifyIntegrity: true,
   writeMetadataDates: false,
@@ -1425,6 +1426,7 @@ export class ProcessingCoordinator {
       'operation',
       'conflictPolicy',
       'folderStructure',
+      'appendScreenshotSuffix',
       'workerCount',
       'verifyIntegrity',
       'writeMetadataDates',
@@ -1451,6 +1453,12 @@ export class ProcessingCoordinator {
       throw new ProcessingCoordinatorError(
         CoordinatorErrorCode.INVALID_CONFIGURATION,
         'folderStructure is invalid'
+      );
+    }
+    if (typeof options.appendScreenshotSuffix !== 'boolean') {
+      throw new ProcessingCoordinatorError(
+        CoordinatorErrorCode.INVALID_CONFIGURATION,
+        'appendScreenshotSuffix must be boolean'
       );
     }
     if (!Number.isFinite(options.workerCount)) {

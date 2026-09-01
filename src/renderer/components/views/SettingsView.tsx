@@ -66,6 +66,12 @@ const NumberControl = styled.input`
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-button);
 `;
+const Checkbox = styled.input`
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent-teal);
+  cursor: pointer;
+`;
 const Message = styled.div<{ $error?: boolean }>`
   color: ${({ $error }) => ($error ? 'var(--status-error)' : 'var(--status-success)')};
   font-size: 12px;
@@ -221,6 +227,25 @@ export function SettingsView() {
             <option value="rename">Rename with suffix</option>
             <option value="skip">Skip</option>
           </Control>
+        </Row>
+        <Row>
+          <Copy>
+            Label screenshots in filenames
+            <Hint>
+              Adds -screen-shot when filename or verified metadata explicitly identifies an image
+              screenshot
+            </Hint>
+          </Copy>
+          <Checkbox
+            aria-label="Label screenshots in filenames"
+            type="checkbox"
+            checked={config.organization.appendScreenshotSuffix}
+            onChange={(event) =>
+              void save({
+                organization: { appendScreenshotSuffix: event.currentTarget.checked },
+              })
+            }
+          />
         </Row>
       </Card>
       <Card>

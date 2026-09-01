@@ -42,6 +42,7 @@ describe('MediaPreviewRevalidator', () => {
             folderStructure: FolderStructure.YEAR_MONTH,
             workerCount: 1,
             verifyIntegrity: true,
+            appendScreenshotSuffix: false,
             writeMetadataDates: false,
           },
         },
@@ -51,6 +52,7 @@ describe('MediaPreviewRevalidator', () => {
           folderStructure: FolderStructure.YEAR_MONTH,
           workerCount: 1,
           verifyIntegrity: true,
+          appendScreenshotSuffix: false,
           writeMetadataDates: false,
         },
         summary: {

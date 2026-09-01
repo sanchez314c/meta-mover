@@ -43,6 +43,7 @@ export interface ProcessingOptionsDTO {
   operation: OperationMode;
   conflictPolicy: ConflictPolicy;
   folderStructure: FolderStructure;
+  appendScreenshotSuffix: boolean;
   workerCount: number;
   verifyIntegrity: boolean;
   writeMetadataDates: boolean;

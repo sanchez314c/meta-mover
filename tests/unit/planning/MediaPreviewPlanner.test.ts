@@ -37,6 +37,7 @@ const request = (overrides: Partial<PreviewRequestDTO> = {}): PreviewRequestDTO 
     folderStructure: FolderStructure.YEAR_MONTH,
     workerCount: 2,
     verifyIntegrity: true,
+    appendScreenshotSuffix: false,
     writeMetadataDates: false,
   },
   ...overrides,
@@ -186,6 +187,41 @@ describe('MediaPreviewPlanner', () => {
       destinationSnapshot: { occupied: false, source: 'filesystem' },
     });
     expect(plan.rows?.every((row) => row.fingerprint.hash === digest)).toBe(true);
+  });
+
+  it('carries screenshot evidence into the reviewed target before collision allocation', async () => {
+    const planner = new MediaPreviewPlanner({
+      inventory: {
+        inventory: async () => [
+          inventoryFile({ filePath: '/source/IMG_0042.PNG', extension: '.png' }),
+        ],
+      },
+      roots,
+      metadata: {
+        collectDetailed: async ({ fileId }) => ({
+          candidates: [embeddedCandidate(fileId)],
+          warnings: [],
+          screenshotEvidence: { source: 'metadata', field: 'EXIF:UserComment' },
+        }),
+      },
+      destination: availableDestination,
+      sourceContent,
+      now: () => Date.parse('2026-08-29T13:00:00.000Z'),
+    });
+
+    const plan = await planner.plan(
+      request({
+        options: { ...request().options, appendScreenshotSuffix: true },
+      })
+    );
+
+    expect(plan.rows?.[0].targetPath).toBe(
+      path.join('/destination', '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG')
+    );
+    expect(plan.operations[0]?.targetPath).toBe(plan.rows?.[0].targetPath);
+    expect(plan.rows?.[0].warnings).toContain(
+      'Screenshot detected from metadata evidence (EXIF:UserComment); target filename includes -screen-shot'
+    );
   });
 
   it('reports exact preview progress and the next file without advancing before completion', async () => {

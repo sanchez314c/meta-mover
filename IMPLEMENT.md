@@ -414,3 +414,17 @@ Node's `fs` API exposes held `FileHandle` objects but no `openat`/`renameat`/`un
 - Visible runtime testing reproduced delayed preview events arriving after a failed IPC response and leaving the launcher stuck on Building Preview. The launcher now returns to selection when a late terminal failed or cancelled state closes that preview.
 - Added tests across path and root validation, inventory, planner, coordinator, IPC, state machine, history validation, Redux, application navigation, and the launcher. The focused feature grid passes through the named Jest suites in the validation protocol.
 - No dependency was added. Source media remains read-only throughout preview and cancellation.
+
+## 2026-09-01 opt-in screenshot filename labeling
+
+- User requested a settings-controlled feature that appends `-screen-shot` before an image extension when metadata or the existing filename identifies a desktop or iOS screenshot.
+- Chose conservative classification. Accepted filename evidence is explicit `Screenshot`, `Screen Shot`, or `Screen Capture` wording. Accepted metadata evidence is an image `UserComment` equal to `Screenshot` or the established iOS/macOS CGRect partial-capture form. Dimensions, PNG format, Apple device identity, and generic desktop wording are not evidence.
+- Added `organization.appendScreenshotSuffix`, default `false`, to schema-3 application configuration and the Settings UI. The value crosses the canonical preview options, coordinator, history, evidence, and production runtime boundaries.
+- Added screenshot evidence to the verified metadata result. It is derived during the existing ExifTool read of the preview-bound content, so no second metadata process or host dependency is introduced.
+- Applied the suffix in `MediaPlanner` before collision numbering. Trusted date names and `_Needs Review` names both preserve their extension, remain within the filename length bound, and do not duplicate an existing `-screen-shot` suffix.
+- Preview rows disclose the evidence field when the suffix is applied. Execution consumes the immutable reviewed target path and cannot independently reclassify the file.
+- Added a schema-1 history migration that defaults pre-feature records to `appendScreenshotSuffix: false`. Current history writes reject missing, unknown, or non-boolean processing fields.
+- TDD covered explicit filename forms, exact UserComment and CGRect metadata, weak-evidence rejection, non-image rejection, enabled and disabled naming, idempotence, review routing, settings persistence, UI behavior, preview-to-operation equality, IPC, evidence, history migration, and the production runtime smoke path.
+- No dependency was added. Source metadata remains read-only.
+- Attack review precommitted rejection if weak evidence labeled a file, preview and execution targets diverged, or preview text claimed a rename that did not occur. Filename and media-kind counterexamples held. The review corrected spaced CGRect parsing and changed the warning to truthfully cover already-suffixed names.
+- Final coverage passes all 44 suites and 875 tests at 89.45 percent statements, 84.94 percent branches, 91.68 percent functions, and 91.39 percent lines. Formatting, ESLint, strict type checking, production bundles, package staging, containment verification, and diff checks pass.

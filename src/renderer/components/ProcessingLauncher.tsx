@@ -332,6 +332,7 @@ function optionsFromConfig(config: AppConfig): ProcessingOptionsDTO {
     operation: config.processing.operation,
     conflictPolicy: config.organization.conflictPolicy,
     folderStructure: config.organization.folderStructure,
+    appendScreenshotSuffix: config.organization.appendScreenshotSuffix,
     workerCount: config.processing.workerCount,
     verifyIntegrity: true,
     writeMetadataDates: false,

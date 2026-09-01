@@ -25,6 +25,7 @@ const options = (): ProcessingOptionsDTO => ({
   folderStructure: FolderStructure.YEAR_MONTH,
   workerCount: 4,
   verifyIntegrity: true,
+  appendScreenshotSuffix: false,
   writeMetadataDates: false,
 });
 
@@ -217,6 +218,45 @@ describe('JobHistoryStore', () => {
     expect(loaded?.events[0]).not.toHaveProperty('payload.effectiveOptions.corruptionDetection');
     expect(warning).toHaveBeenCalledTimes(2);
     expect(warning).toHaveBeenCalledWith(expect.stringMatching(/corruptionDetection/i));
+  });
+
+  it('loads pre-screenshot schema-1 options with the new behavior safely disabled', async () => {
+    const warning = jest.fn();
+    const input = creation();
+    const { appendScreenshotSuffix: _removed, ...preScreenshotOptions } = options();
+    const records = [
+      {
+        schemaVersion: 1,
+        recordType: 'job-created',
+        creation: { ...input, effectiveOptions: preScreenshotOptions },
+      },
+      {
+        schemaVersion: 1,
+        recordType: 'event-appended',
+        event: event(input.jobId, ProcessingEventKind.JOB_QUEUED, 3, {
+          previewId: input.previewId,
+          effectiveOptions: preScreenshotOptions as never,
+        }),
+      },
+    ];
+    await fs.mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      historyPath,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      { mode: 0o600 }
+    );
+
+    const store = trackedStore(historyPath, { warning });
+    await store.initialize();
+    const loaded = await store.getJob(input.jobId);
+
+    expect(loaded?.effectiveOptions.appendScreenshotSuffix).toBe(false);
+    expect(
+      (loaded?.events[0].payload as { effectiveOptions: { appendScreenshotSuffix: boolean } })
+        .effectiveOptions.appendScreenshotSuffix
+    ).toBe(false);
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledWith(expect.stringMatching(/appendScreenshotSuffix/i));
   });
 
   it('does not report a legacy event as migrated before cross-record validation succeeds', async () => {

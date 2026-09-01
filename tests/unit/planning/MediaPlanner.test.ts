@@ -50,6 +50,8 @@ function request(
     operation: OperationMode.COPY,
     conflictPolicy: ConflictPolicy.RENAME,
     folderStructure: FolderStructure.YEAR_MONTH,
+    appendScreenshotSuffix: false,
+    screenshotDetected: false,
   } as const;
 }
 
@@ -224,5 +226,66 @@ describe('MediaPlanner', () => {
     expect(planner.planForPreview(input).targetPath).toBe(
       path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.jpg')
     );
+  });
+
+  it('appends the screenshot suffix before the extension only when enabled and detected', () => {
+    const planner = new MediaPlanner();
+    const input = request(
+      path.join(sourceRoot, 'IMG_0042.PNG'),
+      destinationRoot,
+      resolution({
+        selectedValue: {
+          localIso: '2024-03-04T05:06:07',
+          zoneBasis: 'floating-local',
+          precision: 'second',
+        },
+      })
+    );
+
+    expect(
+      planner.planForPreview({
+        ...input,
+        appendScreenshotSuffix: true,
+        screenshotDetected: true,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG'));
+    expect(
+      planner.planForPreview({
+        ...input,
+        appendScreenshotSuffix: false,
+        screenshotDetected: true,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.PNG'));
+    expect(
+      planner.planForPreview({
+        ...input,
+        appendScreenshotSuffix: true,
+        screenshotDetected: false,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.PNG'));
+  });
+
+  it('labels review filenames once and preserves the extension', () => {
+    const planner = new MediaPlanner();
+    const unresolved = resolution({
+      status: 'unresolved',
+      confidence: 'none',
+      selectedValue: undefined,
+    });
+
+    expect(
+      planner.planForPreview({
+        ...request(path.join(sourceRoot, 'IMG_0042.png'), destinationRoot, unresolved),
+        appendScreenshotSuffix: true,
+        screenshotDetected: true,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, '_Needs Review', 'IMG_0042-screen-shot.png'));
+    expect(
+      planner.planForPreview({
+        ...request(path.join(sourceRoot, 'IMG_0042-screen-shot.png'), destinationRoot, unresolved),
+        appendScreenshotSuffix: true,
+        screenshotDetected: true,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, '_Needs Review', 'IMG_0042-screen-shot.png'));
   });
 });

@@ -75,6 +75,18 @@ describe('AppConfigStore', () => {
     ).rejects.toBeInstanceOf(AppConfigValidationError);
   });
 
+  it('defaults screenshot labeling off and persists an explicit organization toggle', async () => {
+    const store = await AppConfigStore.open(configPath);
+
+    expect(store.getAll().organization.appendScreenshotSuffix).toBe(false);
+    await store.update({ organization: { appendScreenshotSuffix: true } });
+
+    expect(store.getAll().organization.appendScreenshotSuffix).toBe(true);
+    expect(JSON.parse(await readFile(configPath, 'utf8')).organization.appendScreenshotSuffix).toBe(
+      true
+    );
+  });
+
   it('persists atomically with a private file and serializes concurrent updates', async () => {
     const store = await AppConfigStore.open(configPath);
 
@@ -278,6 +290,7 @@ describe('AppConfigStore', () => {
     [{ processing: { corruptionDetection: true } }, /corruptionDetection|unknown/i],
     [{ organization: { folderStructure: 'daily' } }, /folderStructure/i],
     [{ organization: { conflictPolicy: 'overwrite' } }, /conflictPolicy/i],
+    [{ organization: { appendScreenshotSuffix: 'yes' } }, /appendScreenshotSuffix/i],
     [{ processing: { workerCount: 2, command: 'erase' } }, /unknown/i],
   ])('rejects invalid strict update %j', async (update, message) => {
     const store = await AppConfigStore.open(configPath);

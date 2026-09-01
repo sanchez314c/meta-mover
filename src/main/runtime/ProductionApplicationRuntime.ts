@@ -261,6 +261,7 @@ export async function createProductionApplicationRuntime(
           operation: current.processing.operation,
           conflictPolicy: current.organization.conflictPolicy,
           folderStructure: current.organization.folderStructure,
+          appendScreenshotSuffix: current.organization.appendScreenshotSuffix,
           workerCount: current.processing.workerCount,
           verifyIntegrity: true,
           writeMetadataDates: false,

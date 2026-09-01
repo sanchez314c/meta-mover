@@ -40,6 +40,12 @@ export interface CollectMetadataCandidatesRequest {
 export interface MetadataCollectionResult {
   candidates: DateCandidateInput[];
   warnings: string[];
+  screenshotEvidence?: ScreenshotEvidence;
+}
+
+export interface ScreenshotEvidence {
+  source: 'filename' | 'metadata';
+  field: string;
 }
 
 type StatReader = (filePath: string) => Promise<Pick<Stats, 'birthtime'>>;
@@ -287,6 +293,41 @@ const BWF_DATE_TIME_PAIRS: AudioDateTimePair[] = [
 
 function stringValue(value: RawExifValue | undefined): string | undefined {
   if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  return undefined;
+}
+
+const SCREENSHOT_FILENAME_PATTERN =
+  /(?:^|[\s._-])screen(?:[\s._-]*shot|[\s._-]+capture)(?:$|[\s._-])/i;
+const CGRECT_NUMBER = String.raw`-?(?:\d+(?:\.\d+)?|\.\d+)`;
+const SCREENSHOT_CGRECT_PATTERN = new RegExp(
+  String.raw`^\{\{\s*${CGRECT_NUMBER}\s*,\s*${CGRECT_NUMBER}\s*\},\s*\{\s*${CGRECT_NUMBER}\s*,\s*${CGRECT_NUMBER}\s*\}\}$`
+);
+
+function screenshotFilename(filename: string): boolean {
+  return SCREENSHOT_FILENAME_PATTERN.test(path.parse(filename).name);
+}
+
+function screenshotUserComment(value: RawExifValue | undefined): boolean {
+  if (Array.isArray(value)) return value.some(screenshotUserComment);
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim();
+  return normalized.toLowerCase() === 'screenshot' || SCREENSHOT_CGRECT_PATTERN.test(normalized);
+}
+
+function screenshotEvidence(
+  filePath: string,
+  mediaKind: MediaKind,
+  tags: RawExifTags
+): ScreenshotEvidence | undefined {
+  if (mediaKind !== 'image') return undefined;
+  if (screenshotFilename(path.basename(filePath))) {
+    return { source: 'filename', field: 'filename' };
+  }
+  for (const [field, value] of Object.entries(tags)) {
+    if (/(?:^|:)UserComment$/i.test(field) && screenshotUserComment(value)) {
+      return { source: 'metadata', field };
+    }
+  }
   return undefined;
 }
 
@@ -647,7 +688,7 @@ export class MetadataCandidateCollector {
         `filename:${basename}`,
         'filename-claim',
         'filename',
-        basename.toLowerCase().includes('screenshot') ? 'screenshot-filename' : 'filename',
+        screenshotFilename(basename) ? 'screenshot-filename' : 'filename',
         claimedDate.raw,
         claimedDate.value
       );
@@ -688,7 +729,12 @@ export class MetadataCandidateCollector {
       );
     }
 
-    return { candidates, warnings };
+    const detectedScreenshot = screenshotEvidence(request.filePath, request.mediaKind, tags);
+    return {
+      candidates,
+      warnings,
+      ...(detectedScreenshot === undefined ? {} : { screenshotEvidence: detectedScreenshot }),
+    };
   }
 
   async close(): Promise<void> {

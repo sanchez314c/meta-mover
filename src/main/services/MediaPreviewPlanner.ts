@@ -763,6 +763,8 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
         operation: request.options.operation,
         conflictPolicy: request.options.conflictPolicy,
         folderStructure: request.options.folderStructure,
+        appendScreenshotSuffix: request.options.appendScreenshotSuffix,
+        screenshotDetected: metadata.screenshotEvidence !== undefined,
       });
       if (planned.needsReview) unresolvedDates += 1;
 
@@ -819,6 +821,11 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
       const warnings = [
         ...metadata.warnings,
         ...evidence.warnings,
+        ...(request.options.appendScreenshotSuffix && metadata.screenshotEvidence
+          ? [
+              `Screenshot detected from ${metadata.screenshotEvidence.source} evidence (${metadata.screenshotEvidence.field}); target filename includes -screen-shot`,
+            ]
+          : []),
         ...(planned.needsReview ? ['Creation date requires review'] : []),
         ...(skip ? ['Target already exists'] : []),
         ...(renamed ? ['Target renamed to avoid a conflict'] : []),

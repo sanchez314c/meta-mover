@@ -11,6 +11,8 @@ export interface MediaPlanRequest {
   operation: OperationMode;
   conflictPolicy: ConflictPolicy;
   folderStructure: FolderStructure;
+  appendScreenshotSuffix: boolean;
+  screenshotDetected: boolean;
 }
 
 export interface MediaPlan {
@@ -42,6 +44,14 @@ function sanitizeBasename(sourcePath: string): string {
   const parsed = path.parse(basename);
   if (basename.length <= 240) return basename;
   return `${parsed.name.slice(0, Math.max(1, 240 - parsed.ext.length))}${parsed.ext}`;
+}
+
+function appendScreenshotSuffix(basename: string): string {
+  const parsed = path.parse(basename);
+  if (/-screen-shot$/i.test(parsed.name)) return basename;
+  const suffix = '-screen-shot';
+  const maximumStemLength = Math.max(1, 240 - parsed.ext.length - suffix.length);
+  return `${parsed.name.slice(0, maximumStemLength)}${suffix}${parsed.ext}`;
 }
 
 function trustedResolution(resolution: DateResolutionRecord): resolution is DateResolutionRecord & {
@@ -80,7 +90,11 @@ function trustedTarget(
 
   const extension = path.extname(basename);
   const fraction = parts.fraction ? `.${parts.fraction}` : '';
-  const filename = `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}${fraction}${extension}`;
+  const generated = `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}${fraction}${extension}`;
+  const filename =
+    request.appendScreenshotSuffix && request.screenshotDetected
+      ? appendScreenshotSuffix(generated)
+      : generated;
 
   if (request.folderStructure === FolderStructure.FLAT) {
     return path.join(request.destinationRoot, filename);
@@ -101,7 +115,11 @@ export class MediaPlanner {
   }
 
   private plan(request: MediaPlanRequest): MediaPlan {
-    const basename = sanitizeBasename(request.sourcePath);
+    const sourceBasename = sanitizeBasename(request.sourcePath);
+    const basename =
+      request.appendScreenshotSuffix && request.screenshotDetected
+        ? appendScreenshotSuffix(sourceBasename)
+        : sourceBasename;
     const trustedPath = trustedResolution(request.resolution)
       ? trustedTarget(request, basename, request.resolution.selectedValue)
       : null;

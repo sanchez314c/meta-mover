@@ -38,12 +38,11 @@ const PROCESSING_OPTION_KEYS = [
   'operation',
   'conflictPolicy',
   'folderStructure',
+  'appendScreenshotSuffix',
   'workerCount',
   'verifyIntegrity',
   'writeMetadataDates',
 ] as const;
-
-const LEGACY_PROCESSING_OPTION_KEYS = [...PROCESSING_OPTION_KEYS, 'corruptionDetection'] as const;
 
 const PREVIEW_SUMMARY_KEYS = [
   'totalFiles',
@@ -290,6 +289,7 @@ function isProcessingOptions(value: unknown): value is ProcessingOptionsDTO {
     Number.isSafeInteger(value.workerCount) &&
     (value.workerCount as number) >= 1 &&
     (value.workerCount as number) <= 10 &&
+    typeof value.appendScreenshotSuffix === 'boolean' &&
     typeof value.verifyIntegrity === 'boolean' &&
     typeof value.writeMetadataDates === 'boolean'
   );
@@ -686,26 +686,57 @@ function validateCreationShape(
   return cloneSerializable(value as unknown as JobCreationRecord | CreateHistoryJobInput);
 }
 
-function migrateLegacyOptions(value: unknown): { value: unknown; migrated: boolean } {
+interface OptionsMigration {
+  value: unknown;
+  migrated: boolean;
+  warning?: string;
+}
+
+function migrateLegacyOptions(value: unknown): OptionsMigration {
+  if (!isPlainObject(value)) return { value, migrated: false };
+  const current = { ...value };
+  let droppedCorruptionDetection = false;
+  let defaultedScreenshotSuffix = false;
+
+  if (Object.prototype.hasOwnProperty.call(current, 'corruptionDetection')) {
+    if (typeof current.corruptionDetection !== 'boolean') return { value, migrated: false };
+    delete current.corruptionDetection;
+    droppedCorruptionDetection = true;
+  }
+  if (!Object.prototype.hasOwnProperty.call(current, 'appendScreenshotSuffix')) {
+    current.appendScreenshotSuffix = false;
+    defaultedScreenshotSuffix = true;
+  }
   if (
-    !isPlainObject(value) ||
-    !hasExactKeys(value, LEGACY_PROCESSING_OPTION_KEYS) ||
-    typeof value.corruptionDetection !== 'boolean'
+    (!droppedCorruptionDetection && !defaultedScreenshotSuffix) ||
+    !hasExactKeys(current, PROCESSING_OPTION_KEYS)
   ) {
     return { value, migrated: false };
   }
-  const { corruptionDetection: _retired, ...current } = value;
-  return { value: current, migrated: true };
+
+  const changes = [
+    ...(droppedCorruptionDetection ? ['dropping corruptionDetection'] : []),
+    ...(defaultedScreenshotSuffix ? ['defaulting appendScreenshotSuffix to false'] : []),
+  ];
+  return {
+    value: current,
+    migrated: true,
+    warning: `Migrated legacy history processing options by ${changes.join(' and ')}`,
+  };
 }
 
-function migrateLegacyCreation(value: unknown): { value: unknown; migrated: boolean } {
+function migrateLegacyCreation(value: unknown): OptionsMigration {
   if (!isPlainObject(value)) return { value, migrated: false };
   const options = migrateLegacyOptions(value.effectiveOptions);
   if (!options.migrated) return { value, migrated: false };
-  return { value: { ...value, effectiveOptions: options.value }, migrated: true };
+  return {
+    value: { ...value, effectiveOptions: options.value },
+    migrated: true,
+    ...(options.warning ? { warning: options.warning } : {}),
+  };
 }
 
-function migrateLegacyEvent(value: unknown): { value: unknown; migrated: boolean } {
+function migrateLegacyEvent(value: unknown): OptionsMigration {
   if (
     !isPlainObject(value) ||
     value.kind !== ProcessingEventKind.JOB_QUEUED ||
@@ -721,6 +752,7 @@ function migrateLegacyEvent(value: unknown): { value: unknown; migrated: boolean
       payload: { ...value.payload, effectiveOptions: options.value },
     },
     migrated: true,
+    ...(options.warning ? { warning: options.warning.replace('options', 'event options') } : {}),
   };
 }
 
@@ -748,12 +780,7 @@ function parsePersistedRecord(value: unknown): ParsedPersistedRecord {
         recordType: 'job-created',
         creation: validateCreationShape(creation.value, true) as JobCreationRecord,
       },
-      ...(creation.migrated
-        ? {
-            migrationWarning:
-              'Migrated legacy history processing options by dropping corruptionDetection',
-          }
-        : {}),
+      ...(creation.warning ? { migrationWarning: creation.warning } : {}),
     };
   }
   if (value.recordType === 'event-appended') {
@@ -770,12 +797,7 @@ function parsePersistedRecord(value: unknown): ParsedPersistedRecord {
         recordType: 'event-appended',
         event: cloneSerializable(event.value as ProcessingEvent),
       },
-      ...(event.migrated
-        ? {
-            migrationWarning:
-              'Migrated legacy history event options by dropping corruptionDetection',
-          }
-        : {}),
+      ...(event.warning ? { migrationWarning: event.warning } : {}),
     };
   }
   throw new JobHistoryStoreError('CORRUPT_HISTORY', 'Unknown history record type');

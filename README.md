@@ -15,6 +15,7 @@ Inventory covers every regular file in the selected source folders. Recognized f
 - Source and destination roots must be separate, canonical directories.
 - One or more source folders can be added, reviewed, and removed before preview.
 - Targets are reserved without overwrite. Conflicts can be skipped or renamed.
+- Optional screenshot labeling appends `-screen-shot` before the extension only when an image filename or verified metadata explicitly identifies a screenshot. It is disabled by default.
 - Every copy is staged, byte-counted, SHA-256 checked, and published atomically.
 - Move deletes the source only after the verified destination and journal record are durable.
 - Jobs, evidence, and recovery records use JSONL files. No media metadata is changed.

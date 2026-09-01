@@ -14,6 +14,7 @@ const config = {
   organization: {
     folderStructure: 'year/month' as const,
     conflictPolicy: 'rename' as const,
+    appendScreenshotSuffix: false,
   },
 };
 
@@ -61,5 +62,32 @@ describe('SettingsView', () => {
 
     expect(await screen.findByText('Disk is read-only')).toBeInTheDocument();
     expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  });
+
+  it('shows and persists the screenshot filename toggle', async () => {
+    const updateConfig = jest.fn().mockResolvedValue({
+      success: true,
+      data: {
+        ...config,
+        organization: { ...config.organization, appendScreenshotSuffix: true },
+      },
+    });
+    window.electronAPI = {
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+      updateConfig,
+      resetConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+    } as unknown as Window['electronAPI'];
+
+    render(<SettingsView />);
+    const toggle = await screen.findByRole('checkbox', { name: 'Label screenshots in filenames' });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateConfig).toHaveBeenCalledWith({
+        organization: { appendScreenshotSuffix: true },
+      })
+    );
+    expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 });

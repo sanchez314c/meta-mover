@@ -36,6 +36,57 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  it.each([
+    ['Screenshot 2026-09-01 at 16.04.22.png', {} as RawExifTags, 'filename', 'filename'],
+    ['Screen Shot 2026-09-01 at 16.04.22.PNG', {} as RawExifTags, 'filename', 'filename'],
+    ['IMG_0042.PNG', { 'EXIF:UserComment': 'Screenshot' }, 'metadata', 'EXIF:UserComment'],
+    [
+      'IMG_0043.PNG',
+      { 'ExifIFD:UserComment': '{{0, 0}, {1290, 2796}}' },
+      'metadata',
+      'ExifIFD:UserComment',
+    ],
+  ] as const)(
+    'detects explicit screenshot evidence in %s',
+    async (filename, tags, source, field) => {
+      const collector = new MetadataCandidateCollector(new FakeExifToolAdapter(tags), async () => ({
+        birthtime: new Date(Number.NaN),
+      }));
+
+      const result = await collector.collectDetailed({
+        fileId: `sha256:${filename}`,
+        filePath: `/media/${filename}`,
+        mediaKind: 'image',
+      });
+
+      expect(result.screenshotEvidence).toEqual({ source, field });
+      await collector.close();
+    }
+  );
+
+  it.each([
+    ['IMG_0042.PNG', 'image', { 'EXIF:UserComment': 'Photo exported from desktop' }],
+    ['desktop-wallpaper.png', 'image', {}],
+    ['Screenshot 2026-09-01.mov', 'video', { 'EXIF:UserComment': 'Screenshot' }],
+    ['screen capture notes.pdf', 'document', { 'EXIF:UserComment': 'Screenshot' }],
+  ] as const)(
+    'does not infer screenshots from weak or non-image evidence: %s',
+    async (filename, mediaKind, tags) => {
+      const collector = new MetadataCandidateCollector(new FakeExifToolAdapter(tags), async () => ({
+        birthtime: new Date(Number.NaN),
+      }));
+
+      const result = await collector.collectDetailed({
+        fileId: `sha256:not-screenshot:${filename}`,
+        filePath: `/media/${filename}`,
+        mediaKind,
+      });
+
+      expect(result.screenshotEvidence).toBeUndefined();
+      await collector.close();
+    }
+  );
+
   it('separates verified byte extraction from logical filename and inventoried birth evidence', async () => {
     const readRawVerified = jest.fn(async () => ({
       tags: { 'EXIF:DateTimeOriginal': '2024:03:04 05:06:07+00:00' },

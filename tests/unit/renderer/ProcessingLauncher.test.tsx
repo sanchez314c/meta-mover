@@ -23,6 +23,7 @@ const config = {
   organization: {
     folderStructure: 'year/month' as const,
     conflictPolicy: 'rename' as const,
+    appendScreenshotSuffix: false,
   },
 };
 
@@ -51,6 +52,7 @@ function preview(operation: 'copy' | 'move' = 'copy'): PreviewResultDTO {
         folderStructure: 'year/month',
         workerCount: 4,
         verifyIntegrity: true,
+        appendScreenshotSuffix: false,
         writeMetadataDates: false,
       },
     },
@@ -60,6 +62,7 @@ function preview(operation: 'copy' | 'move' = 'copy'): PreviewResultDTO {
       folderStructure: 'year/month',
       workerCount: 4,
       verifyIntegrity: true,
+      appendScreenshotSuffix: false,
       writeMetadataDates: false,
     },
     summary: {
@@ -176,6 +179,7 @@ describe('ProcessingLauncher', () => {
     );
     const sentOptions = (api.previewProcessing as jest.Mock).mock.calls[0][0].options;
     expect(sentOptions).not.toHaveProperty('corruptionDetection');
+    expect(sentOptions.appendScreenshotSuffix).toBe(false);
 
     expect(await screen.findByText('Preview ready')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
@@ -187,6 +191,27 @@ describe('ProcessingLauncher', () => {
     expect(api.startProcessing).toHaveBeenCalledWith({
       previewId: 'preview-1',
       acknowledgeDestructiveOperation: false,
+    });
+  });
+
+  it('carries the enabled screenshot label setting into preview options', async () => {
+    const api = installAPI({
+      getConfig: jest.fn().mockResolvedValue({
+        success: true,
+        data: {
+          ...config,
+          organization: { ...config.organization, appendScreenshotSuffix: true },
+        },
+      }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    expect((api.previewProcessing as jest.Mock).mock.calls[0][0].options).toMatchObject({
+      appendScreenshotSuffix: true,
     });
   });
 
