@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-09-01
+## [Unreleased] - 2026-09-02
 
 ### Added
 
@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Preview analysis now runs independent snapshot, SHA-256, and bundled ExifTool work in parallel. It reserves 25 percent of logical processors, caps the pool at 16 workers, and pauses new work when sampled host CPU reaches 80 percent.
+- Concurrent snapshot bytes are limited to the smaller of 32 GiB or half of currently available temporary storage. Large files receive fewer parallel slots, and a single file that cannot fit the safe budget is rejected before copying begins.
+- Date resolution and destination collision allocation remain ordered and deterministic. Faster metadata reads cannot change evidence ranking, preview row order, or suffix assignment.
+- A cache-order challenge using 45 real PNG files on Linux x64 reduced preview time from 7095 ms with one worker to 721 ms with the adaptive pool, a 9.8x speedup. Peak sampled host CPU was 71.7 percent.
 - Preview analysis now publishes real discovery and per-file metadata progress with the current path, stable counts, and an accessible determinate or indeterminate progress indicator.
 - The organizer stays mounted across navigation so an active preview, its Stop control, and its completed result are not lost when changing tabs.
 - Updated the build and test dependency graph to fixed Electron 44.0.0, electron-builder 26.15.3, styled-components 6.5.3, Jest 30.5.0, ts-jest 29.4.12, and wait-on 9.1.0 releases. Full and production npm audits now report zero vulnerabilities without security overrides.
@@ -59,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Parallel preview cancellation now stops queued admission, aborts active ExifTool reads, waits for snapshot cleanup, and returns the first causal failure. The CPU sample timer remains referenced so non-Electron hosts cannot exit before analysis starts.
+- Prevented parallel large-media analysis from multiplying temporary-space demand by the worker count and exhausting the system volume.
 - Added Stop Preview through the typed cancellation path. Cancellation now reaches recursive inventory as well as metadata work and does not mutate source media.
 - Added a strict finalization cutoff so a late Stop request reports `PREVIEW_FINALIZING` instead of falsely claiming success.
 - Rejected regressive, partial, mismatched, and overlapping preview progress before `preview-ready`; duplicate rapid Build Preview requests no longer create untrackable jobs.

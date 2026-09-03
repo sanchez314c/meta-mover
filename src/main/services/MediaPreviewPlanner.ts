@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { constants } from 'fs';
-import { chmod, lstat, mkdtemp, open, rmdir, unlink } from 'fs/promises';
+import { chmod, lstat, mkdtemp, open, rmdir, statfs, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -44,6 +44,7 @@ import {
   ProcessingPhase,
 } from '../../shared/types/processing';
 import { classifyMediaExtension, normalizedFileExtension } from '../../shared/constants';
+import { AdaptiveWorkPool, AdaptiveWorkPoolOptions } from './AdaptiveWorkPool';
 
 export interface PlannedMediaPayload {
   destinationRoot: string;
@@ -121,6 +122,8 @@ export interface MediaPreviewPlannerDependencies {
   now?: () => number;
   platform?: NodeJS.Platform;
   maxCollisionAttempts?: number;
+  analysisResources?: AdaptiveWorkPoolOptions;
+  temporaryStorageBudget?: () => Promise<number>;
 }
 
 export type PreviewProgressReporter = (
@@ -508,6 +511,17 @@ function safeAdd(total: number, value: number, label: string): number {
   return next;
 }
 
+const MAX_TEMPORARY_SNAPSHOT_BYTES = 32 * 1024 * 1024 * 1024;
+
+async function defaultTemporaryStorageBudget(): Promise<number> {
+  const storage = await statfs(tmpdir());
+  const available = storage.bavail * storage.bsize;
+  if (!Number.isFinite(available) || available <= 0) {
+    throw new Error('Temporary storage has no measurable free space');
+  }
+  return Math.max(1, Math.min(MAX_TEMPORARY_SNAPSHOT_BYTES, Math.floor(available * 0.5)));
+}
+
 function conflictKey(targetPath: string, platform: NodeJS.Platform): string {
   const normalized = path.normalize(targetPath);
   return platform === 'win32' || platform === 'darwin' ? normalized.toLowerCase() : normalized;
@@ -599,6 +613,8 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
   private readonly maxCollisionAttempts: number;
+  private readonly analysisPool: AdaptiveWorkPool;
+  private readonly temporaryStorageBudget: () => Promise<number>;
   private readonly planner = new MediaPlanner();
 
   constructor(dependencies: MediaPreviewPlannerDependencies) {
@@ -610,6 +626,9 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
     this.now = dependencies.now ?? (() => Date.now());
     this.platform = dependencies.platform ?? process.platform;
     this.maxCollisionAttempts = dependencies.maxCollisionAttempts ?? 10_000;
+    this.analysisPool = new AdaptiveWorkPool(dependencies.analysisResources);
+    this.temporaryStorageBudget =
+      dependencies.temporaryStorageBudget ?? defaultTemporaryStorageBudget;
     if (!Number.isSafeInteger(this.maxCollisionAttempts) || this.maxCollisionAttempts <= 0) {
       throw new Error('maxCollisionAttempts must be a positive safe integer');
     }
@@ -681,10 +700,120 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
       files[0]?.filePath
     );
 
-    for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
-      const file = files[fileIndex];
+    const supportedFiles = files.filter(isSupportedInventoryFile);
+    const temporaryStorageBudget =
+      supportedFiles.length === 0 ? 1 : await this.temporaryStorageBudget();
+    if (!Number.isSafeInteger(temporaryStorageBudget) || temporaryStorageBudget <= 0) {
+      throw new Error('Temporary storage budget must be a positive safe integer');
+    }
+    const largestSnapshot = supportedFiles.reduce(
+      (largest, file) => Math.max(largest, file.size),
+      0
+    );
+    if (largestSnapshot > temporaryStorageBudget) {
+      throw new Error(
+        `Insufficient temporary storage for the largest media snapshot (${largestSnapshot} bytes required, ${temporaryStorageBudget} bytes budgeted)`
+      );
+    }
+
+    const completedAnalysis = new Array<boolean>(files.length).fill(false);
+    let completedPrefix = 0;
+    let progressQueue = Promise.resolve();
+    const analyses = await this.analysisPool.mapOrdered(
+      files,
+      async (file, _fileIndex, workSignal) => {
+        throwIfAborted(workSignal);
+        if (!isSupportedInventoryFile(file)) return { kind: 'unsupported' as const, file };
+        const fileId = `${file.device}:${file.inode}`;
+        const sourceSnapshot = await this.sourceContent.capture(file, workSignal);
+        const contentSha256 = sourceSnapshot.sha256;
+        let metadata: MetadataCollectionResult | undefined;
+        const boundaryErrors: unknown[] = [];
+        try {
+          if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
+            throw new Error(`Source content probe returned an invalid SHA-256: ${file.filePath}`);
+          }
+          metadata = await this.metadata.collectDetailed({
+            fileId,
+            filePath: file.filePath,
+            verifiedExtractionPath: sourceSnapshot.verifiedExtractionPath,
+            expectedContentSha256: contentSha256,
+            expectedContentBytes: file.size,
+            filesystemBirthTimeUtc: sourceSnapshot.filesystemBirthTimeUtc,
+            mediaKind: file.mediaKind,
+            signal: workSignal,
+          });
+        } catch (error) {
+          boundaryErrors.push(error);
+        }
+        try {
+          await sourceSnapshot.release();
+        } catch (error) {
+          boundaryErrors.push(error);
+        }
+        if (boundaryErrors.length > 1) {
+          throw new CombinedPreviewError(
+            boundaryErrors,
+            `Metadata extraction and verified snapshot release both failed: ${file.filePath}`
+          );
+        }
+        if (boundaryErrors.length === 1) throw boundaryErrors[0];
+        if (metadata === undefined) {
+          throw new Error(`Metadata extraction completed without a result: ${file.filePath}`);
+        }
+        const resolution = resolveDateCandidates({
+          fileId,
+          mediaKind: file.mediaKind,
+          evaluationTimeUtc,
+          candidates: metadata.candidates,
+        });
+        const planned = this.planner.planForPreview({
+          sourcePath: file.filePath,
+          destinationRoot: roots.destinationPath,
+          mediaKind: file.mediaKind,
+          resolution,
+          operation: request.options.operation,
+          conflictPolicy: request.options.conflictPolicy,
+          folderStructure: request.options.folderStructure,
+          appendScreenshotSuffix: request.options.appendScreenshotSuffix,
+          screenshotDetected: metadata.screenshotEvidence !== undefined,
+        });
+        return {
+          kind: 'supported' as const,
+          file,
+          contentSha256,
+          metadata,
+          resolution,
+          planned,
+        };
+      },
+      signal,
+      async (_analysis, fileIndex) => {
+        completedAnalysis[fileIndex] = true;
+        progressQueue = progressQueue.then(async () => {
+          while (completedAnalysis[completedPrefix]) {
+            completedPrefix += 1;
+            if (completedPrefix < files.length) {
+              await publishProgress(
+                completedPrefix,
+                ProcessingPhase.METADATA,
+                files[completedPrefix].filePath
+              );
+            }
+          }
+        });
+        await progressQueue;
+      },
+      {
+        maxInFlightWeight: temporaryStorageBudget,
+        weight: (file) => (isSupportedInventoryFile(file) ? Math.max(1, file.size) : 0),
+      }
+    );
+
+    for (const analysis of analyses) {
       throwIfAborted(signal);
-      if (!isSupportedInventoryFile(file)) {
+      const { file } = analysis;
+      if (analysis.kind === 'unsupported') {
         const warning = unsupportedWarning(file);
         skippedFiles += 1;
         unresolvedDates += 1;
@@ -705,67 +834,12 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
           },
           warnings: [warning],
         });
-        await publishProgress(
-          fileIndex + 1,
-          fileIndex + 1 === files.length ? ProcessingPhase.ORGANIZATION : ProcessingPhase.METADATA,
-          files[fileIndex + 1]?.filePath
-        );
         continue;
       }
-      const fileId = `${file.device}:${file.inode}`;
-      const sourceSnapshot = await this.sourceContent.capture(file, signal);
-      const contentSha256 = sourceSnapshot.sha256;
-      let metadata: MetadataCollectionResult | undefined;
-      const boundaryErrors: unknown[] = [];
-      try {
-        if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
-          throw new Error(`Source content probe returned an invalid SHA-256: ${file.filePath}`);
-        }
-        metadata = await this.metadata.collectDetailed({
-          fileId,
-          filePath: file.filePath,
-          verifiedExtractionPath: sourceSnapshot.verifiedExtractionPath,
-          expectedContentSha256: contentSha256,
-          expectedContentBytes: file.size,
-          filesystemBirthTimeUtc: sourceSnapshot.filesystemBirthTimeUtc,
-          mediaKind: file.mediaKind,
-          signal,
-        });
-      } catch (error) {
-        boundaryErrors.push(error);
+      if (!isSupportedInventoryFile(file)) {
+        throw new Error(`Parallel analysis returned an invalid supported result: ${file.filePath}`);
       }
-      try {
-        await sourceSnapshot.release();
-      } catch (error) {
-        boundaryErrors.push(error);
-      }
-      if (boundaryErrors.length > 1) {
-        throw new CombinedPreviewError(
-          boundaryErrors,
-          `Metadata extraction and verified snapshot release both failed: ${file.filePath}`
-        );
-      }
-      if (boundaryErrors.length === 1) throw boundaryErrors[0];
-      if (metadata === undefined) {
-        throw new Error(`Metadata extraction completed without a result: ${file.filePath}`);
-      }
-      const resolution = resolveDateCandidates({
-        fileId,
-        mediaKind: file.mediaKind,
-        evaluationTimeUtc,
-        candidates: metadata.candidates,
-      });
-      const planned = this.planner.planForPreview({
-        sourcePath: file.filePath,
-        destinationRoot: roots.destinationPath,
-        mediaKind: file.mediaKind,
-        resolution,
-        operation: request.options.operation,
-        conflictPolicy: request.options.conflictPolicy,
-        folderStructure: request.options.folderStructure,
-        appendScreenshotSuffix: request.options.appendScreenshotSuffix,
-        screenshotDetected: metadata.screenshotEvidence !== undefined,
-      });
+      const { contentSha256, metadata, planned, resolution } = analysis;
       if (planned.needsReview) unresolvedDates += 1;
 
       const originalTarget = planned.targetPath;
@@ -862,11 +936,10 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
           ) as unknown as PlannedOperation['payload'],
         });
       }
-      await publishProgress(
-        fileIndex + 1,
-        fileIndex + 1 === files.length ? ProcessingPhase.ORGANIZATION : ProcessingPhase.METADATA,
-        files[fileIndex + 1]?.filePath
-      );
+    }
+
+    if (files.length > 0) {
+      await publishProgress(files.length, ProcessingPhase.ORGANIZATION);
     }
 
     const operation = request.options.operation;
