@@ -64,6 +64,177 @@ describe('MetadataCandidateCollector', () => {
     }
   );
 
+  it('collects the group-qualified image date tags emitted by bundled ExifTool', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'XMP-exif:DateTimeOriginal': '2024:03:04 05:06:07-05:00',
+        'XMP-xmp:CreateDate': '2024:03:04 05:06:07-05:00',
+        'XMP-pdf:CreationDate': '2024:03:04 05:06:07-05:00',
+        'Samsung:TimeStamp': '2024:03:04 05:06:07-05:00',
+        'PNG:CreateDate': '2024:03:04 05:06:07-05:00',
+      }),
+      async () => ({ birthtime: new Date(Number.NaN) })
+    );
+
+    const candidates = await collector.collect({
+      fileId: 'sha256:image-qualified-dates',
+      filePath: '/media/undated.png',
+      mediaKind: 'image',
+    });
+
+    expect(candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tag: 'XMP-exif:DateTimeOriginal',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+        }),
+        expect.objectContaining({
+          tag: 'XMP-xmp:CreateDate',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+        }),
+        expect.objectContaining({
+          tag: 'XMP-pdf:CreationDate',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+        }),
+        expect.objectContaining({
+          tag: 'Samsung:TimeStamp',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+        }),
+        expect.objectContaining({
+          tag: 'PNG:CreateDate',
+          semantic: 'content-created',
+          sourceKind: 'container-format',
+        }),
+      ])
+    );
+    await collector.close();
+  });
+
+  it('does not mistake an eight-digit UUID segment for a date-only filename claim', async () => {
+    const collector = new MetadataCandidateCollector(new FakeExifToolAdapter({}), async () => ({
+      birthtime: new Date(Number.NaN),
+    }));
+
+    const candidates = await collector.collect({
+      fileId: 'sha256:numeric-uuid',
+      filePath: '/media/9a21f000-20210615-4000-8000-123456789abc.jpg',
+      mediaKind: 'image',
+    });
+
+    expect(candidates).toEqual([]);
+    await collector.close();
+  });
+
+  it('collects real QuickTime stream, XMP, UserData, and ItemList date groups', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'QuickTime:CreateDate': '2020:11:15 20:17:02',
+        'Track1:MediaCreateDate': '2020:11:15 20:17:02',
+        'Track2:TrackCreateDate': '2020:11:15 20:17:02',
+        'XMP-exif:DateTimeOriginal': '2020:11:15 20:17:02-05:00',
+        'XMP-xmp:CreateDate': '2020:11:15 20:17:02-05:00',
+        'XMP-pdf:CreationDate': '2020:11:15 20:17:02-05:00',
+        'UserData:DateTimeOriginal': '2020:11:15 20:17:02-05:00',
+        'ItemList:ContentCreateDate': '2020:11:15 20:17:02-05:00',
+      }),
+      async () => ({ birthtime: new Date(Number.NaN) })
+    );
+
+    const candidates = await collector.collect({
+      fileId: 'sha256:video-qualified-dates',
+      filePath: '/media/undated.mp4',
+      mediaKind: 'video',
+    });
+
+    expect(candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tag: 'QuickTime:CreateDate',
+          semantic: 'container-created',
+          sourceKind: 'container-format',
+          value: expect.objectContaining({ zoneBasis: 'spec-defined-utc' }),
+        }),
+        expect.objectContaining({ tag: 'Track1:MediaCreateDate' }),
+        expect.objectContaining({ tag: 'Track2:TrackCreateDate' }),
+        expect.objectContaining({
+          tag: 'XMP-exif:DateTimeOriginal',
+          semantic: 'capture',
+        }),
+        expect.objectContaining({
+          tag: 'XMP-xmp:CreateDate',
+          semantic: 'content-created',
+        }),
+        expect.objectContaining({
+          tag: 'XMP-pdf:CreationDate',
+          semantic: 'content-created',
+        }),
+        expect.objectContaining({
+          tag: 'UserData:DateTimeOriginal',
+          semantic: 'capture',
+        }),
+        expect.objectContaining({
+          tag: 'ItemList:ContentCreateDate',
+          semantic: 'content-created',
+        }),
+      ])
+    );
+    await collector.close();
+  });
+
+  it('combines GPS and IPTC digital date-time pairs and parses PNG creation text', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'GPS:GPSDateStamp': '2019:03:29',
+        'GPS:GPSTimeStamp': '19:34:15.09',
+        'IPTC:DigitalCreationDate': '2019:03:29',
+        'IPTC:DigitalCreationTime': '15:34:15-04:00',
+        'PNG:CreationTime': 'Fri 29 Mar 2019 03:34:15 PM EDT',
+      }),
+      async () => ({ birthtime: new Date(Number.NaN) })
+    );
+
+    const candidates = await collector.collect({
+      fileId: 'sha256:image-paired-dates',
+      filePath: '/media/undated.png',
+      mediaKind: 'image',
+    });
+
+    expect(candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          semantic: 'capture',
+          value: expect.objectContaining({
+            instantUtc: '2019-03-29T19:34:15.090Z',
+            zoneBasis: 'spec-defined-utc',
+          }),
+        }),
+        expect.objectContaining({
+          tag: 'IPTC:DigitalCreationDate+IPTC:DigitalCreationTime',
+          semantic: 'digitized',
+          value: expect.objectContaining({
+            instantUtc: '2019-03-29T19:34:15.000Z',
+            zoneBasis: 'explicit-offset',
+          }),
+        }),
+        expect.objectContaining({
+          tag: 'PNG:CreationTime',
+          semantic: 'content-created',
+          value: expect.objectContaining({
+            localIso: '2019-03-29T15:34:15',
+            instantUtc: '2019-03-29T19:34:15.000Z',
+            offsetMinutes: -240,
+          }),
+        }),
+      ])
+    );
+    await collector.close();
+  });
+
   it.each([
     ['IMG_0042.PNG', 'image', { 'EXIF:UserComment': 'Photo exported from desktop' }],
     ['desktop-wallpaper.png', 'image', {}],
@@ -251,6 +422,35 @@ describe('MetadataCandidateCollector', () => {
     expect(adapter.reads).toEqual(['/media/IMG_20240304_050607.jpg']);
     expect(adapter.closeCalls).toBe(1);
   });
+
+  it.each([
+    ['Screenshot 2021-06-15 at 12.30.45.png', '2021-06-15T12:30:45', 'second'],
+    ['IMG_20210615123045.jpg', '2021-06-15T12:30:45', 'second'],
+    ['2021-06-15_123045.mov', '2021-06-15T12:30:45', 'second'],
+    ['IMG_20210615.jpg', '2021-06-15', 'date'],
+  ] as const)(
+    'extracts bounded legacy date pattern from %s',
+    async (filename, localIso, precision) => {
+      const collector = new MetadataCandidateCollector(new FakeExifToolAdapter({}), async () => ({
+        birthtime: new Date(Number.NaN),
+      }));
+
+      const candidates = await collector.collect({
+        fileId: `sha256:legacy-name:${filename}`,
+        filePath: `/media/${filename}`,
+        mediaKind: filename.endsWith('.mov') ? 'video' : 'image',
+      });
+
+      expect(candidates).toContainEqual(
+        expect.objectContaining({
+          sourceKind: 'filename',
+          sourceFamily: precision === 'date' ? 'filename-date-only' : expect.any(String),
+          value: expect.objectContaining({ localIso, precision }),
+        })
+      );
+      await collector.close();
+    }
+  );
 
   it.each<{
     mediaKind: MediaKind;

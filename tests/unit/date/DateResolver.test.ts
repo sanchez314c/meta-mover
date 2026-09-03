@@ -42,7 +42,7 @@ describe('resolveDateCandidates', () => {
     expect(DATE_RESOLUTION_POLICY_VERSION).toBe('date-resolution/1');
   });
 
-  it('recognizes screenshot filenames without exceeding the semantic confidence cap', () => {
+  it('resolves an exact screenshot timestamp from its structured filename', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -52,12 +52,18 @@ describe('resolveDateCandidates', () => {
           sourceKind: 'filename',
           sourceFamily: 'screenshot-filename',
           tag: 'filename:Screenshot_20240304_050607',
+          value: {
+            localIso: '2024-03-04T05:06:07',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
         }),
       ])
     );
 
-    expect(result.status).toBe('review-required');
-    expect(result.candidates[0].score).toMatchObject({ base: 80, semanticCap: 70, final: 70 });
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('medium');
+    expect(result.candidates[0].score).toMatchObject({ base: 82, semanticCap: 85, final: 82 });
   });
 
   it('keeps unknown image tags visible without treating them as selectable evidence', () => {
@@ -329,6 +335,60 @@ describe('resolveDateCandidates', () => {
     expect(result.contenderIds).toEqual(['nano-one', 'nano-two']);
   });
 
+  it('resolves corroborated whole-second consensus despite conflicting fractional encodings', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-microseconds',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2009-10-18T05:07:46.000098',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000098',
+          },
+        }),
+        candidate({
+          id: 'filename-microseconds',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename',
+          tag: 'filename:2009-10-18_05-07-46.000098.jpeg',
+          value: {
+            localIso: '2009-10-18T05:07:46.000098',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000098',
+          },
+        }),
+        candidate({
+          id: 'xmp-milliseconds',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2009-10-18T05:07:46.098',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '098',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('high');
+    expect(result.selectedCandidateId).toBe('exif-microseconds');
+    expect(result.reasonCodes).toContain('SUBSECOND_CONSENSUS');
+  });
+
   it('keeps grouping independent of candidate ids and the first group member', () => {
     const inputs = [
       candidate({
@@ -487,6 +547,199 @@ describe('resolveDateCandidates', () => {
     expect(result.confidence).toBe('none');
     expect(result.selectedCandidateId).toBeUndefined();
     expect(result.contenderIds).toEqual(['exif', 'xmp']);
+  });
+
+  it('corroborates matching local clocks when only one metadata value carries an offset', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-floating',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          rawValue: '2006:02:03 03:13:39',
+          value: {
+            localIso: '2006-02-03T03:13:39',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-offset',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          rawValue: '2006-02-03T03:13:39-05:00',
+          value: {
+            localIso: '2006-02-03T03:13:39',
+            instantUtc: '2006-02-03T08:13:39.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('high');
+    expect(result.selectedCandidateId).toBe('xmp-offset');
+    expect(result.selectedValue).toMatchObject({
+      localIso: '2006-02-03T03:13:39',
+      instantUtc: '2006-02-03T08:13:39.000Z',
+      offsetMinutes: -300,
+    });
+    expect(result.contenderIds).toEqual(['exif-floating', 'xmp-offset']);
+  });
+
+  it('forms one corroboration group across local-time and UTC evidence linked by an offset', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-floating',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2006-02-03T03:13:39',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-offset',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2006-02-03T03:13:39',
+            instantUtc: '2006-02-03T08:13:39.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'gps-utc',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'container-format',
+          sourceFamily: 'gps',
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          value: {
+            localIso: '2006-02-03T08:13:39',
+            instantUtc: '2006-02-03T08:13:39.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('high');
+    expect(result.selectedCandidateId).toBe('xmp-offset');
+    expect(result.contenderIds).toEqual(['exif-floating', 'gps-utc', 'xmp-offset']);
+  });
+
+  it('resolves a unanimous local capture time while retaining the strongest offset claim', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-offset',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-04-16T14:00:49',
+            instantUtc: '2010-04-16T18:00:49.000Z',
+            offsetMinutes: -240,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'gps-utc',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'container-format',
+          sourceFamily: 'gps',
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          value: {
+            localIso: '2010-04-16T14:00:49',
+            instantUtc: '2010-04-16T14:00:49.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('high');
+    expect(result.selectedCandidateId).toBe('exif-offset');
+    expect(result.selectedValue?.instantUtc).toBe('2010-04-16T18:00:49.000Z');
+  });
+
+  it('treats a standalone GPS timestamp as medium-confidence capture evidence', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'gps-only',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'container-format',
+          sourceFamily: 'gps',
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          value: {
+            localIso: '2025-04-12T20:12:50',
+            instantUtc: '2025-04-12T20:12:50.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('medium');
+    expect(result.candidates[0].score).toMatchObject({ base: 75, final: 79 });
+  });
+
+  it('scores an XMP CreateDate emitted for video containers', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'video-xmp-create',
+          mediaKind: 'video',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-xmp:CreateDate',
+          value: {
+            localIso: '2020-11-15T20:17:02',
+            instantUtc: '2020-11-16T01:17:02.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('medium');
+    expect(result.selectedCandidateId).toBe('video-xmp-create');
   });
 
   it('applies video-aware scoring instead of global tag order', () => {
@@ -679,7 +932,7 @@ describe('resolveDateCandidates', () => {
     expect(result.target).toBe('capture-time');
   });
 
-  it('returns a low-confidence review proposal for filename-only evidence', () => {
+  it('resolves an exact full-timestamp filename at medium confidence', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -693,9 +946,34 @@ describe('resolveDateCandidates', () => {
       ])
     );
 
-    expect(result.status).toBe('review-required');
-    expect(result.confidence).toBe('low');
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('medium');
     expect(result.selectedCandidateId).toBe('filename-only');
+  });
+
+  it('resolves a bounded date-only filename for calendar organization', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'filename-date-only',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-date-only',
+          tag: 'filename:IMG_20210615.jpg',
+          rawValue: '2021-06-15',
+          value: {
+            localIso: '2021-06-15',
+            zoneBasis: 'date-only',
+            precision: 'date',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('resolved');
+    expect(result.confidence).toBe('medium');
+    expect(result.candidates[0].score).toMatchObject({ base: 100, final: 75 });
   });
 
   it.each([

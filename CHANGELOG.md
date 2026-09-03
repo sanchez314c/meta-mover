@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-09-02
+## [Unreleased] - 2026-09-03
 
 ### Added
 
@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restored the core most-likely creation-date behavior after a real 3,122-file scan exposed 2,066 rows routed to review or unresolved. The corrected resolver produced 1,958 resolved, 82 genuinely ambiguous, 1,082 without defensible creation evidence, and zero weak review-required decisions on the same batch.
+- Recognized the family-1 tag names actually emitted by bundled ExifTool, including numbered QuickTime tracks, QuickTime container creation, XMP EXIF, XMP create, and XMP PDF creation dates, UserData original dates, ItemList content dates, Samsung timestamps, GPS date-time pairs, IPTC digital creation pairs, and PNG creation fields.
+- Stopped treating matching local timestamps as conflicting only because one source included an offset. Explicit offsets now win selection when credible sources agree on the local capture clock, while different dates and materially different times remain ambiguous.
+- Resolved corroborated whole-second agreement when metadata formats encode fractional seconds differently. Unsupported high-precision disagreements still remain ambiguous.
+- Restored bounded legacy filename extraction for screenshot wording, separated and contiguous full timestamps, camera-prefixed timestamps, and explicit date-only camera names. Numeric UUID segments are not accepted as date-only evidence.
+- Promoted complete timestamp filenames to medium-confidence evidence and explicit date-only camera names to calendar-organization evidence. Filesystem modification time, current time, and ICC profile creation time remain forbidden as capture-date fallbacks.
 - Parallel preview cancellation now stops queued admission, aborts active ExifTool reads, waits for snapshot cleanup, and returns the first causal failure. The CPU sample timer remains referenced so non-Electron hosts cannot exit before analysis starts.
 - Prevented parallel large-media analysis from multiplying temporary-space demand by the worker count and exhausting the system volume.
 - Added Stop Preview through the typed cancellation path. Cancellation now reaches recursive inventory as well as metadata work and does not mutate source media.

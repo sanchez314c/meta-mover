@@ -124,6 +124,36 @@ const COMMON_IMAGE_RULES: TagRule[] = [
     sourceFamily: 'xmp',
   },
   {
+    tag: 'XMP-exif:DateTimeOriginal',
+    semantic: 'capture',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-exif',
+  },
+  {
+    tag: 'XMP-xmp:CreateDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp',
+  },
+  {
+    tag: 'XMP-pdf:CreationDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-pdf',
+  },
+  {
+    tag: 'Samsung:TimeStamp',
+    semantic: 'capture',
+    sourceKind: 'embedded-exif',
+    sourceFamily: 'samsung',
+  },
+  {
+    tag: 'PNG:CreateDate',
+    semantic: 'content-created',
+    sourceKind: 'container-format',
+    sourceFamily: 'png',
+  },
+  {
     tag: 'IPTC:DateCreated',
     semantic: 'capture',
     sourceKind: 'embedded-iptc',
@@ -132,6 +162,13 @@ const COMMON_IMAGE_RULES: TagRule[] = [
 ];
 
 const VIDEO_RULES: TagRule[] = [
+  {
+    tag: 'QuickTime:CreateDate',
+    semantic: 'container-created',
+    sourceKind: 'container-format',
+    sourceFamily: 'quicktime-format',
+    specDefinedUtc: true,
+  },
   {
     tag: 'QuickTime:Keys:CreationDate',
     semantic: 'capture',
@@ -199,6 +236,36 @@ const VIDEO_RULES: TagRule[] = [
     sourceKind: 'embedded-xmp',
     sourceFamily: 'xmp',
   },
+  {
+    tag: 'XMP-exif:DateTimeOriginal',
+    semantic: 'capture',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-exif',
+  },
+  {
+    tag: 'XMP-xmp:CreateDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp',
+  },
+  {
+    tag: 'XMP-pdf:CreationDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-pdf',
+  },
+  {
+    tag: 'UserData:DateTimeOriginal',
+    semantic: 'capture',
+    sourceKind: 'container-format',
+    sourceFamily: 'quicktime-userdata',
+  },
+  {
+    tag: 'ItemList:ContentCreateDate',
+    semantic: 'content-created',
+    sourceKind: 'container-format',
+    sourceFamily: 'quicktime-itemlist',
+  },
 ];
 
 const AUDIO_RULES: TagRule[] = [
@@ -244,6 +311,12 @@ const AUDIO_RULES: TagRule[] = [
     sourceKind: 'embedded-xmp',
     sourceFamily: 'xmp',
   },
+  {
+    tag: 'XMP-pdf:CreationDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-pdf',
+  },
 ];
 
 const CONTENT_RULES: TagRule[] = [
@@ -270,6 +343,12 @@ const CONTENT_RULES: TagRule[] = [
     semantic: 'content-created',
     sourceKind: 'embedded-xmp',
     sourceFamily: 'xmp',
+  },
+  {
+    tag: 'XMP-pdf:CreationDate',
+    semantic: 'content-created',
+    sourceKind: 'embedded-xmp',
+    sourceFamily: 'xmp-pdf',
   },
   {
     tag: 'PDF:CreateDate',
@@ -494,9 +573,72 @@ function parseDateValue(
   };
 }
 
+const PNG_MONTHS: Readonly<Record<string, string>> = Object.freeze({
+  Jan: '01',
+  Feb: '02',
+  Mar: '03',
+  Apr: '04',
+  May: '05',
+  Jun: '06',
+  Jul: '07',
+  Aug: '08',
+  Sep: '09',
+  Oct: '10',
+  Nov: '11',
+  Dec: '12',
+});
+
+const PNG_ZONE_OFFSETS: Readonly<Record<string, string>> = Object.freeze({
+  UTC: '+00:00',
+  GMT: '+00:00',
+  EST: '-05:00',
+  EDT: '-04:00',
+  CST: '-06:00',
+  CDT: '-05:00',
+  MST: '-07:00',
+  MDT: '-06:00',
+  PST: '-08:00',
+  PDT: '-07:00',
+});
+
+function parsePngCreationTime(raw: RawExifValue | undefined): ParsedDateValue | null {
+  const text = stringValue(raw);
+  if (!text) return null;
+  const match = text.match(
+    /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (\d{1,2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) (AM|PM) (UTC|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT)$/
+  );
+  if (!match) return null;
+
+  const hour12 = Number(match[5]);
+  if (hour12 < 1 || hour12 > 12) return null;
+  const hour24 = (hour12 % 12) + (match[8] === 'PM' ? 12 : 0);
+  const month = PNG_MONTHS[match[3]];
+  const offset = PNG_ZONE_OFFSETS[match[9]];
+  const day = match[2].padStart(2, '0');
+  const hour = String(hour24).padStart(2, '0');
+  const parsed = parseDateValue(
+    `${match[4]}-${month}-${day}T${hour}:${match[6]}:${match[7]}${offset}`
+  );
+  if (!parsed) return null;
+
+  const expectedWeekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][
+    new Date(`${match[4]}-${month}-${day}T00:00:00.000Z`).getUTCDay()
+  ];
+  return expectedWeekday === match[1] ? parsed : null;
+}
+
 function filenameDate(filename: string): { raw: string; value: ParsedDateValue } | null {
+  const screenshot = filename.match(
+    /(\d{4})[-_](\d{2})[-_](\d{2})\s+at\s+(\d{1,2})[._-](\d{2})[._-](\d{2})(?:[._](\d{1,9}))?/i
+  );
+  if (screenshot) {
+    const raw = `${screenshot[1]}-${screenshot[2]}-${screenshot[3]}T${screenshot[4].padStart(2, '0')}:${screenshot[5]}:${screenshot[6]}${screenshot[7] ? `.${screenshot[7]}` : ''}`;
+    const value = parseDateValue(raw);
+    return value ? { raw, value } : null;
+  }
+
   const compact = filename.match(
-    /(\d{4})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})(?:[._](\d{1,9}))?/
+    /(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})(\d{2})(?:[._](\d{1,9}))?(?!\d)/
   );
   if (compact) {
     const raw = `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}${compact[7] ? `.${compact[7]}` : ''}`;
@@ -505,10 +647,22 @@ function filenameDate(filename: string): { raw: string; value: ParsedDateValue }
   }
 
   const separated = filename.match(
-    /(\d{4})[-_](\d{2})[-_](\d{2})[ _-](\d{2})[-_.](\d{2})[-_.](\d{2})(?:\.(\d{1,9}))?/
+    /(\d{4})[-_](\d{2})[-_](\d{2})[ _-](\d{2})[-_.]?(\d{2})[-_.]?(\d{2})(?:\.(\d{1,9}))?/
   );
   if (separated) {
     const raw = `${separated[1]}-${separated[2]}-${separated[3]}T${separated[4]}:${separated[5]}:${separated[6]}${separated[7] ? `.${separated[7]}` : ''}`;
+    const value = parseDateValue(raw);
+    return value ? { raw, value } : null;
+  }
+
+  const separatedDate = filename.match(/(?:^|[^\d])(\d{4})[-_](\d{2})[-_](\d{2})(?!\d)/);
+  const compactDateAtStart = filename.match(/^(\d{4})(\d{2})(\d{2})(?!\d)/);
+  const labeledCompactDate = filename.match(
+    /(?:IMG|VID|PIC|PHOTO|Screenshot)[-_ ](\d{4})(\d{2})(\d{2})(?!\d)/i
+  );
+  const date = separatedDate ?? compactDateAtStart ?? labeledCompactDate;
+  if (date) {
+    const raw = `${date[1]}-${date[2]}-${date[3]}`;
     const value = parseDateValue(raw);
     return value ? { raw, value } : null;
   }
@@ -633,6 +787,23 @@ export class MetadataCandidateCollector {
       addCandidate(rule.tag, rule.semantic, rule.sourceKind, rule.sourceFamily, rawValue, value);
     }
 
+    if (request.mediaKind === 'video') {
+      for (const [tag, raw] of Object.entries(tags)) {
+        const match = tag.match(/^Track\d+:(MediaCreateDate|TrackCreateDate)$/i);
+        if (!match) continue;
+        const value = parseDateValue(raw, undefined, undefined, true);
+        if (!value || raw === undefined) continue;
+        addCandidate(
+          tag,
+          'container-created',
+          'container-stream',
+          match[1].toLowerCase() === 'mediacreatedate' ? 'quicktime-media' : 'quicktime-track',
+          raw as JsonValue,
+          value
+        );
+      }
+    }
+
     if (request.mediaKind === 'image' || request.mediaKind === 'raw') {
       const createdDate = stringValue(tags['IPTC:DateCreated']);
       const createdTime = stringValue(tags['IPTC:TimeCreated']);
@@ -653,6 +824,61 @@ export class MetadataCandidateCollector {
             value
           );
         }
+      }
+
+      const gpsDate = stringValue(tags['GPS:GPSDateStamp']);
+      const gpsTime = stringValue(tags['GPS:GPSTimeStamp']);
+      if (gpsDate && gpsTime) {
+        const value = parseDateValue(`${gpsDate}T${gpsTime}`, undefined, undefined, true);
+        if (value) {
+          addCandidate(
+            'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+            'capture',
+            'embedded-exif',
+            'gps',
+            {
+              date: gpsDate,
+              dateTag: 'GPS:GPSDateStamp',
+              time: gpsTime,
+              timeTag: 'GPS:GPSTimeStamp',
+            },
+            value
+          );
+        }
+      }
+
+      const digitalDate = stringValue(tags['IPTC:DigitalCreationDate']);
+      const digitalTime = stringValue(tags['IPTC:DigitalCreationTime']);
+      if (digitalDate && digitalTime) {
+        const value = parseDateValue(`${digitalDate}T${digitalTime}`);
+        if (value) {
+          addCandidate(
+            'IPTC:DigitalCreationDate+IPTC:DigitalCreationTime',
+            'digitized',
+            'embedded-iptc',
+            'iptc-digital',
+            {
+              date: digitalDate,
+              dateTag: 'IPTC:DigitalCreationDate',
+              time: digitalTime,
+              timeTag: 'IPTC:DigitalCreationTime',
+            },
+            value
+          );
+        }
+      }
+
+      const pngCreationTime = tags['PNG:CreationTime'];
+      const parsedPngCreationTime = parsePngCreationTime(pngCreationTime);
+      if (parsedPngCreationTime && pngCreationTime !== undefined) {
+        addCandidate(
+          'PNG:CreationTime',
+          'content-created',
+          'container-format',
+          'png',
+          pngCreationTime as JsonValue,
+          parsedPngCreationTime
+        );
       }
     }
 
@@ -688,7 +914,11 @@ export class MetadataCandidateCollector {
         `filename:${basename}`,
         'filename-claim',
         'filename',
-        screenshotFilename(basename) ? 'screenshot-filename' : 'filename',
+        claimedDate.value.precision === 'date'
+          ? 'filename-date-only'
+          : screenshotFilename(basename)
+            ? 'screenshot-filename'
+            : 'filename',
         claimedDate.raw,
         claimedDate.value
       );

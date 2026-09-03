@@ -81,7 +81,7 @@ function semanticCap(candidate: DateCandidateInput): number {
     case 'digitized':
       return 70;
     case 'filename-claim':
-      return 70;
+      return 85;
     case 'filesystem-birth':
       return 35;
     default:
@@ -102,22 +102,35 @@ function baseScore(candidate: DateCandidateInput): number {
 
   if (candidate.mediaKind === 'image' || candidate.mediaKind === 'raw') {
     if (isSidecar) return 90;
-    if (isFilename) return candidate.sourceFamily === 'screenshot-filename' ? 80 : 62;
+    if (isFilename) {
+      if (candidate.sourceFamily === 'filename-date-only') return 100;
+      return candidate.sourceFamily === 'screenshot-filename' ? 82 : 78;
+    }
     if (tag.includes('datetimeoriginal')) return 95;
-    if (tag.includes('gpsdatestamp') && tag.includes('gpstimestamp')) return 93;
+    if (tag.includes('gpsdatestamp') && tag.includes('gpstimestamp')) return 75;
+    if (tag.includes('samsung:timestamp')) return 92;
     if (candidate.sourceKind === 'embedded-xmp' && tag.includes('datecreated')) return 88;
     if (candidate.sourceKind === 'embedded-iptc' && tag.includes('datecreated')) return 88;
+    if (candidate.sourceKind === 'embedded-xmp' && tag.includes('createdate')) return 80;
+    if (
+      candidate.sourceKind === 'container-format' &&
+      (tag.includes('png:createdate') || tag.includes('png:creationtime'))
+    ) {
+      return 75;
+    }
     if (tag.includes('datetime digitized') || tag.includes('datetimedigitized')) return 65;
+    if (tag.includes('digitalcreationdate')) return 65;
     if (tag.endsWith(':createdate') || tag === 'createdate') return 65;
     return 0;
   }
 
   if (candidate.mediaKind === 'video') {
     if (isSidecar) return 90;
-    if (isFilename) return 62;
+    if (isFilename) return candidate.sourceFamily === 'filename-date-only' ? 100 : 78;
     if (
       candidate.sourceKind === 'embedded-xmp' &&
       (tag.includes('datecreated') ||
+        tag.includes('createdate') ||
         tag.includes('datetimeoriginal') ||
         tag.includes('contentcreatedate') ||
         tag.includes('content_create_date'))
@@ -130,13 +143,14 @@ function baseScore(candidate: DateCandidateInput): number {
     if (tag.includes('contentcreatedate') || tag.includes('content_create_date')) return 82;
     if (tag.includes('mediacreatedate') || tag.includes('media_create_date')) return 78;
     if (tag.includes('trackcreatedate') || tag.includes('track_create_date')) return 76;
+    if (tag === 'quicktime:createdate') return 74;
     if (tag.includes('creation_time')) return 72;
     return 0;
   }
 
   if (candidate.mediaKind === 'audio') {
     if (isSidecar) return 90;
-    if (isFilename) return 62;
+    if (isFilename) return candidate.sourceFamily === 'filename-date-only' ? 100 : 78;
     if (tag.includes('bwf:origination')) return 95;
     if (tag.includes('ixml:')) return 92;
     if (tag.includes('contentcreatedate') || tag.includes('content_create_date')) return 82;
@@ -145,7 +159,7 @@ function baseScore(candidate: DateCandidateInput): number {
   }
 
   if (isSidecar) return 85;
-  if (isFilename) return 62;
+  if (isFilename) return candidate.sourceFamily === 'filename-date-only' ? 100 : 78;
   if (
     candidate.semantic === 'content-created' &&
     (tag.includes('createdate') || tag.includes('creationdate') || tag.endsWith(':created'))
@@ -167,7 +181,11 @@ function expectedSemantics(
 
   const tag = candidate.tag.toLowerCase();
   if (candidate.mediaKind === 'image' || candidate.mediaKind === 'raw') {
-    if (tag.includes('datetimeoriginal') || tag.includes('gpsdatestamp')) {
+    if (
+      tag.includes('datetimeoriginal') ||
+      tag.includes('gpsdatestamp') ||
+      tag.includes('samsung:timestamp')
+    ) {
       return new Set(['capture']);
     }
     if (
@@ -176,9 +194,19 @@ function expectedSemantics(
     ) {
       return new Set(['capture', 'content-created']);
     }
+    if (candidate.sourceKind === 'embedded-xmp' && tag.includes('createdate')) {
+      return new Set(['content-created']);
+    }
+    if (
+      candidate.sourceKind === 'container-format' &&
+      (tag.includes('png:createdate') || tag.includes('png:creationtime'))
+    ) {
+      return new Set(['content-created']);
+    }
     if (
       tag.includes('datetime digitized') ||
       tag.includes('datetimedigitized') ||
+      tag.includes('digitalcreationdate') ||
       tag.endsWith(':createdate') ||
       tag === 'createdate'
     ) {
@@ -190,7 +218,9 @@ function expectedSemantics(
   if (candidate.mediaKind === 'video') {
     if (
       candidate.sourceKind === 'embedded-xmp' &&
-      (tag.includes('datecreated') || tag.includes('datetimeoriginal'))
+      (tag.includes('datecreated') ||
+        tag.includes('createdate') ||
+        tag.includes('datetimeoriginal'))
     ) {
       return new Set(['capture', 'content-created']);
     }
@@ -213,6 +243,7 @@ function expectedSemantics(
     ) {
       return new Set(['container-created']);
     }
+    if (tag === 'quicktime:createdate') return new Set(['container-created']);
     return null;
   }
 
@@ -486,6 +517,11 @@ function comparableNanoseconds(value: ParsedDateValue): bigint | null {
   return parts ? calendarNanoseconds(parts) : null;
 }
 
+function localNanoseconds(value: ParsedDateValue): bigint | null {
+  const parts = parseLocalIso(value.localIso);
+  return parts ? calendarNanoseconds(parts) : null;
+}
+
 function floorDivide(value: bigint, divisor: bigint): bigint {
   const quotient = value / divisor;
   return value < 0n && value % divisor !== 0n ? quotient - 1n : quotient;
@@ -497,29 +533,67 @@ function valuesAgree(left: ParsedDateValue, right: ParsedDateValue): boolean {
       ? left.precision
       : right.precision;
 
-  if ((left.instantUtc === undefined) !== (right.instantUtc === undefined)) return false;
-  const leftTime = comparableNanoseconds(left);
-  const rightTime = comparableNanoseconds(right);
-  if (leftTime === null || rightTime === null) return false;
   const unit = precisionUnitNanoseconds(coarserPrecision);
-  return floorDivide(leftTime, unit) === floorDivide(rightTime, unit);
+  const leftLocalTime = localNanoseconds(left);
+  const rightLocalTime = localNanoseconds(right);
+  if (
+    leftLocalTime !== null &&
+    rightLocalTime !== null &&
+    floorDivide(leftLocalTime, unit) === floorDivide(rightLocalTime, unit)
+  ) {
+    return true;
+  }
+  if (left.instantUtc === undefined || right.instantUtc === undefined) return false;
+  const leftInstant = comparableNanoseconds(left);
+  const rightInstant = comparableNanoseconds(right);
+  return (
+    leftInstant !== null &&
+    rightInstant !== null &&
+    floorDivide(leftInstant, unit) === floorDivide(rightInstant, unit)
+  );
 }
 
 function compareCandidateStrength(left: ScoredDateCandidate, right: ScoredDateCandidate): number {
-  if (left.score.final !== right.score.final) return right.score.final - left.score.final;
-
   const zoneRank = (value: ParsedDateValue): number => {
-    if (value.zoneBasis === 'explicit-offset' || value.zoneBasis === 'spec-defined-utc') return 2;
+    if (value.zoneBasis === 'explicit-offset') return 3;
+    if (value.zoneBasis === 'spec-defined-utc') return 2;
     if (value.zoneBasis === 'gps-inferred' || value.zoneBasis === 'device-zone-inferred') return 1;
     return 0;
   };
   const zoneDifference = zoneRank(right.value) - zoneRank(left.value);
-  if (zoneDifference !== 0) return zoneDifference;
+  if (zoneDifference !== 0 && Math.abs(left.score.final - right.score.final) <= 10) {
+    return zoneDifference;
+  }
+
+  if (left.score.final !== right.score.final) return right.score.final - left.score.final;
 
   const precisionDifference =
     PRECISION_ORDER[right.value.precision] - PRECISION_ORDER[left.value.precision];
   if (precisionDifference !== 0) return precisionDifference;
   return left.id.localeCompare(right.id);
+}
+
+function groupIsCoherent(candidates: readonly ScoredDateCandidate[]): boolean {
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      if (valuesAgree(left.value, right.value)) continue;
+      const offsetBridge = candidates.some(
+        (candidate) =>
+          candidate.value.zoneBasis === 'explicit-offset' &&
+          PRECISION_ORDER[candidate.value.precision] >=
+            Math.max(
+              PRECISION_ORDER[left.value.precision],
+              PRECISION_ORDER[right.value.precision]
+            ) &&
+          valuesAgree(candidate.value, left.value) &&
+          valuesAgree(candidate.value, right.value)
+      );
+      if (!offsetBridge) return false;
+    }
+  }
+  return true;
 }
 
 function createGroups(candidates: ScoredDateCandidate[]): CandidateGroup[] {
@@ -537,16 +611,23 @@ function createGroups(candidates: ScoredDateCandidate[]): CandidateGroup[] {
   });
 
   for (const anchor of orderedAnchors) {
-    const alreadyRepresented = [...membershipSets.values()].some((members) =>
-      members.includes(anchor)
-    );
-    if (alreadyRepresented) continue;
     const members = candidates.filter((candidate) => valuesAgree(anchor.value, candidate.value));
+    if (!groupIsCoherent(members)) continue;
     const membershipKey = JSON.stringify(members.map((candidate) => candidate.id).sort());
     membershipSets.set(membershipKey, members);
   }
 
-  return [...membershipSets.values()]
+  const maximalMembershipSets = [...membershipSets.values()].filter(
+    (members, index, allMembershipSets) =>
+      !allMembershipSets.some(
+        (other, otherIndex) =>
+          otherIndex !== index &&
+          other.length > members.length &&
+          members.every((candidate) => other.includes(candidate))
+      )
+  );
+
+  return maximalMembershipSets
     .map((members) => {
       const sortedMembers = [...members].sort(compareCandidateStrength);
       const families = new Set(sortedMembers.map((candidate) => candidate.sourceKind));
@@ -570,6 +651,32 @@ function createGroups(candidates: ScoredDateCandidate[]): CandidateGroup[] {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function localSecondKey(value: ParsedDateValue): string | null {
+  const parts = parseLocalIso(value.localIso);
+  if (
+    !parts ||
+    parts.hour === undefined ||
+    parts.minute === undefined ||
+    parts.second === undefined
+  ) {
+    return null;
+  }
+  return [parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second].join(':');
+}
+
+function hasCorroboratedSubsecondConsensus(
+  top: CandidateGroup,
+  second: CandidateGroup | undefined
+): boolean {
+  if (!second || !top.corroborated) return false;
+  const preciseCandidates = [...top.candidates, ...second.candidates].filter(
+    (candidate) => PRECISION_ORDER[candidate.value.precision] >= PRECISION_ORDER.second
+  );
+  if (preciseCandidates.length < 2) return false;
+  const keys = preciseCandidates.map((candidate) => localSecondKey(candidate.value));
+  return keys.every((key) => key !== null && key === keys[0]);
 }
 
 function isJsonSafe(value: unknown, ancestors = new Set<object>()): boolean {
@@ -696,8 +803,10 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
   const lead = second ? top.score - second.score : 100;
   const reasonCodes: string[] = [];
   if (top.corroborated) reasonCodes.push('INDEPENDENT_CORROBORATION');
+  const subsecondConsensus = hasCorroboratedSubsecondConsensus(top, second);
+  if (subsecondConsensus) reasonCodes.push('SUBSECOND_CONSENSUS');
 
-  if (second && second.score >= 75 && lead < 15) {
+  if (second && second.score >= 75 && lead < 15 && !subsecondConsensus) {
     reasonCodes.push('STRONG_CONFLICT');
     return {
       ...baseRecord,
@@ -712,7 +821,8 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
   }
 
   const selected = top.candidates[0];
-  if (top.score >= 90 && lead >= 15) {
+  const effectiveLead = subsecondConsensus ? 15 : lead;
+  if (top.score >= 90 && effectiveLead >= 15) {
     reasonCodes.push('RESOLVED_HIGH_CONFIDENCE');
     return {
       ...baseRecord,
@@ -727,7 +837,7 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     };
   }
 
-  if (top.score >= 75 && lead >= 10) {
+  if (top.score >= 75 && effectiveLead >= 10) {
     reasonCodes.push('RESOLVED_MEDIUM_CONFIDENCE');
     return {
       ...baseRecord,
