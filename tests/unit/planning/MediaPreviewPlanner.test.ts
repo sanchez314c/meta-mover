@@ -1,23 +1,10 @@
-import { createHash } from 'crypto';
-import {
-  chmod,
-  lstat,
-  mkdtemp,
-  readFile,
-  rename,
-  rmdir,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from 'fs/promises';
+import { lstat, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 
 import { DateCandidateInput } from '../../../src/main/core/date';
 import { InventoryMediaFile } from '../../../src/main/core/inventory/MediaInventory';
 import {
-  FilesystemSourceContentProbe,
   MediaPreviewPlanner,
   PlannedMediaPayload,
 } from '../../../src/main/services/MediaPreviewPlanner';
@@ -87,11 +74,9 @@ const roots = {
   }),
 };
 
-const digest = 'a'.repeat(64);
 const sourceContent = {
   capture: async (file: Readonly<InventoryMediaFile>) => ({
-    sha256: digest,
-    verifiedExtractionPath: file.filePath,
+    seekableExtractionPath: file.filePath,
     filesystemBirthTimeUtc: null,
     release: async () => undefined,
   }),
@@ -112,6 +97,26 @@ const occupiedDestination = (targetPath: string) => ({
 });
 
 describe('MediaPreviewPlanner', () => {
+  it('does not pass filesystem modified time into creation-date collection', async () => {
+    const collectDetailed = jest.fn(async () => ({ candidates: [], warnings: [] }));
+    const planner = new MediaPreviewPlanner({
+      inventory: { inventory: async () => [inventoryFile()] },
+      roots,
+      metadata: { collectDetailed },
+      destination: availableDestination,
+      sourceContent,
+      now: () => Date.parse('2026-08-29T13:00:00.000Z'),
+    });
+
+    await planner.plan(request());
+
+    expect(collectDetailed).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        filesystemModifiedTimeUtc: expect.anything(),
+      })
+    );
+  });
+
   it('uses resolved metadata, reserves deterministic rename targets, and emits executable payloads', async () => {
     const files = [
       inventoryFile(),
@@ -150,8 +155,8 @@ describe('MediaPreviewPlanner', () => {
       totalBytes: 579,
     });
     expect(plan.rows?.map((row) => row.targetPath)).toEqual([
-      path.join('/destination', '2024', '03', '2024-03-04_05-06-07_1.jpg'),
-      path.join('/destination', '2024', '03', '2024-03-04_05-06-07_2.jpg'),
+      path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07_1.jpg'),
+      path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07_2.jpg'),
     ]);
     expect(plan.rows?.[0].dateEvidence).toMatchObject({
       source: 'embedded',
@@ -183,10 +188,10 @@ describe('MediaPreviewPlanner', () => {
       },
       modifiedTimeMs: Date.parse('2026-08-29T12:00:00.000Z'),
       mediaKind: 'image',
-      contentSha256: digest,
       destinationSnapshot: { occupied: false, source: 'filesystem' },
     });
-    expect(plan.rows?.every((row) => row.fingerprint.hash === digest)).toBe(true);
+    expect(firstPayload).not.toHaveProperty('contentSha256');
+    expect(plan.rows?.every((row) => row.fingerprint.hash === undefined)).toBe(true);
   });
 
   it('carries screenshot evidence into the reviewed target before collision allocation', async () => {
@@ -216,7 +221,7 @@ describe('MediaPreviewPlanner', () => {
     );
 
     expect(plan.rows?.[0].targetPath).toBe(
-      path.join('/destination', '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG')
+      path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG')
     );
     expect(plan.operations[0]?.targetPath).toBe(plan.rows?.[0].targetPath);
     expect(plan.rows?.[0].warnings).toContain(
@@ -284,7 +289,7 @@ describe('MediaPreviewPlanner', () => {
 
     expect(plan.summary.unresolvedDates).toBe(1);
     expect(plan.rows?.[0]).toMatchObject({
-      targetPath: path.join('/destination', '_Needs Review', 'photo.jpg'),
+      targetPath: path.join('/destination', 'Photos', '_Needs Review', 'photo.jpg'),
       dateEvidence: { value: null, source: 'unresolved', confidence: 0 },
     });
     expect(plan.rows?.[0].warnings).toContain('Creation date requires review');
@@ -404,8 +409,8 @@ describe('MediaPreviewPlanner', () => {
     const plan = await planner.plan(request());
 
     expect(plan.rows?.map((row) => row.targetPath)).toEqual([
-      path.join('/destination', '2024', '03', '2024-03-04_05-06-07.jpg'),
-      path.join('/destination', '2024', '03', '2024-03-04_05-06-07_1.jpg'),
+      path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07.jpg'),
+      path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07_1.jpg'),
     ]);
     expect(plan.summary.renamedFiles).toBe(1);
   });
@@ -535,59 +540,12 @@ describe('MediaPreviewPlanner', () => {
     expect(probes).toBe(4);
   });
 
-  it('streams a no-follow source digest and records source and destination snapshots', async () => {
+  it('records identity evidence without reading or hashing the complete media payload', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-digest-'));
     try {
       const filePath = path.join(root, 'photo.jpg');
       await writeFile(filePath, 'ground-truth-bytes');
       const stats = await lstat(filePath);
-      const expectedHash = createHash('sha256')
-        .update(await readFile(filePath))
-        .digest('hex');
-      const planner = new MediaPreviewPlanner({
-        inventory: {
-          inventory: async () => [
-            inventoryFile({
-              filePath,
-              device: stats.dev,
-              inode: stats.ino,
-              links: stats.nlink,
-              size: stats.size,
-              modifiedTimeMs: stats.mtimeMs,
-            }),
-          ],
-        },
-        roots,
-        metadata: { collectDetailed: async () => ({ candidates: [], warnings: [] }) },
-        destination: availableDestination,
-        now: () => Date.parse('2026-08-29T13:00:00.000Z'),
-      });
-
-      const plan = await planner.plan(request());
-
-      expect(plan.rows?.[0].fingerprint.hash).toBe(expectedHash);
-      expect(plan.operations[0].payload as PlannedMediaPayload).toMatchObject({
-        contentSha256: expectedHash,
-        destinationSnapshot: {
-          occupied: false,
-          path: expect.any(String),
-        },
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('binds metadata to the hashed inventoried bytes across source pathname swap and restoration', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-bound-metadata-'));
-    try {
-      const filePath = path.join(root, 'photo.jpg');
-      const displacedPath = path.join(root, 'inventoried-photo.jpg');
-      const inventoriedBytes = 'inventoried-ground-truth-bytes';
-      const replacementBytes = 'concurrent-path-replacement';
-      await writeFile(filePath, inventoriedBytes);
-      const stats = await lstat(filePath);
-      const expectedHash = createHash('sha256').update(inventoriedBytes).digest('hex');
       let extractionPath = '';
       const planner = new MediaPreviewPlanner({
         inventory: {
@@ -605,11 +563,60 @@ describe('MediaPreviewPlanner', () => {
         roots,
         metadata: {
           collectDetailed: async (metadataRequest) => {
-            extractionPath = metadataRequest.verifiedExtractionPath;
-            expect(metadataRequest.expectedContentSha256).toBe(expectedHash);
-            expect(metadataRequest.expectedContentBytes).toBe(stats.size);
-            expect((await lstat(extractionPath)).mode & 0o222).toBe(0);
-            expect((await lstat(path.dirname(extractionPath))).mode & 0o222).toBe(0);
+            extractionPath = metadataRequest.seekableExtractionPath ?? '';
+            expect(metadataRequest.expectedContentSha256).toBeUndefined();
+            expect(metadataRequest.expectedContentBytes).toBeUndefined();
+            return { candidates: [], warnings: [] };
+          },
+        },
+        destination: availableDestination,
+        now: () => Date.parse('2026-08-29T13:00:00.000Z'),
+      });
+
+      const plan = await planner.plan(request());
+
+      expect(extractionPath).toMatch(new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+      expect(plan.rows?.[0].fingerprint.hash).toBeUndefined();
+      expect(plan.operations[0].payload as PlannedMediaPayload).toMatchObject({
+        destinationSnapshot: {
+          occupied: false,
+          path: expect.any(String),
+        },
+      });
+      expect(plan.operations[0].payload).not.toHaveProperty('contentSha256');
+      await expect(lstat(extractionPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('binds metadata to the held inventoried file across source pathname swap and restoration', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-bound-metadata-'));
+    try {
+      const filePath = path.join(root, 'photo.jpg');
+      const displacedPath = path.join(root, 'inventoried-photo.jpg');
+      const inventoriedBytes = 'inventoried-ground-truth-bytes';
+      const replacementBytes = 'concurrent-path-replacement';
+      await writeFile(filePath, inventoriedBytes);
+      const stats = await lstat(filePath);
+      let extractionPath = '';
+      const planner = new MediaPreviewPlanner({
+        inventory: {
+          inventory: async () => [
+            inventoryFile({
+              filePath,
+              device: stats.dev,
+              inode: stats.ino,
+              links: stats.nlink,
+              size: stats.size,
+              modifiedTimeMs: stats.mtimeMs,
+            }),
+          ],
+        },
+        roots,
+        metadata: {
+          collectDetailed: async (metadataRequest) => {
+            extractionPath = metadataRequest.seekableExtractionPath ?? '';
             await rename(filePath, displacedPath);
             await writeFile(filePath, replacementBytes);
             try {
@@ -646,12 +653,11 @@ describe('MediaPreviewPlanner', () => {
 
       expect(extractionPath).not.toBe(filePath);
       expect(plan.rows?.[0]).toMatchObject({
-        targetPath: path.join('/destination', '2024', '03', '2024-03-04_05-06-07.jpg'),
-        fingerprint: { hash: expectedHash },
+        targetPath: path.join('/destination', 'Photos', '2024', '03', '2024-03-04_05-06-07.jpg'),
       });
+      expect(plan.rows?.[0].fingerprint.hash).toBeUndefined();
       expect(await readFile(filePath, 'utf8')).toBe(inventoriedBytes);
       await expect(lstat(extractionPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(lstat(path.dirname(extractionPath))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -680,7 +686,7 @@ describe('MediaPreviewPlanner', () => {
         roots,
         metadata: {
           collectDetailed: async (metadataRequest) => {
-            extractionPath = metadataRequest.verifiedExtractionPath;
+            extractionPath = metadataRequest.seekableExtractionPath ?? '';
             throw new Error('deterministic metadata failure');
           },
         },
@@ -695,24 +701,12 @@ describe('MediaPreviewPlanner', () => {
     }
   });
 
-  it('retries unfinished snapshot cleanup phases after capture and cleanup both fail', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-capture-cleanup-'));
-    const chmodMock = jest.fn(chmod);
-    const rmdirMock = jest.fn(rmdir);
-    let snapshotDirectory = '';
+  it('rejects an in-place source mutation detected across metadata extraction', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-source-mutation-'));
     try {
       const filePath = path.join(root, 'photo.jpg');
       await writeFile(filePath, 'inventoried-ground-truth-bytes');
       const stats = await lstat(filePath);
-      chmodMock.mockImplementationOnce(async () => {
-        throw new Error('snapshot protection failed');
-      });
-      rmdirMock.mockImplementationOnce(async (directoryPath) => {
-        snapshotDirectory = directoryPath.toString();
-        const error = new Error('transient directory removal failure') as NodeJS.ErrnoException;
-        error.code = 'EBUSY';
-        throw error;
-      });
       const planner = new MediaPreviewPlanner({
         inventory: {
           inventory: async () => [
@@ -727,24 +721,16 @@ describe('MediaPreviewPlanner', () => {
           ],
         },
         roots,
-        metadata: { collectDetailed: async () => ({ candidates: [], warnings: [] }) },
+        metadata: {
+          collectDetailed: async () => {
+            await writeFile(filePath, 'mutated-ground-truth-bytes');
+            return { candidates: [], warnings: [] };
+          },
+        },
         destination: availableDestination,
-        sourceContent: new FilesystemSourceContentProbe({
-          chmod: chmodMock,
-          rmdir: rmdirMock,
-          unlink,
-        }),
       });
 
-      await expect(planner.plan(request())).rejects.toMatchObject({
-        name: 'AggregateError',
-        errors: [
-          expect.objectContaining({ message: 'snapshot protection failed' }),
-          expect.objectContaining({ message: 'transient directory removal failure' }),
-        ],
-      });
-      expect(rmdirMock).toHaveBeenCalledTimes(2);
-      await expect(lstat(snapshotDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(planner.plan(request())).rejects.toThrow(/identity changed/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -774,7 +760,7 @@ describe('MediaPreviewPlanner', () => {
         roots,
         metadata: {
           collectDetailed: async (metadataRequest) => {
-            extractionPath = metadataRequest.verifiedExtractionPath;
+            extractionPath = metadataRequest.seekableExtractionPath ?? '';
             return await new Promise((_, reject) => {
               metadataRequest.signal?.addEventListener(
                 'abort',
@@ -796,7 +782,6 @@ describe('MediaPreviewPlanner', () => {
         name: 'AbortError',
       });
       await expect(lstat(extractionPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(lstat(path.dirname(extractionPath))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -818,8 +803,7 @@ describe('MediaPreviewPlanner', () => {
       destination: availableDestination,
       sourceContent: {
         capture: async () => ({
-          sha256: digest,
-          verifiedExtractionPath: '/private/snapshot.jpg',
+          seekableExtractionPath: '/private/snapshot.jpg',
           filesystemBirthTimeUtc: null,
           release,
         }),
@@ -833,7 +817,7 @@ describe('MediaPreviewPlanner', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses to hash a symbolic-link source through the default content probe', async () => {
+  it('refuses to open a symbolic-link source through the default content probe', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-planner-no-follow-'));
     try {
       const targetPath = path.join(root, 'target.jpg');

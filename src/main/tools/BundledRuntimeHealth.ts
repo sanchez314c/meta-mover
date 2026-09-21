@@ -342,7 +342,8 @@ export class BundledRuntimeHealth {
           name,
           available: true,
           source: 'bundled',
-          requiredFor: ['preview', 'start'],
+          requiredFor:
+            name === 'exiftool' ? ['preview', 'start', 'metadataWriteback'] : ['preview', 'start'],
           version: loaded.entries.get(name)!.version,
         });
       } catch (error) {
@@ -350,7 +351,8 @@ export class BundledRuntimeHealth {
           name,
           available: false,
           source: 'bundled',
-          requiredFor: ['preview', 'start'],
+          requiredFor:
+            name === 'exiftool' ? ['preview', 'start', 'metadataWriteback'] : ['preview', 'start'],
           error: errorMessage(error),
         });
       }
@@ -377,8 +379,13 @@ export class BundledRuntimeHealth {
         preview: { available: runtimeBlockers.length === 0, blockers: runtimeBlockers },
         start: { available: runtimeBlockers.length === 0, blockers: runtimeBlockers },
         metadataWriteback: {
-          available: false,
-          blockers: ['Meta Mover never writes inferred dates back into source metadata'],
+          available: !unavailable('exiftool'),
+          blockers: unavailable('exiftool')
+            ? [
+                dependencies.find((dependency) => dependency.name === 'exiftool')?.error ??
+                  'Bundled ExifTool is unavailable',
+              ]
+            : [],
         },
       },
       dependencies,
@@ -390,7 +397,8 @@ export class BundledRuntimeHealth {
       name,
       available: false,
       source: 'bundled',
-      requiredFor: ['preview', 'start'],
+      requiredFor:
+        name === 'exiftool' ? ['preview', 'start', 'metadataWriteback'] : ['preview', 'start'],
       error,
     }));
   }

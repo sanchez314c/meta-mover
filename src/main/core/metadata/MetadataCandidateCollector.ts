@@ -29,6 +29,9 @@ export interface ExifToolReadAdapter {
 export interface CollectMetadataCandidatesRequest {
   fileId: string;
   filePath: string;
+  /** A seekable, identity-bound path used for direct ExifTool access without whole-file streaming. */
+  seekableExtractionPath?: string;
+  /** Legacy hash-bound stdin extraction contract retained for compatibility tests and callers. */
   verifiedExtractionPath?: string;
   expectedContentSha256?: string;
   expectedContentBytes?: number;
@@ -697,7 +700,14 @@ export class MetadataCandidateCollector {
     if (this.closed) throw new Error('MetadataCandidateCollector is closed');
     throwIfAborted(request.signal);
 
-    const extractionPath = request.verifiedExtractionPath ?? request.filePath;
+    if (
+      request.seekableExtractionPath !== undefined &&
+      request.verifiedExtractionPath !== undefined
+    ) {
+      throw new Error('Metadata extraction cannot use two input boundaries');
+    }
+    const extractionPath =
+      request.seekableExtractionPath ?? request.verifiedExtractionPath ?? request.filePath;
     if (!path.isAbsolute(extractionPath) || /\p{Cc}/u.test(extractionPath)) {
       throw new Error(
         'Metadata extraction path must be absolute and contain no control characters'
@@ -924,18 +934,18 @@ export class MetadataCandidateCollector {
       );
     }
 
+    const requireCanonicalUtc = (value: string, label: string): string => {
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+        throw new Error(`Inventoried filesystem ${label} must be a canonical UTC timestamp`);
+      }
+      return value;
+    };
+
     let birthtime: string | null;
     if ('filesystemBirthTimeUtc' in request) {
       birthtime = request.filesystemBirthTimeUtc ?? null;
-      if (birthtime !== null) {
-        const parsedBirthtime = new Date(birthtime);
-        if (
-          !Number.isFinite(parsedBirthtime.getTime()) ||
-          parsedBirthtime.toISOString() !== birthtime
-        ) {
-          throw new Error('Inventoried filesystem birth time must be a canonical UTC timestamp');
-        }
-      }
+      if (birthtime !== null) requireCanonicalUtc(birthtime, 'birth time');
     } else {
       const fileStats = await this.statReader(request.filePath);
       birthtime = Number.isFinite(fileStats.birthtime.getTime())

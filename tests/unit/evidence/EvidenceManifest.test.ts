@@ -120,6 +120,27 @@ describe('EvidenceManifest', () => {
     });
   });
 
+  it('durably appends a bounded batch with one sync while preserving every hash-chain event', async () => {
+    const manifest = await EvidenceManifest.create(manifestPath, 'job-batch', 'date-policy/1');
+    const internal = manifest as unknown as { handle: { sync(): Promise<void> } };
+    const sync = jest.spyOn(internal.handle, 'sync');
+
+    const events = await manifest.appendBatch([
+      { kind: 'file-observed', payload: { fileId: 'a' } },
+      { kind: 'candidate-observed', payload: { candidateId: 'b' } },
+      { kind: 'resolution-decided', payload: { selected: 'b' } },
+    ]);
+    const closed = await manifest.close({ outcome: 'completed' });
+
+    expect(events.map((event) => event.sequence)).toEqual([2, 3, 4]);
+    expect(sync).toHaveBeenCalledTimes(2);
+    await expect(EvidenceManifest.verify(manifestPath)).resolves.toMatchObject({
+      valid: true,
+      eventCount: 5,
+      finalHash: closed.finalHash,
+    });
+  });
+
   it('requires an absolute path and a private real parent directory', async () => {
     const relativePath = `relative-evidence-${process.pid}.jsonl`;
     await expect(

@@ -41,7 +41,7 @@ describe('canonical processing contract', () => {
   it('uses truthful copy/move and conflict policy values', () => {
     expect(Object.values(OperationMode)).toEqual(['copy', 'move']);
     expect(Object.values(ConflictPolicy)).toEqual(['skip', 'rename']);
-    expect(Object.values(FolderStructure)).toEqual(['year/month', 'year-month', 'flat']);
+    expect(Object.values(FolderStructure)).toEqual(['year/month', 'year', 'year-month', 'flat']);
   });
 
   it('binds start capability to an immutable preview identifier', () => {

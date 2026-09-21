@@ -19,6 +19,8 @@ const config = {
     workerCount: 4,
     operation: 'copy' as const,
     verifyIntegrity: true as const,
+    writeMetadataDates: false,
+    testMode: false,
   },
   organization: {
     folderStructure: 'year/month' as const,
@@ -150,6 +152,17 @@ function installAPI(overrides: Partial<NonNullable<Window['electronAPI']>> = {})
       },
     }),
     cancelProcessing: jest.fn().mockResolvedValue({ success: true }),
+    gatherTestRun: jest.fn().mockResolvedValue({
+      success: true,
+      data: {
+        temporarySourcePath: '/tmp/meta-mover-test-runs/run/source',
+        copiedFiles: 15000,
+        scannedFiles: 958410,
+      },
+    }),
+    discardTestRun: jest.fn().mockResolvedValue({ success: true }),
+    cancelTestRun: jest.fn().mockResolvedValue({ success: true }),
+    onTestRunProgress: jest.fn().mockReturnValue(() => undefined),
     ...overrides,
   } as unknown as Window['electronAPI'];
   return window.electronAPI!;
@@ -167,6 +180,8 @@ describe('ProcessingLauncher', () => {
 
   it('requires a preview before start and shows the evidence summary and warnings', async () => {
     const api = installAPI();
+    const previewReady = jest.fn();
+    window.addEventListener('meta-mover:preview-ready', previewReady);
     const user = userEvent.setup();
     createHarness().renderLauncher();
     await selectFolders(user);
@@ -182,6 +197,9 @@ describe('ProcessingLauncher', () => {
     expect(sentOptions.appendScreenshotSuffix).toBe(false);
 
     expect(await screen.findByText('Preview ready')).toBeInTheDocument();
+    expect(localStorage.getItem('meta-mover:last-preview-id')).toBe('preview-1');
+    expect(previewReady).toHaveBeenCalledWith(expect.objectContaining({ detail: 'preview-1' }));
+    window.removeEventListener('meta-mover:preview-ready', previewReady);
     expect(screen.getByText('2')).toBeInTheDocument();
     expect(screen.getByText('No trustworthy creation date')).toBeInTheDocument();
     expect(screen.getByText('Manual review required')).toBeInTheDocument();
@@ -192,6 +210,182 @@ describe('ProcessingLauncher', () => {
       previewId: 'preview-1',
       acknowledgeDestructiveOperation: false,
     });
+  });
+
+  it('shows only original and proposed filenames in preview source and target columns', async () => {
+    installAPI();
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    expect(await screen.findAllByText('a.jpg')).toHaveLength(2);
+    expect(screen.getByText('b.jpg')).toBeInTheDocument();
+    expect(screen.queryByText('/media/source/a.jpg')).not.toBeInTheDocument();
+    expect(screen.queryByText('/media/destination/2024/01/a.jpg')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('/media/source/a.jpg')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('/media/destination/2024/01/a.jpg')).not.toBeInTheDocument();
+  });
+
+  it('gathers 15000 copied files and previews only the temporary corpus', async () => {
+    const testConfig = {
+      ...config,
+      processing: { ...config.processing, testMode: true },
+    };
+    const api = installAPI({
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: testConfig }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+
+    await user.click(screen.getByRole('button', { name: 'Gather 15,000-file test run' }));
+
+    expect(api.gatherTestRun).toHaveBeenCalledWith({
+      sourcePath: '/media/source',
+      destinationPath: '/media/destination',
+      fileCount: 15000,
+    });
+    await waitFor(() =>
+      expect(api.previewProcessing).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourcePaths: ['/tmp/meta-mover-test-runs/run/source'],
+          destinationPath: '/media/destination',
+        })
+      )
+    );
+  });
+
+  it('rebuilds a retained test corpus when settings change without gathering another corpus', async () => {
+    const testConfig = {
+      ...config,
+      processing: { ...config.processing, testMode: true },
+    };
+    const moveConfig = {
+      ...testConfig,
+      processing: { ...testConfig.processing, operation: 'move' as const },
+    };
+    const api = installAPI({
+      getConfig: jest
+        .fn()
+        .mockResolvedValueOnce({ success: true, data: testConfig })
+        .mockResolvedValueOnce({ success: true, data: testConfig })
+        .mockResolvedValue({ success: true, data: moveConfig }),
+      previewProcessing: jest
+        .fn()
+        .mockResolvedValueOnce({ success: true, data: preview('copy') })
+        .mockResolvedValue({ success: true, data: preview('move') }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Gather 15,000-file test run' }));
+    expect(await screen.findByRole('button', { name: 'Start Copy' })).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('meta-mover:config-updated', { detail: moveConfig }));
+    });
+
+    expect(await screen.findByRole('button', { name: 'Start Move' })).toBeInTheDocument();
+    expect(api.gatherTestRun).toHaveBeenCalledTimes(1);
+    expect(api.previewProcessing).toHaveBeenCalledTimes(2);
+    expect(api.previewProcessing).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourcePaths: ['/tmp/meta-mover-test-runs/run/source'],
+        options: expect.objectContaining({ operation: 'move' }),
+      })
+    );
+  });
+
+  it('shows test-run scan and copy progress with current filename and cancellation', async () => {
+    let progressListener:
+      | ((event: import('../../../src/main/services/TestRunCorpusBuilder').TestRunProgress) => void)
+      | undefined;
+    const pending =
+      deferred<Awaited<ReturnType<NonNullable<Window['electronAPI']>['gatherTestRun']>>>();
+    const testConfig = { ...config, processing: { ...config.processing, testMode: true } };
+    const api = installAPI({
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: testConfig }),
+      gatherTestRun: jest.fn(() => pending.promise),
+      onTestRunProgress: jest.fn((listener) => {
+        progressListener = listener;
+        return () => undefined;
+      }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Gather 15,000-file test run' }));
+
+    act(() =>
+      progressListener?.({
+        phase: 'copying',
+        scannedFiles: 958410,
+        selectedFiles: 15000,
+        copiedFiles: 4200,
+        totalFiles: 15000,
+        percentage: 28,
+        currentFile: 'Photos/2024/current.jpg',
+      })
+    );
+
+    expect(screen.getByText('4,200 / 15,000 files (28%)')).toBeInTheDocument();
+    expect(screen.getByText('Photos/2024/current.jpg')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop Test Run' }));
+    expect(api.cancelTestRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a persistent test-mode banner and hides normal preview while enabled', async () => {
+    const testConfig = {
+      ...config,
+      processing: { ...config.processing, testMode: true },
+    };
+    installAPI({ getConfig: jest.fn().mockResolvedValue({ success: true, data: testConfig }) });
+    createHarness().renderLauncher();
+
+    expect(await screen.findByText(/TEST MODE/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Build Preview' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Gather 15,000-file test run' })).toBeInTheDocument();
+  });
+
+  it('recognizes a retained test corpus after relaunch and rebuilds without gathering', async () => {
+    const retained = '/media/destination/.meta-mover-test-runs/run-12345678-existing/source';
+    const testConfig = { ...config, processing: { ...config.processing, testMode: true } };
+    const api = installAPI({
+      selectDirectory: jest
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValueOnce('/media/destination'),
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: testConfig }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+
+    await user.click(screen.getByRole('button', { name: 'Rebuild existing test preview' }));
+
+    expect(api.gatherTestRun).not.toHaveBeenCalled();
+    expect(api.previewProcessing).toHaveBeenCalledWith(
+      expect.objectContaining({ sourcePaths: [retained] })
+    );
+  });
+
+  it('reflects test mode immediately when Settings saves while Organize stays mounted', async () => {
+    installAPI();
+    createHarness().renderLauncher();
+    expect(await screen.findByRole('button', { name: 'Build Preview' })).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('meta-mover:config-updated', {
+          detail: { ...config, processing: { ...config.processing, testMode: true } },
+        })
+      );
+    });
+
+    expect(screen.getByText(/TEST MODE/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Build Preview' })).not.toBeInTheDocument();
   });
 
   it('carries the enabled screenshot label setting into preview options', async () => {
@@ -377,6 +571,12 @@ describe('ProcessingLauncher', () => {
     fireEvent.click(build);
     fireEvent.click(build);
 
+    // The request is issued after the saved settings are re-read, so wait for it, then confirm
+    // the second activation never produced a second request.
+    await waitFor(() => expect(api.previewProcessing).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(api.previewProcessing).toHaveBeenCalledTimes(1);
   });
 
@@ -458,6 +658,29 @@ describe('ProcessingLauncher', () => {
         sourcePaths: ['/media/source-b'],
         destinationPath: '/media/destination',
       })
+    );
+  });
+
+  it('builds the preview from the settings saved after startup, not the startup snapshot', async () => {
+    const moveConfig = {
+      ...config,
+      processing: { ...config.processing, operation: 'move' as const },
+    };
+    const api = installAPI({
+      getConfig: jest
+        .fn()
+        .mockResolvedValueOnce({ success: true, data: config })
+        .mockResolvedValue({ success: true, data: moveConfig }),
+      previewProcessing: jest.fn().mockResolvedValue({ success: true, data: preview('move') }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    expect(await screen.findByRole('button', { name: 'Start Move' })).toBeInTheDocument();
+    expect(api.previewProcessing).toHaveBeenCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ operation: 'move' }) })
     );
   });
 
@@ -548,6 +771,37 @@ describe('ProcessingLauncher', () => {
       jobId: 'job-1',
       reason: 'Cancelled by user',
     });
+  });
+
+  it('shows the audit preparation stage between file settlements while cancellation stays available', async () => {
+    installAPI();
+    const { store, renderLauncher } = createHarness();
+    store.dispatch(
+      addJob({
+        id: 'job-1',
+        type: 'copy',
+        status: 'processing',
+        progress: 0,
+        filesProcessed: 2,
+        totalFiles: 100000,
+        preparation: {
+          stage: 'Verifying preview evidence',
+          completed: 600,
+          total: 1000,
+          unit: 'records',
+        },
+        startTime: '2026-08-29T20:00:01.000Z',
+      })
+    );
+    store.dispatch(setActiveJob('job-1'));
+
+    renderLauncher();
+
+    expect(await screen.findByText('2 / 100000 files (0%)')).toBeInTheDocument();
+    expect(screen.getByText('Preparing metadata audit')).toBeInTheDocument();
+    expect(screen.getByText('Verifying preview evidence')).toBeInTheDocument();
+    expect(screen.getByText('600 / 1,000 records (60%)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel Processing' })).toBeEnabled();
   });
 
   it('resumes the active Redux job after navigation remounts the launcher', async () => {

@@ -10,6 +10,8 @@ const config = {
     workerCount: 4,
     operation: 'copy' as const,
     verifyIntegrity: true as const,
+    writeMetadataDates: false,
+    testMode: false,
   },
   organization: {
     folderStructure: 'year/month' as const,
@@ -89,5 +91,79 @@ describe('SettingsView', () => {
       })
     );
     expect(await screen.findByText('Saved')).toBeInTheDocument();
+  });
+
+  it('shows and persists the destination metadata date normalization toggle', async () => {
+    const updateConfig = jest.fn().mockResolvedValue({
+      success: true,
+      data: {
+        ...config,
+        processing: { ...config.processing, writeMetadataDates: true },
+      },
+    });
+    window.electronAPI = {
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+      updateConfig,
+      resetConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+    } as unknown as Window['electronAPI'];
+
+    render(<SettingsView />);
+    const toggle = await screen.findByRole('checkbox', {
+      name: 'Normalize destination creation dates',
+    });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateConfig).toHaveBeenCalledWith({
+        processing: { writeMetadataDates: true },
+      })
+    );
+  });
+
+  it('allows month subfolders to be disabled by selecting year-only organization', async () => {
+    const updateConfig = jest.fn().mockResolvedValue({
+      success: true,
+      data: {
+        ...config,
+        organization: { ...config.organization, folderStructure: 'year' },
+      },
+    });
+    window.electronAPI = {
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+      updateConfig,
+      resetConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+    } as unknown as Window['electronAPI'];
+
+    render(<SettingsView />);
+    const folderStructure = await screen.findByRole('combobox', { name: 'Folder structure' });
+    await userEvent.selectOptions(folderStructure, 'year');
+
+    await waitFor(() =>
+      expect(updateConfig).toHaveBeenCalledWith({
+        organization: { folderStructure: 'year' },
+      })
+    );
+  });
+
+  it('shows and persists the copied-corpus test mode toggle', async () => {
+    const updateConfig = jest.fn().mockResolvedValue({
+      success: true,
+      data: { ...config, processing: { ...config.processing, testMode: true } },
+    });
+    window.electronAPI = {
+      getConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+      updateConfig,
+      resetConfig: jest.fn().mockResolvedValue({ success: true, data: config }),
+    } as unknown as Window['electronAPI'];
+
+    render(<SettingsView />);
+    const toggle = await screen.findByRole('checkbox', { name: 'Test mode' });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateConfig).toHaveBeenCalledWith({ processing: { testMode: true } })
+    );
   });
 });

@@ -35,6 +35,14 @@ export interface NativeTransactionFilesystemClient {
     },
     signal?: AbortSignal
   ): Promise<NativeFilesystemOperationResult>;
+  renameNoReplace(
+    request: {
+      source: NativeFilesystemCapabilityPath;
+      target: NativeFilesystemCapabilityPath;
+      expected?: NativeFilesystemIdentity;
+    },
+    signal?: AbortSignal
+  ): Promise<NativeFilesystemOperationResult>;
   removeManagedExact(
     request: RemoveManagedExactRequest,
     signal?: AbortSignal
@@ -96,6 +104,7 @@ export class NativeTransactionFilesystem {
         stageCopy: unavailableRootBindingMutation,
         writeMarkerNew: unavailableRootBindingMutation,
         hardLinkNoReplace: unavailableRootBindingMutation,
+        renameNoReplace: unavailableRootBindingMutation,
         removeManagedExact: unavailableRootBindingMutation,
         deleteSourceExact: unavailableRootBindingMutation,
         reconcileSourceDelete: unavailableRootBindingMutation,
@@ -185,6 +194,18 @@ export class NativeTransactionFilesystem {
     signal?: AbortSignal
   ) {
     return this.client.hardLinkNoReplace(
+      { source: this.anyPath(sourcePath), target: this.anyPath(targetPath), expected },
+      signal
+    );
+  }
+
+  renameNoReplace(
+    sourcePath: string,
+    targetPath: string,
+    expected?: NativeFilesystemIdentity,
+    signal?: AbortSignal
+  ) {
+    return this.client.renameNoReplace(
       { source: this.anyPath(sourcePath), target: this.anyPath(targetPath), expected },
       signal
     );

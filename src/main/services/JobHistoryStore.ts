@@ -519,7 +519,6 @@ function isValidEventPayload(kind: ProcessingEvent['kind'], payload: unknown): b
         Object.values(ProcessingPhase).includes(payload.phase as ProcessingPhase)
       );
     case ProcessingEventKind.PREVIEW_PROGRESS:
-    case ProcessingEventKind.JOB_PROGRESS:
       return (
         hasExactKeys(
           payload,
@@ -531,6 +530,30 @@ function isValidEventPayload(kind: ProcessingEvent['kind'], payload: unknown): b
         isNonNegativeInteger(payload.totalFiles) &&
         isFiniteRange(payload.percentage, 0, 100) &&
         hasOptionalString(payload, 'currentFile')
+      );
+    case ProcessingEventKind.JOB_PROGRESS:
+      return (
+        hasExactKeys(
+          payload,
+          ['phase', 'filesProcessed', 'totalFiles', 'percentage'],
+          ['currentFile', 'bytesProcessed', 'totalBytes', 'throughput', 'eta']
+        ) &&
+        Object.values(ProcessingPhase).includes(payload.phase as ProcessingPhase) &&
+        isNonNegativeInteger(payload.filesProcessed) &&
+        isNonNegativeInteger(payload.totalFiles) &&
+        isFiniteRange(payload.percentage, 0, 100) &&
+        hasOptionalString(payload, 'currentFile') &&
+        (payload.bytesProcessed === undefined || isNonNegativeInteger(payload.bytesProcessed)) &&
+        (payload.totalBytes === undefined || isNonNegativeInteger(payload.totalBytes)) &&
+        (payload.throughput === undefined ||
+          (typeof payload.throughput === 'number' &&
+            Number.isFinite(payload.throughput) &&
+            payload.throughput >= 0)) &&
+        (payload.eta === undefined ||
+          (typeof payload.eta === 'number' && Number.isFinite(payload.eta) && payload.eta >= 0)) &&
+        (payload.bytesProcessed === undefined ||
+          payload.totalBytes === undefined ||
+          payload.bytesProcessed <= payload.totalBytes)
       );
     case ProcessingEventKind.JOB_CANCELLING:
       return hasExactKeys(payload, [], ['reason']) && hasOptionalString(payload, 'reason');

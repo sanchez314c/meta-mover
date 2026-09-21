@@ -15,6 +15,7 @@ import { CoordinatorJobHistoryAdapter } from '../services/CoordinatorJobHistoryA
 import { JobHistoryStore } from '../services/JobHistoryStore';
 import { MediaPreviewPlanner } from '../services/MediaPreviewPlanner';
 import { MediaPreviewRevalidator } from '../services/MediaPreviewRevalidator';
+import { EvidenceNormalizationAuditRepository } from '../services/EvidenceNormalizationAuditRepository';
 import { ProcessingCoordinator } from '../services/ProcessingCoordinator';
 import {
   IpcRegistrarPort,
@@ -26,6 +27,7 @@ import { BundledExifToolAdapter } from '../tools/BundledExifToolAdapter';
 import { BundledRuntimeHealth } from '../tools/BundledRuntimeHealth';
 import {
   ApplicationConfigPort,
+  ApplicationAuditPort,
   ApplicationCoordinatorPort,
   ApplicationEvidencePort,
   ApplicationHistoryPort,
@@ -42,7 +44,7 @@ import type {
 } from '../services/ProcessingCoordinator';
 import type { ProcessingEvent, ProcessingOptionsDTO } from '../../shared/types/processing';
 
-const DEFAULT_PREVIEW_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_PREVIEW_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_WORKER_CONCURRENCY = 10;
 
 export interface ProductionRuntimeOptions {
@@ -88,13 +90,17 @@ export interface ProductionRuntimeBindings {
     evidenceRoot: string;
     policyVersion: string;
   }): Promise<ApplicationEvidencePort>;
+  openAudit(evidenceRoot: string): Promise<ApplicationAuditPort>;
   verifyRuntime(context: ProductionRuntimeContext): Promise<ApplicationRuntimeHealthPort>;
   openMetadata(
     context: ProductionRuntimeContext & { runtime: ApplicationRuntimeHealthPort }
   ): Promise<ApplicationMetadataPort>;
   createPlanner(metadata: ApplicationMetadataPort): PreviewPlannerPort;
   createRevalidator(runtime: ApplicationRuntimeHealthPort): PreviewRevalidatorPort;
-  openTransaction(context: ProductionRuntimeContext): Promise<ApplicationTransactionPort>;
+  openTransaction(
+    context: ProductionRuntimeContext,
+    audit: ApplicationAuditPort
+  ): Promise<ApplicationTransactionPort>;
   createCoordinator(context: ProductionCoordinatorContext): ApplicationCoordinatorPort;
   createIpc(dependencies: ProcessingIPCDependencies): ApplicationIpcPort;
 }
@@ -141,6 +147,7 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
     return { coordinator: adapter, list: adapter, close: () => store.close() };
   },
   openEvidence: (options) => CoordinatorEvidenceAdapter.create(options),
+  openAudit: (evidenceRoot) => EvidenceNormalizationAuditRepository.open(evidenceRoot),
   verifyRuntime: async (context) => {
     const runtime = new BundledRuntimeHealth(
       context.resourcesRoot,
@@ -171,8 +178,20 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
   createPlanner: (metadata) =>
     MediaPreviewPlanner.createDefault(metadata as MetadataCandidateCollector),
   createRevalidator: (runtime) => new MediaPreviewRevalidator({ runtime }),
-  openTransaction: async (context) =>
-    new TransactionalOperationExecutor({
+  openTransaction: async (context, audit) => {
+    const metadataWriter = await BundledExifToolAdapter.createPackaged(
+      context.resourcesRoot,
+      context.platform,
+      undefined,
+      {
+        architecture: context.architecture,
+        isPackaged: context.isPackaged,
+        launchTrustPolicy: context.launchTrustPolicy,
+      }
+    );
+    return new TransactionalOperationExecutor({
+      metadataWriter,
+      normalizationAuthorization: audit,
       nativeFilesystemFactory: async ({ destinationRoot, controlRoot, sourceRoots }) => {
         const roots = NativeTransactionFilesystem.rootBindings(
           destinationRoot,
@@ -189,7 +208,8 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
         });
         return new NativeTransactionFilesystem(client, destinationRoot, controlRoot, sourceRoots);
       },
-    }),
+    });
+  },
   createCoordinator: (context) =>
     new ProcessingCoordinator({
       planner: context.planner,
@@ -241,11 +261,12 @@ export async function createProductionApplicationRuntime(
         evidenceRoot,
         policyVersion: options.evidencePolicyVersion,
       }),
+    openAudit: () => bindings.openAudit(evidenceRoot),
     verifyRuntime: () => bindings.verifyRuntime(runtimeContext),
     openMetadata: ({ runtime }) => bindings.openMetadata({ ...runtimeContext, runtime }),
     createPlanner: ({ metadata }) => bindings.createPlanner(metadata),
     createRevalidator: ({ runtime }) => bindings.createRevalidator(runtime),
-    openTransaction: () => bindings.openTransaction(runtimeContext),
+    openTransaction: ({ audit }) => bindings.openTransaction(runtimeContext, audit),
     createCoordinator: ({ config, history, runtime, planner, revalidator, transaction }) => {
       const current = config.getAll();
       return bindings.createCoordinator({
@@ -264,17 +285,18 @@ export async function createProductionApplicationRuntime(
           appendScreenshotSuffix: current.organization.appendScreenshotSuffix,
           workerCount: current.processing.workerCount,
           verifyIntegrity: true,
-          writeMetadataDates: false,
+          writeMetadataDates: current.processing.writeMetadataDates,
         },
       });
     },
-    createIpc: ({ config, history, runtime, coordinator }) =>
+    createIpc: ({ config, history, runtime, coordinator, audit }) =>
       bindings.createIpc({
         ipc: options.ipc,
         config,
         history,
         health: runtime,
         coordinator,
+        audit,
         publishEvent: options.publishEvent,
       }),
   });

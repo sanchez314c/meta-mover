@@ -1,5 +1,6 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import type {
+  AuditPreparationProgressDTO,
   ProcessingCancellationFileOutcomeDTO,
   ProcessingEvent,
   ProcessingFileFailureDTO,
@@ -19,6 +20,8 @@ export interface Job {
   progress: number;
   filesProcessed: number;
   totalFiles: number;
+  /** Authorization-evidence preparation reported between file settlements. */
+  preparation?: AuditPreparationProgressDTO;
   skippedFiles?: number;
   failedFiles?: number;
   cancelledFiles?: number;
@@ -226,6 +229,8 @@ const jobsSlice = createSlice({
           job.progress = event.payload.percentage;
           job.filesProcessed = event.payload.filesProcessed;
           job.totalFiles = event.payload.totalFiles;
+          if (event.payload.preparation === undefined) job.preparation = undefined;
+          else job.preparation = { ...event.payload.preparation };
           break;
         case 'job-cancelling':
           job.status = 'cancelling';
@@ -238,6 +243,7 @@ const jobsSlice = createSlice({
           job.skippedFiles = event.payload.statistics.skippedFiles;
           job.fileFailures = [];
           job.progress = job.totalFiles === 0 ? 100 : (job.filesProcessed / job.totalFiles) * 100;
+          job.preparation = undefined;
           job.endTime = event.emittedAt;
           break;
         case 'job-partially-completed':
@@ -248,6 +254,7 @@ const jobsSlice = createSlice({
           job.skippedFiles = event.payload.statistics.skippedFiles;
           job.fileFailures = event.payload.fileFailures.map((failure) => ({ ...failure }));
           job.progress = job.totalFiles === 0 ? 100 : (job.filesProcessed / job.totalFiles) * 100;
+          job.preparation = undefined;
           job.endTime = event.emittedAt;
           break;
         case 'job-failed':
@@ -263,6 +270,7 @@ const jobsSlice = createSlice({
           if (event.payload.fileFailures) {
             job.fileFailures = event.payload.fileFailures.map((failure) => ({ ...failure }));
           }
+          job.preparation = undefined;
           job.endTime = event.emittedAt;
           break;
         case 'job-cancelled':
@@ -277,6 +285,7 @@ const jobsSlice = createSlice({
           job.fileFailures = event.payload.fileFailures.map((failure) => ({ ...failure }));
           job.cancellationOutcomes = event.payload.fileOutcomes.map((outcome) => ({ ...outcome }));
           job.progress = job.totalFiles === 0 ? 100 : (job.filesProcessed / job.totalFiles) * 100;
+          job.preparation = undefined;
           job.endTime = event.emittedAt;
           break;
       }

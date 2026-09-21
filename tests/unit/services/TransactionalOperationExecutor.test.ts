@@ -9,6 +9,8 @@ import {
 import { PlannedOperation } from '../../../src/main/services/ProcessingCoordinator';
 import { OperationMode } from '../../../src/shared/types/processing';
 import { TransactionRequest, TransactionResult } from '../../../src/main/core/transaction';
+import type { MetadataDateWriterPort } from '../../../src/main/core/metadata/MetadataDateWriter';
+import type { NormalizationAuthorizationPort } from '../../../src/main/services/TransactionalOperationExecutor';
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let attempts = 0; attempts < 100; attempts += 1) {
@@ -92,7 +94,48 @@ describe('TransactionalOperationExecutor', () => {
       jobId: 'job-1',
       previewId: 'preview-1',
       mode,
+      writeMetadataDates: false,
       signal: new AbortController().signal,
+    };
+  }
+
+  function resolvedDatePayload(): Record<string, unknown> {
+    return {
+      mediaKind: 'image',
+      dateResolution: {
+        policyVersion: 'date-resolution/1',
+        fileId: '1:2',
+        mediaKind: 'image',
+        target: 'capture-time',
+        evaluationTimeUtc: '2026-08-29T12:00:00.000Z',
+        status: 'resolved',
+        confidence: 'high',
+        selectedCandidateId: 'candidate-1',
+        selectedGroupId: 'group-1',
+        selectedGroupScore: 95,
+        selectedValue: {
+          localIso: '2024-03-04T05:06:07',
+          instantUtc: '2024-03-04T10:06:07.000Z',
+          offsetMinutes: -300,
+          zoneBasis: 'explicit-offset',
+          precision: 'second',
+        },
+        contenderIds: [],
+        rejected: [],
+        reasonCodes: [],
+        candidates: [],
+      },
+    };
+  }
+
+  function normalizationReceipt() {
+    return {
+      family: 'jpeg' as const,
+      idempotent: false,
+      verified: true as const,
+      before: {},
+      after: {},
+      normalizedTags: ['ExifIFD:DateTimeOriginal'],
     };
   }
 
@@ -213,6 +256,225 @@ describe('TransactionalOperationExecutor', () => {
     await executor.close();
   });
 
+  it('defers the first whole-file hash until approved transaction execution', async () => {
+    const core: TransactionCorePort = {
+      execute: jest.fn(async (request) =>
+        result({
+          operationId: request.operationId,
+          destinationPath: request.expectedDestinationPath,
+          hash: 'b'.repeat(64),
+        })
+      ),
+      close: async () => undefined,
+    };
+    const planned = operation();
+    delete (planned.payload as Record<string, unknown>).contentSha256;
+    const executor = new TransactionalOperationExecutor({ coreFactory: async () => core });
+
+    await expect(executor.execute(planned, context())).resolves.toMatchObject({
+      outcome: 'committed',
+    });
+    expect(core.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedSha256: undefined })
+    );
+    await executor.close();
+  });
+
+  it('normalizes private staging before the transaction publishes when enabled and resolved', async () => {
+    const stagingPath = path.join(destinationRoot, '.meta-mover', 'staging', 'operation-001.part');
+    const core: TransactionCorePort = {
+      execute: async (request) => {
+        await request.transformStaging?.({ stagingPath, signal: request.signal });
+        return result();
+      },
+      close: async () => undefined,
+    };
+    const metadataWriter: MetadataDateWriterPort = {
+      normalizeDateMetadata: jest.fn(async () => normalizationReceipt()),
+      close: jest.fn(async () => undefined),
+    };
+    const planned = operation();
+    planned.payload = {
+      ...(planned.payload as Record<string, unknown>),
+      ...resolvedDatePayload(),
+    };
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => core,
+      metadataWriter,
+      normalizationAuthorization: {
+        authorizeNormalization: jest.fn(async () => true),
+      },
+    });
+
+    await expect(
+      executor.execute(planned, { ...context(), writeMetadataDates: true })
+    ).resolves.toMatchObject({ outcome: 'committed', bytes: 12 });
+    expect(metadataWriter.normalizeDateMetadata).toHaveBeenCalledWith({
+      filePath: stagingPath,
+      selectedDate: expect.objectContaining({ localIso: '2024-03-04T05:06:07' }),
+      signal: expect.any(AbortSignal),
+    });
+    await executor.close();
+    expect(metadataWriter.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies without metadata mutation when the immutable audit does not authorize the row', async () => {
+    const core: TransactionCorePort = {
+      execute: jest.fn(async (request) => result({ operationId: request.operationId })),
+      close: async () => undefined,
+    };
+    const metadataWriter: MetadataDateWriterPort = {
+      normalizeDateMetadata: jest.fn(async () => normalizationReceipt()),
+      close: async () => undefined,
+    };
+    const normalizationAuthorization: NormalizationAuthorizationPort = {
+      authorizeNormalization: jest.fn(async () => false),
+    };
+    const planned = operation();
+    planned.payload = { ...(planned.payload as Record<string, unknown>), ...resolvedDatePayload() };
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => core,
+      metadataWriter,
+      normalizationAuthorization,
+    });
+
+    await expect(
+      executor.execute(planned, { ...context(), writeMetadataDates: true })
+    ).resolves.toMatchObject({ outcome: 'committed' });
+    expect(normalizationAuthorization.authorizeNormalization).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previewId: 'preview-1',
+        sourcePath,
+        outputPath: planned.targetPath,
+      })
+    );
+    expect(metadataWriter.normalizeDateMetadata).not.toHaveBeenCalled();
+    await executor.close();
+  });
+
+  it('forwards the job signal and stage progress channel into audit authorization', async () => {
+    const core: TransactionCorePort = {
+      execute: jest.fn(async (request) =>
+        result({
+          operationId: request.operationId,
+          destinationPath: request.expectedDestinationPath,
+        })
+      ),
+      close: async () => undefined,
+    };
+    const authorizeNormalization = jest.fn(async () => true);
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => core,
+      metadataWriter: {
+        normalizeDateMetadata: jest.fn(async () => normalizationReceipt()),
+        close: jest.fn(async () => undefined),
+      },
+      normalizationAuthorization: { authorizeNormalization },
+    });
+    const planned = operation();
+    planned.payload = {
+      ...(planned.payload as Record<string, unknown>),
+      ...resolvedDatePayload(),
+    };
+    const controller = new AbortController();
+    const reportStageProgress = jest.fn(async () => undefined);
+
+    await executor.execute(planned, {
+      ...context(),
+      writeMetadataDates: true,
+      signal: controller.signal,
+      reportStageProgress,
+    });
+
+    expect(authorizeNormalization).toHaveBeenCalledTimes(1);
+    const request = authorizeNormalization.mock.calls[0][0] as Record<string, unknown>;
+    expect(request.signal).toBe(controller.signal);
+    expect(request.reportProgress).toBe(reportStageProgress);
+    await executor.close();
+  });
+
+  it('leaves destination metadata untouched when normalization is disabled or unresolved', async () => {
+    const core: TransactionCorePort = {
+      execute: async (request) =>
+        result({
+          operationId: request.operationId,
+          destinationPath: request.expectedDestinationPath,
+        }),
+      close: async () => undefined,
+    };
+    const metadataWriter: MetadataDateWriterPort = {
+      normalizeDateMetadata: jest.fn(async () => normalizationReceipt()),
+      close: async () => undefined,
+    };
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => core,
+      metadataWriter,
+      normalizationAuthorization: { authorizeNormalization: async () => true },
+    });
+
+    await executor.execute(operation(), { ...context(), writeMetadataDates: true });
+    const resolved = operation({ id: 'operation-002' });
+    resolved.payload = {
+      ...(resolved.payload as Record<string, unknown>),
+      ...resolvedDatePayload(),
+    };
+    await executor.execute(resolved, context());
+
+    expect(metadataWriter.normalizeDateMetadata).not.toHaveBeenCalled();
+    await executor.close();
+  });
+
+  it('lets the transaction fail closed before publication when staging normalization fails', async () => {
+    const core: TransactionCorePort = {
+      execute: async (request) => {
+        try {
+          await request.transformStaging?.({
+            stagingPath: path.join(destinationRoot, '.meta-mover', 'staging', 'operation-001.part'),
+            signal: request.signal,
+          });
+        } catch (error) {
+          return result({
+            status: 'failed',
+            committed: false,
+            sourceRetained: true,
+            destinationPath: undefined,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        throw new Error('expected transformer failure');
+      },
+      close: async () => undefined,
+    };
+    const metadataWriter: MetadataDateWriterPort = {
+      normalizeDateMetadata: async () => {
+        throw new Error('ExifTool write failed');
+      },
+      close: async () => undefined,
+    };
+    const planned = operation();
+    planned.payload = {
+      ...(planned.payload as Record<string, unknown>),
+      ...resolvedDatePayload(),
+    };
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => core,
+      metadataWriter,
+      normalizationAuthorization: { authorizeNormalization: async () => true },
+    });
+
+    await expect(
+      executor.execute(planned, { ...context(OperationMode.MOVE), writeMetadataDates: true })
+    ).resolves.toEqual({
+      operationId: 'operation-001',
+      outcome: 'failed',
+      bytes: 0,
+      sourceRetained: true,
+      destinationCommitted: false,
+      error: 'ExifTool write failed',
+    });
+    await executor.close();
+  });
+
   it.each([
     ['outside target', () => operation({ targetPath: path.join(root, 'outside.jpg') })],
     [
@@ -274,6 +536,22 @@ describe('TransactionalOperationExecutor', () => {
         context()
       )
     ).rejects.toThrow(/invalid preview evidence/i);
+    expect(factory).not.toHaveBeenCalled();
+    await executor.close();
+  });
+
+  it('rejects a resolved decision that omits its selected creation date', async () => {
+    const planned = operation();
+    const factory = jest.fn<Promise<TransactionCorePort>, [string]>();
+    const executor = new TransactionalOperationExecutor({ coreFactory: factory });
+    planned.payload = {
+      ...(planned.payload as Record<string, unknown>),
+      dateResolution: { status: 'resolved' },
+    };
+
+    await expect(executor.execute(planned, context())).rejects.toThrow(
+      /invalid selected creation date/i
+    );
     expect(factory).not.toHaveBeenCalled();
     await executor.close();
   });

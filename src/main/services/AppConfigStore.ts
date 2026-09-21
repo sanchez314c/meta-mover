@@ -18,6 +18,8 @@ export interface AppConfig {
     workerCount: number;
     operation: OperationMode;
     verifyIntegrity: true;
+    writeMetadataDates: boolean;
+    testMode: boolean;
   };
   organization: {
     folderStructure: FolderStructure;
@@ -40,6 +42,8 @@ export const DEFAULT_APP_CONFIG: Readonly<AppConfig> = Object.freeze({
     workerCount: 4,
     operation: OperationMode.COPY,
     verifyIntegrity: true,
+    writeMetadataDates: false,
+    testMode: false,
   }),
   organization: Object.freeze({
     folderStructure: FolderStructure.YEAR_MONTH,
@@ -316,6 +320,8 @@ function mergeUpdate(
           'workerCount',
           'operation',
           'verifyIntegrity',
+          'writeMetadataDates',
+          'testMode',
           ...(allowLegacyCorruption ? ['corruptionDetection'] : []),
         ],
         'processing.'
@@ -350,6 +356,19 @@ function mergeUpdate(
     if (processing.verifyIntegrity !== undefined && processing.verifyIntegrity !== true) {
       throw new AppConfigValidationError('processing.verifyIntegrity cannot be disabled');
     }
+    if (
+      processing.writeMetadataDates !== undefined &&
+      typeof processing.writeMetadataDates !== 'boolean'
+    ) {
+      throw new AppConfigValidationError('processing.writeMetadataDates must be boolean');
+    }
+    if (processing.writeMetadataDates !== undefined) {
+      next.processing.writeMetadataDates = processing.writeMetadataDates;
+    }
+    if (processing.testMode !== undefined && typeof processing.testMode !== 'boolean') {
+      throw new AppConfigValidationError('processing.testMode must be boolean');
+    }
+    if (processing.testMode !== undefined) next.processing.testMode = processing.testMode;
   }
 
   if (input.organization !== undefined) {

@@ -107,6 +107,7 @@ export function SettingsView() {
     const response = await window.electronAPI.updateConfig(update);
     if (response.success && response.data) {
       setConfig(response.data);
+      window.dispatchEvent(new CustomEvent('meta-mover:config-updated', { detail: response.data }));
       setMessage({ text: 'Saved', error: false });
     } else {
       setMessage({ text: response.error?.message ?? 'Could not save settings', error: true });
@@ -119,6 +120,7 @@ export function SettingsView() {
     const response = await window.electronAPI.resetConfig();
     if (response.success && response.data) {
       setConfig(response.data);
+      window.dispatchEvent(new CustomEvent('meta-mover:config-updated', { detail: response.data }));
       setMessage({ text: 'Defaults restored', error: false });
     } else {
       setMessage({ text: response.error?.message ?? 'Could not reset settings', error: true });
@@ -187,6 +189,43 @@ export function SettingsView() {
             <option value="move">Move</option>
           </Control>
         </Row>
+        <Row>
+          <Copy>
+            Normalize destination creation dates
+            <Hint>
+              After a successful copy or move, replaces writable date fields with the selected
+              creation date. Non-date metadata is preserved. This rewrites the destination and may
+              take time for large videos.
+            </Hint>
+          </Copy>
+          <Checkbox
+            aria-label="Normalize destination creation dates"
+            type="checkbox"
+            checked={config.processing.writeMetadataDates}
+            onChange={(event) =>
+              void save({
+                processing: { writeMetadataDates: event.currentTarget.checked },
+              })
+            }
+          />
+        </Row>
+        <Row>
+          <Copy>
+            Test mode
+            <Hint>
+              Copies 15,000 random files into private temporary storage, then previews and processes
+              only those copies. Originals remain untouched.
+            </Hint>
+          </Copy>
+          <Checkbox
+            aria-label="Test mode"
+            type="checkbox"
+            checked={config.processing.testMode}
+            onChange={(event) =>
+              void save({ processing: { testMode: event.currentTarget.checked } })
+            }
+          />
+        </Row>
       </Card>
       <Card>
         <Title>Organization</Title>
@@ -207,6 +246,7 @@ export function SettingsView() {
             }
           >
             <option value="year/month">Year / Month</option>
+            <option value="year">Year only (no month folders)</option>
             <option value="year-month">Year-Month</option>
             <option value="flat">Flat</option>
           </Control>

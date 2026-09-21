@@ -89,6 +89,10 @@ export interface TransactionRequest {
   expectedSha256?: string;
   mode?: TransactionMode;
   signal?: AbortSignal;
+  transformStaging?: (context: {
+    stagingPath: string;
+    signal?: AbortSignal;
+  }) => Promise<void | Readonly<Record<string, unknown>>>;
 }
 
 export interface TransactionPreview {
@@ -323,6 +327,7 @@ export class TransactionalFileCore {
     let sourcePath = request.sourcePath;
     let sourceHandle: FileHandle | undefined;
     let sourceHash: string | undefined;
+    let outputHash: string | undefined;
     let sourceIdentity: SourceIdentity | undefined;
     let sourceNativeIdentity: NativeFilesystemIdentity | undefined;
     let stagingPath: string | undefined;
@@ -332,6 +337,7 @@ export class TransactionalFileCore {
     let reservationNativeIdentity: NativeFilesystemIdentity | undefined;
     let targetDirectory: TargetDirectoryBinding | undefined;
     let committed = false;
+    let transformationStarted = false;
     let sourceDeleteIntentDurable = false;
     let bytes: number | undefined;
     const residue: string[] = [];
@@ -365,8 +371,57 @@ export class TransactionalFileCore {
       if (request.expectedSourceIdentity) {
         this.requireExpectedIdentity(sourceIdentity, request.expectedSourceIdentity);
       }
+
+      // Same-filesystem rename fast path for moves: no hashing, no staging, instant rename.
+      if (
+        mode === 'move' &&
+        request.expectedSha256 === undefined &&
+        request.transformStaging === undefined
+      ) {
+        const targetDirectoryForDevCheck = await this.prepareTargetDirectory(targetRelativePath);
+        const targetDirIdentity = await this.getHandleIdentity(targetDirectoryForDevCheck.handle);
+        if (sourceIdentity.dev === targetDirIdentity.dev) {
+          targetDirectory = targetDirectoryForDevCheck;
+          // Save counter state so a cross-device fallback starts the
+          // staged-copy path with the same allocation cursor.
+          const savedCounter = this.nextCounters.get(targetRelativePath);
+          try {
+            return await this.executeSameFilesystemMove(
+              operationId,
+              sourcePath,
+              sourceHandle,
+              sourceIdentity,
+              targetRelativePath,
+              expectedDestinationPath,
+              request.collisionMode,
+              request.signal,
+              targetDirectory
+            );
+          } catch (renameError) {
+            if (this.isCrossDeviceError(renameError)) {
+              // st_dev matched but the rename returned EXDEV (different mount
+              // points sharing a device number, or bind-mount edge). Fall
+              // through to the full staged-copy path. Restore the allocation
+              // counter so hash-based duplicate detection at counter 0 is
+              // not skipped.
+              if (savedCounter === undefined) {
+                this.nextCounters.delete(targetRelativePath);
+              } else {
+                this.nextCounters.set(targetRelativePath, savedCounter);
+              }
+            } else {
+              throw renameError;
+            }
+          }
+        } else {
+          await closeIgnoringErrors(targetDirectoryForDevCheck.handle);
+          targetDirectory = undefined;
+        }
+      }
+
       await this.inject('before-source-hash', { operationId, sourcePath });
       sourceHash = await hashFileHandle(sourceHandle, request.signal);
+      outputHash = sourceHash;
       await this.inject('after-source-hash', { operationId, sourcePath });
       await this.requirePathIdentity(sourcePath, sourceIdentity);
       if (request.expectedSha256 && sourceHash !== request.expectedSha256) {
@@ -383,12 +438,14 @@ export class TransactionalFileCore {
         bytes: sourceIdentity.size,
       });
 
-      targetDirectory = await this.prepareTargetDirectory(targetRelativePath);
+      if (!targetDirectory) {
+        targetDirectory = await this.prepareTargetDirectory(targetRelativePath);
+      }
       const activeTargetDirectory = targetDirectory;
 
       let reservation = await this.reserveCandidate(
         targetRelativePath,
-        sourceHash,
+        request.transformStaging ? undefined : sourceHash,
         operationId,
         activeTargetDirectory,
         expectedDestinationPath
@@ -499,6 +556,49 @@ export class TransactionalFileCore {
       });
       this.throwIfCancelled(request.signal);
 
+      outputHash = independentlyVerifiedHash;
+      if (request.transformStaging) {
+        transformationStarted = true;
+        const transformationReceipt = await request.transformStaging({
+          stagingPath,
+          signal: request.signal,
+        });
+        if (transformationReceipt?.verified !== true) {
+          throw new Error('Staging transformation did not return a verified receipt');
+        }
+        this.throwIfCancelled(request.signal);
+        await this.requirePathIdentity(sourcePath, sourceIdentity);
+        const transformedStats = await lstat(stagingPath, { bigint: true });
+        if (transformedStats.isSymbolicLink() || !transformedStats.isFile()) {
+          throw new Error('Transformed staging output must remain a regular non-symlink file');
+        }
+        stagingNativeIdentity = await this.freshNativeIdentity(stagingPath);
+        if (!stagingNativeIdentity) {
+          throw new Error('Transformed staging output identity could not be verified');
+        }
+        this.managedNativeIdentities.set(stagingPath, stagingNativeIdentity);
+        outputHash = await hashFile(stagingPath, request.signal);
+        bytes = Number(transformedStats.size);
+        await this.journal.append({
+          operationId,
+          state: 'transformed',
+          mode,
+          sourcePath,
+          sourceIdentity,
+          destinationPath,
+          stagingPath,
+          stagingNativeIdentity,
+          reservationPath,
+          reservationNativeIdentity,
+          hash: outputHash,
+          sourceHash,
+          outputHash,
+          bytes,
+          transformationVerified: true,
+          ...(transformationReceipt === undefined ? {} : { transformationReceipt }),
+        });
+      }
+
       while (true) {
         await this.inject('before-publish', {
           operationId,
@@ -531,7 +631,7 @@ export class TransactionalFileCore {
           await this.cleanupPath(reservationPath, residue, true, reservationNativeIdentity);
           reservation = await this.reserveCandidate(
             targetRelativePath,
-            sourceHash,
+            request.transformStaging ? undefined : sourceHash,
             operationId,
             activeTargetDirectory,
             undefined
@@ -567,10 +667,10 @@ export class TransactionalFileCore {
       }
 
       await this.syncDirectoryHandle(activeTargetDirectory.handle);
-      if ((await hashFile(destinationPath)) !== sourceHash) {
+      if ((await hashFile(destinationPath)) !== outputHash) {
         throw new Error('Published destination hash verification failed');
       }
-      this.committedByHash.set(this.hashKey(targetRelativePath, sourceHash), destinationPath);
+      this.committedByHash.set(this.hashKey(targetRelativePath, outputHash), destinationPath);
       await this.journal.append({
         operationId,
         state: 'committed',
@@ -583,7 +683,9 @@ export class TransactionalFileCore {
         stagingNativeIdentity,
         reservationPath,
         reservationNativeIdentity,
-        hash: sourceHash,
+        hash: outputHash,
+        sourceHash,
+        outputHash,
         bytes,
         committed: true,
       });
@@ -606,7 +708,9 @@ export class TransactionalFileCore {
             sourceIdentity,
             sourceNativeIdentity,
             destinationPath,
-            hash: sourceHash,
+            hash: outputHash,
+            sourceHash,
+            outputHash,
             bytes,
             committed: true,
             sourceRetained: true,
@@ -620,7 +724,7 @@ export class TransactionalFileCore {
           status: 'cancelled',
           committed: true,
           sourceRetained: true,
-          hash: sourceHash,
+          hash: outputHash,
           bytes,
           residue,
         };
@@ -635,6 +739,7 @@ export class TransactionalFileCore {
           sourceIdentity,
           sourceNativeIdentity!,
           sourceHash,
+          outputHash,
           destinationPath,
           stagingPath,
           request.signal,
@@ -651,7 +756,7 @@ export class TransactionalFileCore {
           sourcePath,
           stagingPath,
           destinationPath,
-          sourceHash,
+          outputHash,
           residue,
           activeTargetDirectory
         );
@@ -668,7 +773,9 @@ export class TransactionalFileCore {
         sourcePath,
         sourceIdentity,
         destinationPath,
-        hash: sourceHash,
+        hash: outputHash,
+        sourceHash,
+        outputHash,
         bytes,
         committed: true,
         sourceRetained: mode !== 'move',
@@ -682,13 +789,16 @@ export class TransactionalFileCore {
         status: mode === 'move' ? 'moved' : 'copied',
         committed: true,
         sourceRetained: mode !== 'move',
-        hash: sourceHash,
+        hash: outputHash,
         bytes,
         residue,
       };
     } catch (error) {
       const cancelled = this.isAbortError(error) || request.signal?.aborted === true;
       if (stagingPath && !committed) {
+        if (transformationStarted) {
+          stagingNativeIdentity = await this.freshNativeIdentity(stagingPath);
+        }
         await this.cleanupPath(stagingPath, residue, true, stagingNativeIdentity);
       }
       await this.cleanupPath(reservationPath, residue, true, reservationNativeIdentity);
@@ -700,12 +810,30 @@ export class TransactionalFileCore {
           committed &&
           sourceRetained &&
           sourceDeleteIntentDurable &&
-          sourceHash &&
+          outputHash &&
           destinationPath &&
-          (await valueOrUndefined(this.regularFileHash(destinationPath))) === sourceHash
+          (await valueOrUndefined(this.regularFileHash(destinationPath))) === outputHash
       );
       if (committedDestinationVerified) {
-        await this.cleanupPath(stagingPath, residue, true, stagingNativeIdentity, sourceHash);
+        await this.cleanupPath(stagingPath, residue, true, stagingNativeIdentity, outputHash);
+      } else if (
+        cancelled &&
+        sourceRetained &&
+        stagingPath &&
+        committed &&
+        destinationPath &&
+        (await this.isSameInode(stagingPath, destinationPath))
+      ) {
+        // Cancelled after publish with the source still in place: destination and source both
+        // hold the bytes and the staging link shares the destination's inode, so it is redundant.
+        // Reclaim it now instead of leaving a second hard link that later marks the media as
+        // ambiguous. Genuine failures keep their guard for restart recovery.
+        await this.cleanupPath(
+          stagingPath,
+          residue,
+          true,
+          await this.freshNativeIdentity(stagingPath)
+        );
       }
       const message = error instanceof Error ? error.message : 'Unknown transaction failure';
 
@@ -726,7 +854,9 @@ export class TransactionalFileCore {
             destinationPath,
             stagingPath,
             reservationPath,
-            hash: sourceHash,
+            hash: outputHash ?? sourceHash,
+            sourceHash,
+            outputHash,
             bytes,
             committed,
             sourceRetained,
@@ -752,7 +882,7 @@ export class TransactionalFileCore {
         status: cancelled ? 'cancelled' : 'failed',
         committed,
         sourceRetained,
-        hash: sourceHash,
+        hash: outputHash ?? sourceHash,
         bytes,
         error: message,
         residue,
@@ -761,6 +891,146 @@ export class TransactionalFileCore {
       await closeIgnoringErrors(sourceHandle);
       await closeIgnoringErrors(targetDirectory?.handle);
     }
+  }
+
+  private async executeSameFilesystemMove(
+    operationId: string,
+    sourcePath: string,
+    sourceHandle: FileHandle,
+    sourceIdentity: SourceIdentity,
+    targetRelativePath: string,
+    expectedDestinationPath: string | undefined,
+    collisionMode: TransactionRequest['collisionMode'],
+    signal: AbortSignal | undefined,
+    activeTargetDirectory: TargetDirectoryBinding
+  ): Promise<TransactionResult> {
+    const bytes = sourceIdentity.size;
+    const residue: string[] = [];
+
+    // Reserve the candidate name without hash-based duplicate detection.
+    const reservation = await this.reserveCandidate(
+      targetRelativePath,
+      undefined,
+      operationId,
+      activeTargetDirectory,
+      expectedDestinationPath
+    );
+    const destinationPath = reservation.candidatePath;
+    const reservationPath = reservation.reservationPath;
+    const reservationNativeIdentity = reservation.reservationNativeIdentity;
+
+    if (reservation.duplicate) {
+      // Name-only reservation cannot detect duplicates; this branch should
+      // not execute, but defensively fail clearly if it does.
+      throw new Error('Name-only reservation detected an unexpected duplicate');
+    }
+
+    this.throwIfCancelled(signal);
+
+    // Build the source native identity from sourceIdentity for the expected
+    // parameter so the helper refuses to rename a swapped file.
+    const sourceNativeIdentity: NativeFilesystemIdentity = {
+      kind: 'unix',
+      device: sourceIdentity.dev,
+      inode: sourceIdentity.ino,
+      links: sourceIdentity.nlink.toString(),
+      size: sourceIdentity.size.toString(),
+      mtimeNs: sourceIdentity.mtimeNs,
+    };
+
+    const nativeFilesystem = this.requireNativeFilesystem();
+    try {
+      await nativeFilesystem.renameNoReplace(
+        sourcePath,
+        destinationPath,
+        sourceNativeIdentity,
+        signal
+      );
+    } catch (renameError) {
+      // On cross-device or any error, clean up the reservation and re-throw
+      // so the caller can decide whether to fall back.
+      await this.cleanupPath(reservationPath, residue, true, reservationNativeIdentity);
+      throw renameError;
+    }
+
+    // Verify that the same inode landed at the destination.
+    const destStats = await lstat(destinationPath, { bigint: true });
+    const destIdentity = this.identityFromStats(destStats);
+    if (
+      destIdentity.dev !== sourceIdentity.dev ||
+      destIdentity.ino !== sourceIdentity.ino ||
+      destIdentity.size !== sourceIdentity.size
+    ) {
+      throw new Error('Renamed destination identity does not match the source');
+    }
+
+    // Durability: sync the target directory.
+    await this.syncDirectoryHandle(activeTargetDirectory.handle);
+    if (this.moveDurabilityError) {
+      throw new Error(`Move durability cannot be proven: ${this.moveDurabilityError}`);
+    }
+
+    // Journal the entire operation atomically after the rename succeeds.
+    // No journal records exist for this operation before this point on the
+    // fast path, so a crash before here is a no-op (source still at origin,
+    // reservation marker is orphaned and cleaned on recovery).
+    await this.journal.append({
+      operationId,
+      state: 'planned',
+      mode: 'move',
+      sourcePath,
+      sourceIdentity,
+      bytes,
+    });
+
+    await this.journal.append({
+      operationId,
+      state: 'reserved',
+      mode: 'move',
+      sourcePath,
+      sourceIdentity,
+      destinationPath,
+      reservationPath,
+      reservationNativeIdentity,
+    });
+
+    await this.journal.append({
+      operationId,
+      state: 'committed',
+      mode: 'move',
+      sourcePath,
+      sourceIdentity,
+      destinationPath,
+      bytes,
+      committed: true,
+    });
+
+    // Clean up the reservation marker.
+    await this.cleanupPath(reservationPath, residue, true, reservationNativeIdentity);
+
+    await this.journal.append({
+      operationId,
+      state: 'completed',
+      mode: 'move',
+      sourcePath,
+      sourceIdentity,
+      destinationPath,
+      bytes,
+      committed: true,
+      sourceRetained: false,
+      residue,
+    });
+
+    return {
+      operationId,
+      sourcePath,
+      destinationPath,
+      status: 'moved',
+      committed: true,
+      sourceRetained: false,
+      bytes,
+      residue,
+    };
   }
 
   async getLedger(): Promise<JournalOutcomes> {
@@ -921,6 +1191,7 @@ export class TransactionalFileCore {
       sourceIdentity,
       protectedCopy.before,
       sourceHash,
+      sourceHash,
       destinationPath,
       protectedPath,
       signal,
@@ -970,6 +1241,7 @@ export class TransactionalFileCore {
     sourceIdentity: SourceIdentity,
     sourceNativeIdentity: NativeFilesystemIdentity,
     sourceHash: string,
+    outputHash: string,
     destinationPath: string,
     protectedPath: string,
     signal: AbortSignal | undefined,
@@ -987,8 +1259,8 @@ export class TransactionalFileCore {
     if ((await hashFileHandle(sourceHandle, signal)) !== sourceHash) {
       throw new Error('Source hash changed before deletion');
     }
-    await this.verifyProtectedCommit(destinationPath, protectedPath, sourceHash, targetDirectory);
-    const conservationPath = await this.ensureConservationObject(protectedPath, sourceHash);
+    await this.verifyProtectedCommit(destinationPath, protectedPath, outputHash, targetDirectory);
+    const conservationPath = await this.ensureConservationObject(protectedPath, outputHash);
     const sourceDeleteId = randomUUID();
     const sourceDeleteReceiptPath = path.join(this.deleteReceiptRoot, `${sourceDeleteId}.json`);
     if (this.nativeFilesystem) {
@@ -1020,7 +1292,9 @@ export class TransactionalFileCore {
       sourceNativeIdentity,
       sourceDeleteId,
       sourceDeleteReceiptPath,
-      hash: sourceHash,
+      hash: outputHash,
+      sourceHash,
+      outputHash,
       committed: true,
       sourceRetained: false,
     });
@@ -1035,7 +1309,7 @@ export class TransactionalFileCore {
       throw new Error('Native filesystem helper is required for source deletion');
     }
     await this.requirePathIdentity(sourcePath, sourceIdentity);
-    await this.verifyProtectedCommit(destinationPath, protectedPath, sourceHash, targetDirectory);
+    await this.verifyProtectedCommit(destinationPath, protectedPath, outputHash, targetDirectory);
     await this.requirePathIdentity(sourcePath, sourceIdentity);
     this.throwIfCancelled(signal);
     await this.inject('after-final-source-identity-before-unlink', {
@@ -1061,7 +1335,7 @@ export class TransactionalFileCore {
     await this.restoreDestinationFromGuard(
       destinationPath,
       protectedPath,
-      sourceHash,
+      outputHash,
       targetDirectory
     );
     await this.inject('before-source-directory-post-unlink-sync', {
@@ -1090,7 +1364,9 @@ export class TransactionalFileCore {
       sourceDeleteId,
       sourceDeleteReceiptPath,
       sourceDeleteReceiptState: deletion.receiptState,
-      hash: sourceHash,
+      hash: outputHash,
+      sourceHash,
+      outputHash,
       committed: true,
     });
   }
@@ -1312,7 +1588,7 @@ export class TransactionalFileCore {
 
   private async reserveCandidate(
     targetRelativePath: string,
-    sourceHash: string,
+    sourceHash: string | undefined,
     operationId: string,
     targetDirectory: TargetDirectoryBinding,
     expectedDestinationPath?: string
@@ -1320,10 +1596,12 @@ export class TransactionalFileCore {
     await this.revalidateDirectoryBindings();
     return this.withAllocationLock(async () => {
       await this.revalidateDirectoryBinding(targetDirectory.directoryPath, targetDirectory.handle);
-      const key = this.hashKey(targetRelativePath, sourceHash);
-      const cached = this.committedByHash.get(key);
-      if (cached && (await this.regularFileHash(cached)) === sourceHash) {
-        return { candidatePath: cached, duplicate: true };
+      if (sourceHash !== undefined) {
+        const key = this.hashKey(targetRelativePath, sourceHash);
+        const cached = this.committedByHash.get(key);
+        if (cached && (await this.regularFileHash(cached)) === sourceHash) {
+          return { candidatePath: cached, duplicate: true };
+        }
       }
 
       let counter = expectedDestinationPath ? 0 : (this.nextCounters.get(targetRelativePath) ?? 0);
@@ -1339,18 +1617,28 @@ export class TransactionalFileCore {
         if (expectedDestinationPath && candidatePath !== expectedDestinationPath) {
           throw new Error('Exact preview target does not match the requested relative target');
         }
-        const existingHash = await this.regularFileHash(candidatePath);
-        if (existingHash === sourceHash) {
-          this.committedByHash.set(key, candidatePath);
-          this.nextCounters.set(targetRelativePath, counter + 1);
-          return { candidatePath, duplicate: true };
-        }
-        if (existingHash !== undefined || (await this.pathExists(candidatePath))) {
-          if (expectedDestinationPath) {
-            throw new Error('Exact preview target is no longer available');
+        if (sourceHash !== undefined) {
+          const existingHash = await this.regularFileHash(candidatePath);
+          if (existingHash === sourceHash) {
+            this.committedByHash.set(this.hashKey(targetRelativePath, sourceHash), candidatePath);
+            this.nextCounters.set(targetRelativePath, counter + 1);
+            return { candidatePath, duplicate: true };
           }
-          counter++;
-          continue;
+          if (existingHash !== undefined || (await this.pathExists(candidatePath))) {
+            if (expectedDestinationPath) {
+              throw new Error('Exact preview target is no longer available');
+            }
+            counter++;
+            continue;
+          }
+        } else {
+          if (await this.pathExists(candidatePath)) {
+            if (expectedDestinationPath) {
+              throw new Error('Exact preview target is no longer available');
+            }
+            counter++;
+            continue;
+          }
         }
 
         const reservationName = `${createHash('sha256').update(candidatePath).digest('hex')}.reserve`;
@@ -1440,7 +1728,10 @@ export class TransactionalFileCore {
         );
       }
       if (record.quarantined || record.recoveryFinalized) continue;
-      if (['completed', 'duplicate', 'cancelled'].includes(record.state)) continue;
+      if (['completed', 'duplicate', 'cancelled'].includes(record.state)) {
+        await this.reclaimTerminalResidue(record);
+        continue;
+      }
       try {
         await this.validateRecoveryRecordPaths(record);
       } catch (error) {
@@ -1498,7 +1789,7 @@ export class TransactionalFileCore {
             const reconciliation = await this.nativeFilesystem.reconcileSourceDelete(
               record.sourcePath,
               record.sourceNativeIdentity,
-              record.hash,
+              record.sourceHash ?? record.hash,
               record.sourceDeleteId,
               record.sourceDeleteReceiptPath
             );
@@ -1523,32 +1814,33 @@ export class TransactionalFileCore {
           }
         }
         if (record.committed && record.destinationPath && record.hash) {
+          const expectedOutputHash = record.outputHash ?? record.hash;
           let destinationHash = await this.regularFileHash(destinationPath!);
           const stagingHash = stagingPath ? await this.regularFileHash(stagingPath) : undefined;
           const conservationHash = conservationPath
             ? await this.regularFileHash(conservationPath)
             : undefined;
           const protectedPath =
-            stagingHash === record.hash
+            stagingHash === expectedOutputHash
               ? record.stagingPath
-              : conservationHash === record.hash
+              : conservationHash === expectedOutputHash
                 ? record.conservationPath
                 : undefined;
-          if (destinationHash !== record.hash && protectedPath) {
+          if (destinationHash !== expectedOutputHash && protectedPath) {
             if (destinationHash === undefined && !(await this.pathExists(destinationPath!))) {
               const restored = await this.requireNativeFilesystem().stageCopy(
                 protectedPath,
                 record.destinationPath,
-                record.hash
+                expectedOutputHash
               );
-              if (!restored.after || restored.sha256 !== record.hash) {
+              if (!restored.after || restored.sha256 !== expectedOutputHash) {
                 throw new Error('Recovered destination failed protected-copy verification');
               }
               destinationHash = await this.regularFileHash(destinationPath!);
             }
           }
 
-          if (destinationHash === record.hash) {
+          if (destinationHash === expectedOutputHash) {
             const sourceRetained = await this.recordedSourceStillRetained(record);
             const residue: string[] = [];
             await this.cleanupPath(
@@ -1556,7 +1848,7 @@ export class TransactionalFileCore {
               residue,
               false,
               record.stagingNativeIdentity,
-              record.hash
+              expectedOutputHash
             );
             await this.cleanupPath(
               record.reservationPath,
@@ -1912,6 +2204,92 @@ export class TransactionalFileCore {
     if (this.durableFileOperations) await handle.sync();
   }
 
+  private async isSameInode(left: string, right: string): Promise<boolean> {
+    try {
+      const [a, b] = await Promise.all([
+        lstat(left, { bigint: true }),
+        lstat(right, { bigint: true }),
+      ]);
+      return a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino;
+    } catch {
+      return false;
+    }
+  }
+
+  private async freshNativeIdentity(
+    filePath: string
+  ): Promise<NativeFilesystemIdentity | undefined> {
+    try {
+      const stats = await lstat(filePath, { bigint: true });
+      if (!stats.isFile()) return undefined;
+      return {
+        kind: 'unix',
+        device: stats.dev.toString(),
+        inode: stats.ino.toString(),
+        links: stats.nlink.toString(),
+        size: stats.size.toString(),
+        mtimeNs: stats.mtimeNs.toString(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Terminal journal records (completed, cancelled, duplicate) must not leave staging
+  // links or reservation markers behind. A cancelled job aborts the helper channel mid-cleanup,
+  // so every core open sweeps what earlier runs could not finish. Staging is only reclaimed when
+  // the bytes provably live elsewhere: the destination shares the inode, the operation never
+  // committed (staging is a partial copy of a retained source), or the source was retained.
+  private async reclaimTerminalResidue(record: JournalRecord): Promise<void> {
+    const residue: string[] = [];
+    if (record.stagingPath) {
+      let stagingPath: string | undefined;
+      try {
+        stagingPath = this.anchoredRecoveryPath(
+          record.stagingPath,
+          this.stagingRoot,
+          this.stagingDirectoryHandle
+        );
+      } catch {
+        stagingPath = undefined;
+      }
+      if (stagingPath && (await this.pathExists(stagingPath))) {
+        const twin =
+          record.destinationPath !== undefined &&
+          (await this.isSameInode(stagingPath, record.destinationPath));
+        const safe = twin || record.committed !== true || record.sourceRetained === true;
+        if (safe) {
+          await this.cleanupPath(
+            stagingPath,
+            residue,
+            false,
+            await this.freshNativeIdentity(stagingPath)
+          );
+        }
+      }
+    }
+    if (record.reservationPath) {
+      let reservationPath: string | undefined;
+      try {
+        reservationPath = this.anchoredRecoveryPath(
+          record.reservationPath,
+          this.reservationRoot,
+          this.reservationDirectoryHandle
+        );
+      } catch {
+        reservationPath = undefined;
+      }
+      if (reservationPath && (await this.pathExists(reservationPath))) {
+        await this.cleanupPath(
+          reservationPath,
+          residue,
+          false,
+          await this.freshNativeIdentity(reservationPath)
+        );
+      }
+    }
+  }
+
   private async cleanupPath(
     filePath: string | undefined,
     residue: string[],
@@ -1992,6 +2370,14 @@ export class TransactionalFileCore {
     return (
       code === 'EEXIST' ||
       (error instanceof NativeFilesystemHelperClientError && error.code === 'target-exists')
+    );
+  }
+
+  private isCrossDeviceError(error: unknown): boolean {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return (
+      code === 'EXDEV' ||
+      (error instanceof NativeFilesystemHelperClientError && error.code === 'cross-device')
     );
   }
 

@@ -51,8 +51,7 @@ describe('MediaPreviewPlanner parallel analysis', () => {
       },
       sourceContent: {
         capture: async (file) => ({
-          sha256: 'a'.repeat(64),
-          verifiedExtractionPath: file.filePath,
+          seekableExtractionPath: file.filePath,
           filesystemBirthTimeUtc: '2024-01-02T03:04:05.000Z',
           release: async () => undefined,
         }),
@@ -109,19 +108,19 @@ describe('MediaPreviewPlanner parallel analysis', () => {
     expect(completionOrder).not.toEqual(files.map((file) => file.filePath));
     expect(plan.rows?.map((row) => row.sourcePath)).toEqual(files.map((file) => file.filePath));
     expect(plan.rows?.map((row) => row.targetPath)).toEqual([
-      '/destination/2024-01-02_03-04-05.jpg',
-      '/destination/2024-01-02_03-04-05_1.jpg',
-      '/destination/2024-01-02_03-04-05_2.jpg',
-      '/destination/2024-01-02_03-04-05_3.jpg',
-      '/destination/2024-01-02_03-04-05_4.jpg',
-      '/destination/2024-01-02_03-04-05_5.jpg',
+      '/destination/Photos/2024-01-02_03-04-05.jpg',
+      '/destination/Photos/2024-01-02_03-04-05_1.jpg',
+      '/destination/Photos/2024-01-02_03-04-05_2.jpg',
+      '/destination/Photos/2024-01-02_03-04-05_3.jpg',
+      '/destination/Photos/2024-01-02_03-04-05_4.jpg',
+      '/destination/Photos/2024-01-02_03-04-05_5.jpg',
     ]);
     expect(progress.mock.calls.map(([event]) => event.filesProcessed)).toEqual([
       0, 1, 2, 3, 4, 5, 6,
     ]);
   });
 
-  it('uses the temporary-space budget to serialize large snapshots', async () => {
+  it('does not serialize metadata reads merely because media files are large', async () => {
     let active = 0;
     let peak = 0;
     const planner = new MediaPreviewPlanner({
@@ -142,8 +141,7 @@ describe('MediaPreviewPlanner parallel analysis', () => {
           peak = Math.max(peak, active);
           await new Promise((resolve) => setTimeout(resolve, 5));
           return {
-            sha256: 'a'.repeat(64),
-            verifiedExtractionPath: file.filePath,
+            seekableExtractionPath: file.filePath,
             filesystemBirthTimeUtc: null,
             release: async () => {
               active -= 1;
@@ -166,16 +164,19 @@ describe('MediaPreviewPlanner parallel analysis', () => {
         sampleIntervalMs: 1,
         wait: async () => undefined,
       },
-      temporaryStorageBudget: async () => 100,
     });
 
     await planner.plan(request);
 
-    expect(peak).toBe(1);
+    expect(peak).toBe(3);
   });
 
-  it('rejects a snapshot that cannot fit the safe temporary-space budget', async () => {
-    const capture = jest.fn();
+  it('accepts media larger than available temporary storage because preview creates no copies', async () => {
+    const capture = jest.fn(async (file: Readonly<InventoryMediaFile>) => ({
+      seekableExtractionPath: file.filePath,
+      filesystemBirthTimeUtc: null,
+      release: async () => undefined,
+    }));
     const planner = new MediaPreviewPlanner({
       inventory: { inventory: async () => [{ ...files[0], size: 101 }] },
       roots: {
@@ -195,11 +196,12 @@ describe('MediaPreviewPlanner parallel analysis', () => {
           source: 'filesystem',
         }),
       },
-      temporaryStorageBudget: async () => 100,
     });
 
-    await expect(planner.plan(request)).rejects.toThrow(/insufficient temporary storage/i);
-    expect(capture).not.toHaveBeenCalled();
+    await expect(planner.plan(request)).resolves.toMatchObject({
+      summary: { totalFiles: 1 },
+    });
+    expect(capture).toHaveBeenCalledTimes(1);
   });
 });
 

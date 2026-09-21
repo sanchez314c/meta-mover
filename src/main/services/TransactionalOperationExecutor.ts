@@ -19,8 +19,11 @@ import {
   ValidatedProcessingRoots,
 } from '../security/ProcessingRoots';
 import { OperationMode } from '../../shared/types/processing';
-import { CancellationFileState } from '../../shared/types/processing';
+import { AuditPreparationProgressDTO, CancellationFileState } from '../../shared/types/processing';
 import { NativeTransactionFilesystem } from '../core/transaction/NativeTransactionFilesystem';
+import type { ParsedDateValue } from '../core/date';
+import type { DateResolutionRecord } from '../core/date';
+import type { MetadataDateWriterPort } from '../core/metadata/MetadataDateWriter';
 
 export interface TransactionCorePort {
   execute(request: TransactionRequest): Promise<TransactionResult>;
@@ -34,6 +37,24 @@ export interface TransactionalOperationExecutorOptions {
     controlRoot: string;
     sourceRoots: readonly string[];
   }) => Promise<NativeTransactionFilesystem>;
+  metadataWriter?: MetadataDateWriterPort;
+  normalizationAuthorization?: NormalizationAuthorizationPort;
+}
+
+export interface NormalizationAuthorizationPort {
+  authorizeNormalization(
+    request: Readonly<{
+      previewId: string;
+      recordId: string;
+      sourcePath: string;
+      outputPath: string;
+      resolution: DateResolutionRecord;
+      /** Aborts durable audit preparation so cancellation settles promptly. */
+      signal?: AbortSignal;
+      /** Surfaces audit preparation progress (verification, index construction). */
+      reportProgress?: (progress: Readonly<AuditPreparationProgressDTO>) => Promise<void> | void;
+    }>
+  ): Promise<boolean>;
 }
 
 interface CachedCore {
@@ -46,7 +67,9 @@ interface ExecutorPayload {
   validatedRoots: ValidatedProcessingRoots;
   sourceIdentity: ExpectedSourceIdentity;
   modifiedTimeMs: number;
-  contentSha256: string;
+  contentSha256?: string;
+  selectedDate?: ParsedDateValue;
+  dateResolution?: DateResolutionRecord;
   destinationSnapshot: {
     path: string;
     occupied: boolean;
@@ -60,6 +83,53 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeNonnegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseSelectedDate(value: unknown): ParsedDateValue | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('Transaction payload contains an invalid date decision');
+  if (value.status !== 'resolved') return undefined;
+  if (!isRecord(value.selectedValue)) {
+    throw new Error('Transaction payload contains an invalid selected creation date');
+  }
+  const selected = value.selectedValue;
+  if (
+    typeof selected.localIso !== 'string' ||
+    ![
+      'explicit-offset',
+      'spec-defined-utc',
+      'gps-inferred',
+      'device-zone-inferred',
+      'floating-local',
+      'date-only',
+    ].includes(String(selected.zoneBasis)) ||
+    !['date', 'minute', 'second', 'millisecond', 'microsecond', 'nanosecond'].includes(
+      String(selected.precision)
+    ) ||
+    (selected.instantUtc !== undefined && typeof selected.instantUtc !== 'string') ||
+    (selected.offsetMinutes !== undefined &&
+      (!Number.isInteger(selected.offsetMinutes) ||
+        Math.abs(selected.offsetMinutes as number) > 840)) ||
+    (selected.zoneIana !== undefined && typeof selected.zoneIana !== 'string') ||
+    (selected.fractionalDigits !== undefined &&
+      (typeof selected.fractionalDigits !== 'string' ||
+        !/^\d{1,9}$/.test(selected.fractionalDigits)))
+  ) {
+    throw new Error('Transaction payload contains an invalid selected creation date');
+  }
+  return {
+    localIso: selected.localIso,
+    ...(selected.instantUtc === undefined ? {} : { instantUtc: selected.instantUtc }),
+    ...(selected.offsetMinutes === undefined
+      ? {}
+      : { offsetMinutes: selected.offsetMinutes as number }),
+    ...(selected.zoneIana === undefined ? {} : { zoneIana: selected.zoneIana }),
+    zoneBasis: selected.zoneBasis as ParsedDateValue['zoneBasis'],
+    precision: selected.precision as ParsedDateValue['precision'],
+    ...(selected.fractionalDigits === undefined
+      ? {}
+      : { fractionalDigits: selected.fractionalDigits }),
+  };
 }
 
 function parsePayload(value: unknown): ExecutorPayload {
@@ -79,8 +149,8 @@ function parsePayload(value: unknown): ExecutorPayload {
     typeof value.modifiedTimeMs !== 'number' ||
     !Number.isFinite(value.modifiedTimeMs) ||
     value.modifiedTimeMs < 0 ||
-    typeof value.contentSha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(value.contentSha256) ||
+    (value.contentSha256 !== undefined &&
+      (typeof value.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.contentSha256))) ||
     !isRecord(snapshot) ||
     typeof snapshot.path !== 'string' ||
     typeof snapshot.occupied !== 'boolean' ||
@@ -88,6 +158,7 @@ function parsePayload(value: unknown): ExecutorPayload {
   ) {
     throw new Error('Transaction payload contains invalid preview evidence');
   }
+  const selectedDate = parseSelectedDate(value.dateResolution);
   return {
     destinationRoot: value.destinationRoot,
     validatedRoots: {
@@ -104,7 +175,11 @@ function parsePayload(value: unknown): ExecutorPayload {
       modifiedTimeMs: value.modifiedTimeMs,
     },
     modifiedTimeMs: value.modifiedTimeMs,
-    contentSha256: value.contentSha256,
+    ...(value.contentSha256 === undefined ? {} : { contentSha256: value.contentSha256 }),
+    ...(selectedDate === undefined ? {} : { selectedDate }),
+    ...(selectedDate === undefined
+      ? {}
+      : { dateResolution: value.dateResolution as unknown as DateResolutionRecord }),
     destinationSnapshot: {
       path: snapshot.path,
       occupied: snapshot.occupied,
@@ -123,6 +198,8 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
   private readonly coreFactory: (canonicalDestinationRoot: string) => Promise<TransactionCorePort>;
   private readonly nativeFilesystemFactory?: TransactionalOperationExecutorOptions['nativeFilesystemFactory'];
   private readonly usesCustomCoreFactory: boolean;
+  private readonly metadataWriter?: MetadataDateWriterPort;
+  private readonly normalizationAuthorization?: NormalizationAuthorizationPort;
   private readonly cores = new Map<string, CachedCore>();
   private readonly inFlight = new Set<Promise<OperationLedgerEntry>>();
   private closing = false;
@@ -131,6 +208,8 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
   constructor(options: TransactionalOperationExecutorOptions = {}) {
     this.usesCustomCoreFactory = options.coreFactory !== undefined;
     this.nativeFilesystemFactory = options.nativeFilesystemFactory;
+    this.metadataWriter = options.metadataWriter;
+    this.normalizationAuthorization = options.normalizationAuthorization;
     this.coreFactory =
       options.coreFactory ?? ((destinationRoot) => TransactionalFileCore.create(destinationRoot));
   }
@@ -155,7 +234,10 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
     this.closePromise = (async () => {
       await Promise.allSettled([...this.inFlight]);
       const cores = await Promise.all([...this.cores.values()].map((entry) => entry.promise));
-      await Promise.all(cores.map((core) => core.close()));
+      await Promise.all([
+        ...cores.map((core) => core.close()),
+        ...(this.metadataWriter === undefined ? [] : [this.metadataWriter.close()]),
+      ]);
     })();
     return this.closePromise;
   }
@@ -167,6 +249,23 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
     if (context.signal.aborted) throw abortError('Transaction cancelled before admission');
     const payload = parsePayload(operation.payload);
     this.validateOperation(operation, payload, context);
+    const normalizeMetadata =
+      context.writeMetadataDates &&
+      payload.selectedDate !== undefined &&
+      payload.dateResolution !== undefined &&
+      this.metadataWriter !== undefined &&
+      this.normalizationAuthorization !== undefined &&
+      (await this.normalizationAuthorization.authorizeNormalization({
+        previewId: context.previewId,
+        recordId: operation.id,
+        sourcePath: operation.sourcePath,
+        outputPath: operation.targetPath,
+        resolution: payload.dateResolution,
+        signal: context.signal,
+        ...(context.reportStageProgress === undefined
+          ? {}
+          : { reportProgress: context.reportStageProgress }),
+      }));
     const canonicalRoot = await this.revalidateRootBindings(operation.sourcePath, payload);
     const relativeTarget = path.relative(canonicalRoot, path.resolve(operation.targetPath));
     if (
@@ -196,8 +295,34 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
       expectedSha256: payload.contentSha256,
       mode: context.mode === OperationMode.MOVE ? 'move' : 'copy',
       signal: context.signal,
+      ...(normalizeMetadata
+        ? {
+            transformStaging: async ({
+              stagingPath,
+              signal,
+            }: {
+              stagingPath: string;
+              signal?: AbortSignal;
+            }) => {
+              const receipt = await this.metadataWriter!.normalizeDateMetadata({
+                filePath: stagingPath,
+                selectedDate: payload.selectedDate!,
+                signal,
+              });
+              if (receipt?.verified !== true) {
+                throw new Error('metadata normalization did not return a verified receipt');
+              }
+              return {
+                family: receipt.family,
+                idempotent: receipt.idempotent,
+                verified: receipt.verified,
+                normalizedTags: [...receipt.normalizedTags],
+              };
+            },
+          }
+        : {}),
     });
-    return this.mapResult(operation, payload, result, context.mode);
+    return this.mapResult(operation, payload, result, context.mode, normalizeMetadata);
   }
 
   private validateOperation(
@@ -319,12 +444,16 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
     operation: Readonly<PlannedOperation>,
     payload: ExecutorPayload,
     result: TransactionResult,
-    mode: OperationMode
+    mode: OperationMode,
+    transformed = false
   ): OperationLedgerEntry {
     if (
       result.operationId !== operation.id ||
-      (result.hash !== undefined && result.hash !== payload.contentSha256) ||
-      (result.bytes !== undefined && result.bytes !== operation.bytes) ||
+      (!transformed &&
+        payload.contentSha256 !== undefined &&
+        result.hash !== undefined &&
+        result.hash !== payload.contentSha256) ||
+      (!transformed && result.bytes !== undefined && result.bytes !== operation.bytes) ||
       (result.committed && result.destinationPath !== operation.targetPath)
     ) {
       throw new Error('Transaction core returned a result that diverges from the preview plan');
@@ -387,6 +516,8 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
       operationId: operation.id,
       outcome: 'failed',
       bytes: 0,
+      sourceRetained: result.sourceRetained,
+      destinationCommitted: false,
       error: result.error ?? 'Transaction failed before commit',
     };
   }

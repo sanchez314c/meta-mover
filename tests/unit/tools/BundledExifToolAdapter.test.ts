@@ -10,6 +10,14 @@ import { PassThrough, Writable } from 'stream';
 import type { BrokerLaunchTrustPolicy } from '../../../src/main/native/NativeFilesystemHelperClient';
 import { BundledExifToolAdapter } from '../../../src/main/tools/BundledExifToolAdapter';
 
+const selectedDate = {
+  localIso: '2024-03-04T05:06:07',
+  instantUtc: '2024-03-04T10:06:07.000Z',
+  offsetMinutes: -300,
+  zoneBasis: 'explicit-offset' as const,
+  precision: 'second' as const,
+};
+
 type SpawnProcess = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
 function harness() {
@@ -34,6 +42,27 @@ function successfulFakeChild(tags: Record<string, unknown>): ChildProcess {
   });
   stdin.once('finish', () => {
     stdout.end(Buffer.from(JSON.stringify([tags])));
+    (child as ChildProcess & { exitCode: number | null }).exitCode = 0;
+    process.nextTick(() => child.emit('close', 0, null));
+  });
+  return child;
+}
+
+function successfulWriteChild(stdoutText = '    1 image files updated\n'): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  Object.assign(child, {
+    stdin,
+    stdout,
+    stderr,
+    exitCode: null,
+    signalCode: null,
+    kill: jest.fn(() => true),
+  });
+  stdin.once('finish', () => {
+    stdout.end(Buffer.from(stdoutText));
     (child as ChildProcess & { exitCode: number | null }).exitCode = 0;
     process.nextTick(() => child.emit('close', 0, null));
   });
@@ -199,7 +228,7 @@ function productionPolicy(platform: NodeJS.Platform = 'linux'): BrokerLaunchTrus
 
 describe('BundledExifToolAdapter', () => {
   it.each(['linux', 'darwin'] as const)(
-    'runs one-shot verified reads through absolute bundled paths on %s',
+    'opens the media path directly so ExifTool can seek without streaming the whole file on %s',
     async (platform) => {
       const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-exif-command-'));
       try {
@@ -221,7 +250,7 @@ describe('BundledExifToolAdapter', () => {
         });
         expect(spawnProcess).toHaveBeenCalledWith(
           perlPath,
-          [exiftoolPath, '-json', '-G1', '-a', '-s', '-'],
+          [exiftoolPath, '-json', '-G1', '-a', '-s', '--', snapshotPath],
           {
             detached: false,
             env: {
@@ -238,7 +267,6 @@ describe('BundledExifToolAdapter', () => {
             stdio: 'pipe',
           }
         );
-        expect(adapter).not.toHaveProperty('write');
         await adapter.close();
         await adapter.close();
       } finally {
@@ -263,13 +291,110 @@ describe('BundledExifToolAdapter', () => {
       await expect(adapter.readRaw(snapshotPath)).resolves.toEqual({ FileType: 'JPEG' });
       expect(spawnProcess).toHaveBeenCalledWith(
         exiftoolPath,
-        ['-json', '-G1', '-a', '-s', '-'],
+        ['-json', '-G1', '-a', '-s', '--', snapshotPath],
         expect.objectContaining({ shell: false, stdio: 'pipe' })
       );
       await adapter.close();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('normalizes only format-scoped creation tags and verifies the readback snapshot', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-exif-write-'));
+    try {
+      const destinationPath = path.join(root, 'organized.jpg');
+      await writeFile(destinationPath, 'destination-bytes');
+      const exiftoolPath = '/opt/META Mover/resources/tools/exiftool/exiftool';
+      const perlPath = '/opt/META Mover/resources/tools/perl';
+      const before = {
+        'ExifIFD:DateTimeOriginal': '2023:01:01 00:00:00',
+        'EXIF:Make': 'Canon',
+        'GPS:GPSDateStamp': '2023:01:01',
+        'XMP-xmp:History': 'kept',
+      };
+      const after = {
+        ...before,
+        'ExifIFD:DateTimeOriginal': '2024:03:04 05:06:07',
+        'ExifIFD:CreateDate': '2024:03:04 05:06:07',
+        'ExifIFD:OffsetTimeOriginal': '-05:00',
+        'ExifIFD:OffsetTimeDigitized': '-05:00',
+        'XMP-exif:DateTimeOriginal': '2024:03:04 05:06:07',
+        'XMP-photoshop:DateCreated': '2024:03:04 05:06:07',
+        'XMP-xmp:CreateDate': '2024:03:04 05:06:07',
+        'IPTC:DateCreated': '2024:03:04',
+      };
+      const spawnProcess = jest
+        .fn()
+        .mockImplementationOnce(() => successfulFakeChild(before))
+        .mockImplementationOnce(() => successfulWriteChild())
+        .mockImplementationOnce(() => successfulFakeChild(after));
+      const adapter = new BundledExifToolAdapter(
+        {
+          platform: 'linux',
+          perlPath,
+          exiftoolPath,
+          perlLibraryPaths: ['/opt/META Mover/resources/tools/perl-lib/00'],
+        },
+        { spawnProcess }
+      );
+
+      await expect(
+        adapter.normalizeDateMetadata({
+          filePath: destinationPath,
+          selectedDate: {
+            localIso: '2024-03-04T05:06:07',
+            instantUtc: '2024-03-04T10:06:07.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        })
+      ).resolves.toMatchObject({ family: 'jpeg', idempotent: false, verified: true });
+
+      const args = spawnProcess.mock.calls[1][1];
+      expect(args).toEqual(
+        expect.arrayContaining([
+          exiftoolPath,
+          '-overwrite_original_in_place',
+          '-ExifIFD:DateTimeOriginal=2024:03:04 05:06:07',
+          '-ExifIFD:CreateDate=2024:03:04 05:06:07',
+          '-ExifIFD:OffsetTimeOriginal=-05:00',
+          '-ExifIFD:OffsetTimeDigitized=-05:00',
+          '-IPTC:DateCreated=2024:03:04',
+          '--',
+          destinationPath,
+        ])
+      );
+      expect(args.join('\n')).not.toMatch(/Time:All|AllDates|ModifyDate|QuickTime:/);
+      expect(args).not.toContain('/source/original.jpg');
+      await adapter.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the write and reports idempotence when every planned field already matches', async () => {
+    const snapshotPath = '/tmp/already-clean.png';
+    const tags = {
+      'PNG:CreateDate': '2024:03:04 05:06:07',
+      'XMP-xmp:CreateDate': '2024:03:04 05:06:07',
+    };
+    const spawnProcess = jest.fn(() => successfulFakeChild(tags));
+    const adapter = new BundledExifToolAdapter(
+      {
+        platform: 'linux',
+        perlPath: '/opt/tools/perl',
+        exiftoolPath: '/opt/tools/exiftool',
+        perlLibraryPaths: ['/opt/tools/lib'],
+      },
+      { spawnProcess }
+    );
+
+    await expect(
+      adapter.normalizeDateMetadata({ filePath: snapshotPath, selectedDate })
+    ).resolves.toMatchObject({ idempotent: true, verified: true, family: 'png' });
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
   });
 
   it('streams verified bytes from a held descriptor across snapshot pathname swap and restoration', async () => {

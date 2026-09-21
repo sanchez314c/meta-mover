@@ -14,6 +14,14 @@ import {
 
 export const DATE_RESOLUTION_POLICY_VERSION = 'date-resolution/1' as const;
 
+export interface CandidateProvenance {
+  mediaKind: string;
+  semantic: string;
+  sourceKind: string;
+  sourceFamily: string;
+  tag: string;
+}
+
 const FORBIDDEN_SEMANTICS = new Set([
   'metadata-modified',
   'filesystem-modified',
@@ -22,9 +30,13 @@ const FORBIDDEN_SEMANTICS = new Set([
 
 const FORBIDDEN_TAG_FRAGMENTS = [
   'filemodifydate',
+  'filesystemmodifiedtime',
+  'filesystemmodified',
+  'filesystemchanged',
   'fileaccessdate',
   'fileinodechangedate',
   'metadatadate',
+  'metadatamodified',
   'profiledatetime',
   'historywhen',
   'modifydate',
@@ -169,9 +181,7 @@ function baseScore(candidate: DateCandidateInput): number {
   return 0;
 }
 
-function expectedSemantics(
-  candidate: DateCandidateInput
-): ReadonlySet<DateCandidateInput['semantic']> | null {
+function expectedSemantics(candidate: CandidateProvenance): ReadonlySet<string> | null {
   if (candidate.sourceKind === 'user-override') return null;
   if (candidate.sourceKind === 'filesystem') {
     return new Set(['filesystem-birth', 'filesystem-modified', 'filesystem-changed']);
@@ -261,6 +271,65 @@ function expectedSemantics(
     return new Set(['content-created']);
   }
   return null;
+}
+
+function hasForbiddenProvenanceLabel(candidate: CandidateProvenance): boolean {
+  const normalized = `${candidate.tag}:${candidate.sourceFamily}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  return FORBIDDEN_TAG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
+function hasSourceNamespaceMismatch(candidate: CandidateProvenance): boolean {
+  return (
+    candidate.sourceKind === 'filename' && !candidate.tag.toLowerCase().startsWith('filename:')
+  );
+}
+
+export function isResolvedCreationProvenance(candidate: CandidateProvenance): boolean {
+  if (candidate.sourceKind === 'filesystem' || FORBIDDEN_SEMANTICS.has(candidate.semantic)) {
+    return false;
+  }
+  if (candidate.sourceKind === 'user-override') return true;
+  if (hasSourceNamespaceMismatch(candidate)) return false;
+  if (candidate.sourceKind !== 'filename' && hasForbiddenProvenanceLabel(candidate)) return false;
+  const semanticRule = expectedSemantics(candidate);
+  return semanticRule !== null && semanticRule.has(candidate.semantic);
+}
+
+function sameDateValue(left: ParsedDateValue, right: ParsedDateValue): boolean {
+  return (
+    left.localIso === right.localIso &&
+    left.instantUtc === right.instantUtc &&
+    left.offsetMinutes === right.offsetMinutes &&
+    left.zoneIana === right.zoneIana &&
+    left.zoneBasis === right.zoneBasis &&
+    left.precision === right.precision &&
+    left.fractionalDigits === right.fractionalDigits
+  );
+}
+
+function omitSubseconds(value: ParsedDateValue): ParsedDateValue {
+  if (value.fractionalDigits === undefined) return { ...value };
+  const { fractionalDigits: _fractionalDigits, ...wholeSecondValue } = value;
+  return {
+    ...wholeSecondValue,
+    localIso: value.localIso.replace(/\.\d{1,9}$/, ''),
+    ...(value.instantUtc === undefined
+      ? {}
+      : { instantUtc: value.instantUtc.replace(/(?:\.\d{1,9})?Z$/, '.000Z') }),
+    precision: 'second',
+  };
+}
+
+export function isSelectedValueSupported(
+  selectedValue: ParsedDateValue,
+  selectedCandidateValue: ParsedDateValue
+): boolean {
+  return (
+    sameDateValue(selectedValue, selectedCandidateValue) ||
+    sameDateValue(selectedValue, omitSubseconds(selectedCandidateValue))
+  );
 }
 
 function parseLocalIso(localIso: string): CalendarParts | null {
@@ -417,6 +486,25 @@ function validateValue(value: ParsedDateValue, evaluationTime: ExactTime): strin
   return [...new Set(issues)].sort();
 }
 
+// Floating midnight values are common placeholder output from bulk editors. A timestamp with
+// an explicit/spec-defined zone is a real instant and must not be penalized merely for midnight.
+function isMidnightPlaceholder(candidate: DateCandidateInput): boolean {
+  if (
+    candidate.sourceKind === 'filesystem' ||
+    candidate.value.precision === 'date' ||
+    candidate.value.zoneBasis === 'explicit-offset' ||
+    candidate.value.zoneBasis === 'spec-defined-utc'
+  ) {
+    return false;
+  }
+  const parts = parseLocalIso(candidate.value.localIso);
+  return parts !== null && parts.hour === 0 && parts.minute === 0 && (parts.second ?? 0) === 0;
+}
+
+function hasPlaceholderModifier(candidate: ScoredDateCandidate): boolean {
+  return candidate.score.modifiers.some((modifier) => modifier.code === 'MIDNIGHT_PLACEHOLDER');
+}
+
 function scoreCandidate(
   candidate: DateCandidateInput,
   request: ResolveDateRequest,
@@ -429,15 +517,20 @@ function scoreCandidate(
   if (candidate.mediaKind !== request.mediaKind) resolutionIssues.push('MEDIA_KIND_MISMATCH');
   if (resolutionIssues.length > 0) eligibility = 'invalid';
 
-  const tag = candidate.tag.toLowerCase();
   const semanticRule = expectedSemantics(candidate);
   if (semanticRule !== null && !semanticRule.has(candidate.semantic)) {
     eligibility = 'invalid';
     resolutionIssues.push('SEMANTIC_TARGET_MISMATCH');
   }
+  if (hasSourceNamespaceMismatch(candidate)) {
+    eligibility = 'invalid';
+    resolutionIssues.push('PROVENANCE_MISMATCH');
+  }
   if (
     FORBIDDEN_SEMANTICS.has(candidate.semantic) ||
-    FORBIDDEN_TAG_FRAGMENTS.some((fragment) => tag.includes(fragment))
+    (candidate.sourceKind !== 'filename' &&
+      candidate.sourceKind !== 'user-override' &&
+      hasForbiddenProvenanceLabel(candidate))
   ) {
     eligibility = 'forbidden';
     resolutionIssues.push('FORBIDDEN_EVIDENCE');
@@ -478,6 +571,9 @@ function scoreCandidate(
   }
   if (candidate.issues?.includes('KNOWN_EXPORT_OR_TRANSCODE')) {
     modifiers.push({ code: 'KNOWN_EXPORT_OR_TRANSCODE', delta: -20 });
+  }
+  if (isMidnightPlaceholder(candidate)) {
+    modifiers.push({ code: 'MIDNIGHT_PLACEHOLDER', delta: -25 });
   }
 
   const modifierTotal = modifiers.reduce((sum, modifier) => sum + modifier.delta, 0);
@@ -534,6 +630,17 @@ function valuesAgree(left: ParsedDateValue, right: ParsedDateValue): boolean {
       : right.precision;
 
   const unit = precisionUnitNanoseconds(coarserPrecision);
+  // Two explicit instants are authoritative about timezone identity. Equal wall clocks with
+  // different offsets describe different moments and cannot corroborate one another.
+  if (left.instantUtc !== undefined && right.instantUtc !== undefined) {
+    const leftInstant = comparableNanoseconds(left);
+    const rightInstant = comparableNanoseconds(right);
+    return (
+      leftInstant !== null &&
+      rightInstant !== null &&
+      floorDivide(leftInstant, unit) === floorDivide(rightInstant, unit)
+    );
+  }
   const leftLocalTime = localNanoseconds(left);
   const rightLocalTime = localNanoseconds(right);
   if (
@@ -543,14 +650,7 @@ function valuesAgree(left: ParsedDateValue, right: ParsedDateValue): boolean {
   ) {
     return true;
   }
-  if (left.instantUtc === undefined || right.instantUtc === undefined) return false;
-  const leftInstant = comparableNanoseconds(left);
-  const rightInstant = comparableNanoseconds(right);
-  return (
-    leftInstant !== null &&
-    rightInstant !== null &&
-    floorDivide(leftInstant, unit) === floorDivide(rightInstant, unit)
-  );
+  return false;
 }
 
 function compareCandidateStrength(left: ScoredDateCandidate, right: ScoredDateCandidate): number {
@@ -666,17 +766,99 @@ function localSecondKey(value: ParsedDateValue): string | null {
   return [parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second].join(':');
 }
 
-function hasCorroboratedSubsecondConsensus(
+const AUTHORITATIVE_SUBSECOND_KINDS = new Set([
+  'embedded-exif',
+  'embedded-xmp',
+  'embedded-iptc',
+  'container-format',
+  'container-stream',
+  'audio-tag',
+]);
+
+interface SubsecondAssessment {
+  selected?: ScoredDateCandidate;
+  hasFractionalClaims: boolean;
+  conflictingAuthoritativeFractions: boolean;
+}
+
+function normalizedFraction(candidate: ScoredDateCandidate): string | null {
+  const fraction = candidate.value.fractionalDigits;
+  if (!fraction || /^0+$/.test(fraction)) return null;
+  const second = localSecondKey(candidate.value);
+  return second === null ? null : `${second}.${fraction.padEnd(9, '0')}`;
+}
+
+function assessSubseconds(
   top: CandidateGroup,
   second: CandidateGroup | undefined
-): boolean {
-  if (!second || !top.corroborated) return false;
-  const preciseCandidates = [...top.candidates, ...second.candidates].filter(
-    (candidate) => PRECISION_ORDER[candidate.value.precision] >= PRECISION_ORDER.second
+): SubsecondAssessment {
+  const considered = [
+    ...new Map(
+      [...top.candidates, ...(second?.candidates ?? [])].map((candidate) => [
+        candidate.id,
+        candidate,
+      ])
+    ).values(),
+  ];
+  const fractional = considered.filter(
+    (candidate) => candidate.value.fractionalDigits !== undefined
   );
-  if (preciseCandidates.length < 2) return false;
-  const keys = preciseCandidates.map((candidate) => localSecondKey(candidate.value));
-  return keys.every((key) => key !== null && key === keys[0]);
+  const userOverride = fractional.find(
+    (candidate) =>
+      candidate.sourceKind === 'user-override' && normalizedFraction(candidate) !== null
+  );
+  if (userOverride) {
+    return {
+      selected: userOverride,
+      hasFractionalClaims: true,
+      conflictingAuthoritativeFractions: false,
+    };
+  }
+
+  const authoritative = fractional.filter(
+    (candidate) =>
+      AUTHORITATIVE_SUBSECOND_KINDS.has(candidate.sourceKind) &&
+      isResolvedCreationProvenance(candidate) &&
+      normalizedFraction(candidate) !== null
+  );
+  const claims = new Map<string, ScoredDateCandidate[]>();
+  for (const candidate of authoritative) {
+    const key = normalizedFraction(candidate);
+    if (key === null) continue;
+    claims.set(key, [...(claims.get(key) ?? []), candidate]);
+  }
+  const qualified = [...claims.values()].filter(
+    (members) => new Set(members.map((candidate) => candidate.sourceKind)).size >= 2
+  );
+  return {
+    ...(claims.size === 1 && qualified.length === 1
+      ? { selected: [...qualified[0]].sort(compareCandidateStrength)[0] }
+      : {}),
+    hasFractionalClaims: fractional.length > 0,
+    conflictingAuthoritativeFractions: claims.size > 1,
+  };
+}
+
+function groupsShareInstant(top: CandidateGroup, second: CandidateGroup): boolean {
+  const anchor = top.candidates.find((candidate) => candidate.value.instantUtc !== undefined);
+  if (!anchor) return false;
+  const instantBearing = second.candidates.filter(
+    (candidate) => candidate.value.instantUtc !== undefined
+  );
+  if (instantBearing.length === 0) return false;
+  return instantBearing.every((candidate) => valuesAgree(anchor.value, candidate.value));
+}
+
+const AUTHORITATIVE_ORIGINAL_BASE = 94;
+
+function topHoldsAuthoritativeOriginal(top: CandidateGroup, second: CandidateGroup): boolean {
+  if (!top.corroborated) return false;
+  const topBest = top.candidates[0];
+  const secondBest = second.candidates[0];
+  if (hasPlaceholderModifier(topBest)) return false;
+  return (
+    topBest.score.base >= AUTHORITATIVE_ORIGINAL_BASE && topBest.score.base > secondBest.score.base
+  );
 }
 
 function isJsonSafe(value: unknown, ancestors = new Set<object>()): boolean {
@@ -803,10 +985,27 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
   const lead = second ? top.score - second.score : 100;
   const reasonCodes: string[] = [];
   if (top.corroborated) reasonCodes.push('INDEPENDENT_CORROBORATION');
-  const subsecondConsensus = hasCorroboratedSubsecondConsensus(top, second);
+  const subsecondAssessment = assessSubseconds(top, second);
+  const subsecondConsensus = subsecondAssessment.selected !== undefined;
   if (subsecondConsensus) reasonCodes.push('SUBSECOND_CONSENSUS');
+  if (subsecondAssessment.hasFractionalClaims && !subsecondConsensus) {
+    reasonCodes.push('UNVERIFIED_SUBSECONDS_OMITTED');
+  }
+  if (subsecondAssessment.conflictingAuthoritativeFractions) {
+    reasonCodes.push('SUBSECOND_CONFLICT');
+  }
 
-  if (second && second.score >= 75 && lead < 15 && !subsecondConsensus) {
+  const sameInstant = second !== undefined && groupsShareInstant(top, second);
+  if (sameInstant) reasonCodes.push('SAME_INSTANT_CONTENDER');
+  const authoritativeOriginal =
+    second !== undefined &&
+    !subsecondConsensus &&
+    !sameInstant &&
+    topHoldsAuthoritativeOriginal(top, second);
+  if (authoritativeOriginal) reasonCodes.push('AUTHORITATIVE_ORIGINAL_PREFERRED');
+  const contenderNeutralized = subsecondConsensus || sameInstant || authoritativeOriginal;
+
+  if (second && second.score >= 75 && lead < 15 && !contenderNeutralized) {
     reasonCodes.push('STRONG_CONFLICT');
     return {
       ...baseRecord,
@@ -820,9 +1019,30 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     };
   }
 
-  const selected = top.candidates[0];
-  const effectiveLead = subsecondConsensus ? 15 : lead;
-  if (top.score >= 90 && effectiveLead >= 15) {
+  const selected =
+    subsecondAssessment.selected ??
+    top.candidates.find((candidate) => candidate.value.fractionalDigits === undefined) ??
+    top.candidates[0];
+  if (selected.sourceKind === 'filename' || selected.value.zoneBasis === 'date-only') {
+    reasonCodes.push('NON_AUTHORITATIVE_SELECTION');
+  }
+  // A same-instant or subsecond contender is not a disagreement, so it cannot dilute the lead.
+  // An authoritative original beats an editorial or container date but stays at medium confidence:
+  // the file still carries a real conflicting claim that the User can see in the evidence.
+  const effectiveLead =
+    subsecondConsensus || sameInstant
+      ? Math.max(lead, 15)
+      : authoritativeOriginal
+        ? Math.max(lead, 10)
+        : lead;
+  const selectedIsPlaceholder = hasPlaceholderModifier(selected);
+  if (selectedIsPlaceholder) reasonCodes.push('MIDNIGHT_PLACEHOLDER_REVIEW');
+  const selectedValue =
+    subsecondAssessment.hasFractionalClaims && !subsecondConsensus
+      ? omitSubseconds(selected.value)
+      : { ...selected.value };
+
+  if (!selectedIsPlaceholder && !authoritativeOriginal && top.score >= 90 && effectiveLead >= 15) {
     reasonCodes.push('RESOLVED_HIGH_CONFIDENCE');
     return {
       ...baseRecord,
@@ -831,13 +1051,13 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
       selectedCandidateId: selected.id,
       selectedGroupId: top.id,
       selectedGroupScore: top.score,
-      selectedValue: { ...selected.value },
+      selectedValue,
       contenderIds: top.candidates.map((candidate) => candidate.id).sort(),
       reasonCodes: uniqueSorted(reasonCodes),
     };
   }
 
-  if (top.score >= 75 && effectiveLead >= 10) {
+  if (!selectedIsPlaceholder && top.score >= 75 && effectiveLead >= 10) {
     reasonCodes.push('RESOLVED_MEDIUM_CONFIDENCE');
     return {
       ...baseRecord,
@@ -846,7 +1066,7 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
       selectedCandidateId: selected.id,
       selectedGroupId: top.id,
       selectedGroupScore: top.score,
-      selectedValue: { ...selected.value },
+      selectedValue,
       contenderIds: top.candidates.map((candidate) => candidate.id).sort(),
       reasonCodes: uniqueSorted(reasonCodes),
     };
@@ -861,7 +1081,7 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
       selectedCandidateId: selected.id,
       selectedGroupId: top.id,
       selectedGroupScore: top.score,
-      selectedValue: { ...selected.value },
+      selectedValue,
       contenderIds: top.candidates.map((candidate) => candidate.id).sort(),
       reasonCodes: uniqueSorted(reasonCodes),
     };

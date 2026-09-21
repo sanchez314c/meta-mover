@@ -195,6 +195,17 @@ describe('TransactionalFileCore', () => {
           durability: { file: 'not-applicable', parents: ['synced'] },
         };
       },
+      renameNoReplace: async () => {
+        // Default mock returns cross-device so existing tests fall through
+        // to the staged-copy path. Fast-path tests override this.
+        throw new NativeFilesystemHelperClientError(
+          'cross-device',
+          'precondition',
+          'not-applied',
+          false,
+          'mock cross-device rename'
+        );
+      },
       removeManagedExact: async (request) => {
         const managedPath = capabilityPath(request.path);
         if (!(await sameIdentity(managedPath, request.expected))) {
@@ -1152,6 +1163,65 @@ describe('TransactionalFileCore', () => {
     await core.close();
   });
 
+  it('reclaims the staging link when cancellation interrupts the source delete after commit', async () => {
+    const sourcePath = await source('delete-step-cancel.jpg', 'keep-both-no-residue');
+    const controller = new AbortController();
+    const core = await createCore(destinationRoot, {
+      failureInjector: (point) => {
+        if (point === 'before-source-delete') controller.abort();
+      },
+    });
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'delete-step-cancelled.jpg',
+      mode: 'move',
+      expectedSha256: await hashFile(sourcePath),
+      signal: controller.signal,
+    });
+
+    expect(result).toMatchObject({ status: 'cancelled', committed: true, sourceRetained: true });
+    expect(await readFile(sourcePath, 'utf8')).toBe('keep-both-no-residue');
+    expect(await readFile(result.destinationPath!, 'utf8')).toBe('keep-both-no-residue');
+    expect((await lstat(result.destinationPath!)).nlink).toBe(1);
+    expect(await readdir(path.join(destinationRoot, '.meta-mover', 'staging'))).toEqual([]);
+    await core.close();
+  });
+
+  it('sweeps staging and reservation residue of terminal operations when the core reopens', async () => {
+    const sourcePath = await source('residue-source.jpg', 'residue-content');
+    const controller = new AbortController();
+    const stagingRoot = path.join(destinationRoot, '.meta-mover', 'staging');
+    const first = await createCore(destinationRoot, {
+      failureInjector: (point) => {
+        if (point === 'before-source-delete') controller.abort();
+      },
+      cleanupFailureInjector: (filePath) => {
+        if (path.dirname(filePath) === stagingRoot) {
+          throw new Error('injected: helper channel aborted during cleanup');
+        }
+      },
+    });
+    const result = await first.execute({
+      sourcePath,
+      targetFilename: 'residue-target.jpg',
+      mode: 'move',
+      expectedSha256: await hashFile(sourcePath),
+      signal: controller.signal,
+    });
+    expect(result).toMatchObject({ status: 'cancelled', committed: true });
+    expect(await readdir(stagingRoot)).toHaveLength(1);
+    expect((await lstat(result.destinationPath!)).nlink).toBe(2);
+    await first.close();
+
+    const second = await createCore(destinationRoot);
+    expect(await readdir(stagingRoot)).toEqual([]);
+    expect((await lstat(result.destinationPath!)).nlink).toBe(1);
+    expect(await readFile(result.destinationPath!, 'utf8')).toBe('residue-content');
+    expect(await readFile(sourcePath, 'utf8')).toBe('residue-content');
+    await second.close();
+  });
+
   it('reports post-commit failure as committed while retaining the source', async () => {
     const sourcePath = await source('post-commit-failure.jpg', 'committed-before-failure');
     const core = await createCore(destinationRoot, {
@@ -1542,6 +1612,147 @@ describe('TransactionalFileCore', () => {
       code: 'ENOENT',
     });
     expect((await core.getLedger()).failed).toBe(1);
+    await core.close();
+  });
+
+  it('transforms and verifies private staging before publishing and deleting a moved source', async () => {
+    const sourcePath = await source('normalize-before-publish.jpg', 'original-bytes');
+    const destinationPath = path.join(destinationRoot, 'normalized.jpg');
+    const core = await createCore(destinationRoot);
+
+    const result = await core.execute({
+      operationId: 'normalize-before-publish',
+      sourcePath,
+      targetFilename: 'normalized.jpg',
+      mode: 'move',
+      transformStaging: async ({ stagingPath }) => {
+        expect(stagingPath).toContain(`${path.sep}.meta-mover${path.sep}staging${path.sep}`);
+        await writeFile(stagingPath, 'normalized-bytes');
+        return {
+          verified: true,
+          idempotent: true,
+          normalizedTags: ['EXIF:DateTimeOriginal'],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'moved', committed: true, sourceRetained: false });
+    expect(await readFile(destinationPath, 'utf8')).toBe('normalized-bytes');
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const records = await TransactionJournal.open(
+      path.join(destinationRoot, '.meta-mover', 'transactions.jsonl')
+    );
+    const persisted = await records.readRecords();
+    expect(persisted.findLast((record) => record.state === 'transformed')).toMatchObject({
+      sourceHash: createHash('sha256').update('original-bytes').digest('hex'),
+      outputHash: createHash('sha256').update('normalized-bytes').digest('hex'),
+      transformationVerified: true,
+      transformationReceipt: expect.objectContaining({ idempotent: true }),
+    });
+    await records.close();
+    await core.close();
+  });
+
+  it('cancels during staging transformation without publishing or deleting the source', async () => {
+    const sourcePath = await source('normalization-abort.jpg', 'source-survives-abort');
+    const destinationPath = path.join(destinationRoot, 'aborted.jpg');
+    const controller = new AbortController();
+    const core = await createCore(destinationRoot);
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'aborted.jpg',
+      mode: 'move',
+      signal: controller.signal,
+      transformStaging: async ({ stagingPath }) => {
+        await writeFile(stagingPath, 'normalized-before-abort');
+        controller.abort();
+        return { verified: true };
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'cancelled', committed: false, sourceRetained: true });
+    expect(await readFile(sourcePath, 'utf8')).toBe('source-survives-abort');
+    await expect(lstat(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await core.listStagingResidue()).toEqual([]);
+    await core.close();
+  });
+
+  it('recovers a transformed output crash after publication without deleting the retained source', async () => {
+    const sourcePath = await source('normalization-crash.jpg', 'source-survives-crash');
+    const destinationPath = path.join(destinationRoot, 'crash-output.jpg');
+    const core = await createCore(destinationRoot, {
+      failureInjector: (point) => {
+        if (point === 'after-commit') throw new Error('simulated crash after transformed publish');
+      },
+    });
+
+    const interrupted = await core.execute({
+      operationId: 'transform-crash-recovery',
+      sourcePath,
+      targetFilename: 'crash-output.jpg',
+      mode: 'move',
+      transformStaging: async ({ stagingPath }) => {
+        await writeFile(stagingPath, 'normalized-crash-output');
+        return { verified: true };
+      },
+    });
+    expect(interrupted).toMatchObject({ status: 'failed', committed: true, sourceRetained: true });
+    await core.close();
+
+    const recovered = await createCore(destinationRoot);
+    expect(await readFile(sourcePath, 'utf8')).toBe('source-survives-crash');
+    expect(await readFile(destinationPath, 'utf8')).toBe('normalized-crash-output');
+    expect(await recovered.getLedger()).toMatchObject({
+      committedSourceRetained: 1,
+      nonterminal: 0,
+    });
+    expect(await recovered.listStagingResidue()).toEqual([]);
+    await recovered.close();
+  });
+
+  it('retains the source and publishes nothing when staging normalization or readback fails', async () => {
+    const sourcePath = await source('normalization-failure.jpg', 'source-survives');
+    const destinationPath = path.join(destinationRoot, 'must-not-exist.jpg');
+    const core = await createCore(destinationRoot);
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'must-not-exist.jpg',
+      mode: 'move',
+      transformStaging: async ({ stagingPath }) => {
+        await writeFile(stagingPath, 'partially-rewritten');
+        throw new Error('metadata readback verification failed');
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'failed', committed: false, sourceRetained: true });
+    expect(result.error).toMatch(/readback verification failed/i);
+    expect(await readFile(sourcePath, 'utf8')).toBe('source-survives');
+    await expect(lstat(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await core.listStagingResidue()).toEqual([]);
+    await core.close();
+  });
+
+  it('rejects an unverified staging transformation receipt before publication', async () => {
+    const sourcePath = await source('unverified-normalization.jpg', 'source-survives-unverified');
+    const destinationPath = path.join(destinationRoot, 'unverified-output.jpg');
+    const core = await createCore(destinationRoot);
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'unverified-output.jpg',
+      mode: 'move',
+      transformStaging: async ({ stagingPath }) => {
+        await writeFile(stagingPath, 'unverified-output');
+        return { verified: false };
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'failed', committed: false, sourceRetained: true });
+    expect(result.error).toMatch(/verified receipt/i);
+    expect(await readFile(sourcePath, 'utf8')).toBe('source-survives-unverified');
+    await expect(lstat(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await core.close();
   });
 
@@ -2059,6 +2270,7 @@ describe('TransactionalFileCore', () => {
 
   it('keeps a named conservation object when the process dies after guard unlink', async () => {
     const sourcePath = await source('crash-after-guard.jpg', 'crash-conservation-content');
+    const sourceHash = await hashFile(sourcePath);
     const destinationPath = path.join(destinationRoot, 'crash-after-guard-target.jpg');
     const modulePath = path.resolve(
       __dirname,
@@ -2100,7 +2312,8 @@ describe('TransactionalFileCore', () => {
         await core.execute({
           sourcePath: ${JSON.stringify(sourcePath)},
           targetFilename: ${JSON.stringify(path.basename(destinationPath))},
-          mode: 'move'
+          mode: 'move',
+          expectedSha256: ${JSON.stringify(sourceHash)}
         });
         process.exit(0);
       })().catch(() => process.exit(92));
@@ -3239,4 +3452,232 @@ describe('TransactionalFileCore', () => {
     expect(await core.getLedger()).toMatchObject({ moved: 999, committedSourceRetained: 1 });
     await core.close();
   }, 360_000);
+
+  // --- Same-filesystem rename fast path tests ---
+
+  function workingRenameNoReplace(): NativeTransactionFilesystemClient['renameNoReplace'] {
+    return async (request) => {
+      const sourcePath = capabilityPath(request.source);
+      const targetPath = capabilityPath(request.target);
+      const exists = await lstat(targetPath)
+        .then(() => true)
+        .catch(() => false);
+      if (exists) {
+        throw new NativeFilesystemHelperClientError(
+          'target-exists',
+          'precondition',
+          'not-applied',
+          false,
+          'target already exists'
+        );
+      }
+      const before = await nativeIdentity(sourcePath);
+      await rename(sourcePath, targetPath);
+      const after = await nativeIdentity(targetPath);
+      return {
+        outcome: 'applied',
+        before,
+        after,
+        durability: { file: 'not-applicable', parents: ['synced'] },
+      };
+    };
+  }
+
+  it('uses rename fast path for same-filesystem move without staging or hashing', async () => {
+    const sourcePath = await source('rename-fast.mov', 'fast-move-content');
+    const beforeStats = await lstat(sourcePath, { bigint: true });
+    const beforeDev = beforeStats.dev;
+    const beforeIno = beforeStats.ino;
+    let stageCopyCalled = false;
+    const ns = nativeFilesystem(undefined, undefined, {
+      renameNoReplace: workingRenameNoReplace(),
+      stageCopy: async (request) => {
+        stageCopyCalled = true;
+        const src = capabilityPath(request.source);
+        const tgt = capabilityPath(request.target);
+        await copyFile(src, tgt, 1);
+        const sha256 = await hashFile(tgt);
+        return {
+          outcome: 'applied',
+          before: await nativeIdentity(src),
+          after: await nativeIdentity(tgt),
+          sha256,
+          durability: { file: 'synced', parents: ['synced'] },
+        };
+      },
+    });
+    const core = await TransactionalFileCore.create(destinationRoot, { nativeFilesystem: ns });
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'rename-fast-target.mov',
+      mode: 'move',
+    });
+
+    expect(result.status).toBe('moved');
+    expect(result.committed).toBe(true);
+    expect(result.sourceRetained).toBe(false);
+    expect(result.hash).toBeUndefined();
+    expect(stageCopyCalled).toBe(false);
+    // Source should be gone
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    // Destination should exist with same inode
+    const afterStats = await lstat(result.destinationPath!, { bigint: true });
+    expect(afterStats.dev).toBe(beforeDev);
+    expect(afterStats.ino).toBe(beforeIno);
+    expect(await readFile(result.destinationPath!, 'utf8')).toBe('fast-move-content');
+
+    // Journal should have planned, reserved, committed, completed but no staged/verified/source-deleted
+    const records = (
+      await readFile(path.join(destinationRoot, '.meta-mover', 'transactions.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((r: { operationId: string }) => r.operationId === result.operationId);
+    const states = records.map((r: { state: string }) => r.state);
+    expect(states).toEqual(['planned', 'reserved', 'committed', 'completed']);
+    expect(records.every((r: { mode: string }) => r.mode === 'move')).toBe(true);
+    // No hash in any record
+    expect(records.every((r: { hash?: string }) => r.hash === undefined)).toBe(true);
+    // Completed record should have sourceRetained: false
+    const completed = records.find((r: { state: string }) => r.state === 'completed');
+    expect(completed.sourceRetained).toBe(false);
+
+    await core.close();
+  });
+
+  it('takes the verified staged path when expectedSha256 is supplied for a same-filesystem move', async () => {
+    const sourcePath = await source('hash-gated.mov', 'gated-content');
+    const expectedSha256 = await hashFile(sourcePath);
+    const core = await createCore(destinationRoot);
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'hash-gated-target.mov',
+      mode: 'move',
+      expectedSha256,
+    });
+
+    expect(result.status).toBe('moved');
+    expect(result.committed).toBe(true);
+    expect(result.sourceRetained).toBe(false);
+    expect(result.hash).toBe(expectedSha256);
+    // Source should be gone
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    // Journal should have staged and verified records (full path)
+    const records = (
+      await readFile(path.join(destinationRoot, '.meta-mover', 'transactions.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((r: { operationId: string }) => r.operationId === result.operationId);
+    const states = records.map((r: { state: string }) => r.state);
+    expect(states).toContain('staged');
+    expect(states).toContain('verified');
+    await core.close();
+  });
+
+  it('falls back to staged copy when rename returns a cross-device error', async () => {
+    const sourcePath = await source('cross-device.mov', 'cross-device-content');
+    let renameCallCount = 0;
+    const ns = nativeFilesystem(undefined, undefined, {
+      renameNoReplace: async () => {
+        renameCallCount++;
+        throw new NativeFilesystemHelperClientError(
+          'cross-device',
+          'precondition',
+          'not-applied',
+          false,
+          'cross-device rename not supported'
+        );
+      },
+    });
+    const core = await TransactionalFileCore.create(destinationRoot, { nativeFilesystem: ns });
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'cross-device-target.mov',
+      mode: 'move',
+    });
+
+    expect(renameCallCount).toBeGreaterThan(0);
+    expect(result.status).toBe('moved');
+    expect(result.committed).toBe(true);
+    expect(result.sourceRetained).toBe(false);
+    // Hash should be present since it took the staged path
+    expect(result.hash).toBeDefined();
+    expect(result.hash).toHaveLength(64);
+    // Source should be gone
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(result.destinationPath!, 'utf8')).toBe('cross-device-content');
+    // Journal should contain staged records
+    const records = (
+      await readFile(path.join(destinationRoot, '.meta-mover', 'transactions.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((r: { operationId: string }) => r.operationId === result.operationId);
+    const states = records.map((r: { state: string }) => r.state);
+    expect(states).toContain('staged');
+    expect(states).toContain('source-deleted');
+    await core.close();
+  });
+
+  it('rejects exact-no-clobber collision on the rename fast path with source untouched', async () => {
+    const sourcePath = await source('collision-fast.mov', 'collision-content');
+    const destinationPath = path.join(destinationRoot, 'collision-fast-target.mov');
+    // Pre-create the exact destination
+    await writeFile(destinationPath, 'existing-occupant');
+    const ns = nativeFilesystem(undefined, undefined, {
+      renameNoReplace: workingRenameNoReplace(),
+    });
+    const core = await TransactionalFileCore.create(destinationRoot, { nativeFilesystem: ns });
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'collision-fast-target.mov',
+      expectedDestinationPath: destinationPath,
+      collisionMode: 'exact-no-clobber',
+      mode: 'move',
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.committed).toBe(false);
+    expect(result.error).toMatch(/exact preview target/i);
+    // Source must be untouched
+    expect(await readFile(sourcePath, 'utf8')).toBe('collision-content');
+    // The pre-existing destination must be untouched
+    expect(await readFile(destinationPath, 'utf8')).toBe('existing-occupant');
+    await core.close();
+  });
+
+  it('copy on the same filesystem still uses staged path with hash', async () => {
+    const sourcePath = await source('copy-same-fs.mov', 'copy-content');
+    let renameCalled = false;
+    const ns = nativeFilesystem(undefined, undefined, {
+      renameNoReplace: async () => {
+        renameCalled = true;
+        throw new Error('rename should not be called for copy mode');
+      },
+    });
+    const core = await TransactionalFileCore.create(destinationRoot, { nativeFilesystem: ns });
+
+    const result = await core.execute({
+      sourcePath,
+      targetFilename: 'copy-same-fs-target.mov',
+      mode: 'copy',
+    });
+
+    expect(result.status).toBe('copied');
+    expect(result.committed).toBe(true);
+    expect(result.sourceRetained).toBe(true);
+    expect(result.hash).toBeDefined();
+    expect(renameCalled).toBe(false);
+    expect(await readFile(sourcePath, 'utf8')).toBe('copy-content');
+    expect(await readFile(result.destinationPath!, 'utf8')).toBe('copy-content');
+    await core.close();
+  });
 });

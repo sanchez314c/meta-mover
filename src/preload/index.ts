@@ -11,6 +11,16 @@ import type {
 const electronAPI = {
   getSystemInfo: () => ipcRenderer.invoke('system:info'),
   selectDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
+  gatherTestRun: (request: { sourcePath: string; destinationPath: string; fileCount: number }) =>
+    ipcRenderer.invoke('test-run:gather', request),
+  discardTestRun: (temporarySourcePath: string) =>
+    ipcRenderer.invoke('test-run:discard', temporarySourcePath),
+  cancelTestRun: () => ipcRenderer.invoke('test-run:cancel'),
+  onTestRunProgress: (callback: (event: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: unknown) => callback(progress);
+    ipcRenderer.on('test-run:progress', listener);
+    return () => ipcRenderer.removeListener('test-run:progress', listener);
+  },
 
   previewProcessing: (request: PreviewRequestDTO) =>
     ipcRenderer.invoke('processing:preview', request),
@@ -25,6 +35,20 @@ const electronAPI = {
     ipcRenderer.on('processing:event', listener);
     return () => ipcRenderer.removeListener('processing:event', listener);
   },
+  getNormalizationAuditSummary: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:summary', request),
+  getNormalizationAuditCohorts: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:cohorts', request),
+  getNormalizationAuditSample: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:sample', request),
+  getNormalizationAuditRows: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:rows', request),
+  getNormalizationAuditDecision: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:decision', request),
+  approveNormalizationAuditCohort: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:approve', request),
+  dryRunNormalizationAudit: (request: unknown) =>
+    ipcRenderer.invoke('normalization-audit:dry-run', request),
 
   getConfig: () => ipcRenderer.invoke('config:get'),
   updateConfig: (update: AppConfigUpdate) => ipcRenderer.invoke('config:update', update),

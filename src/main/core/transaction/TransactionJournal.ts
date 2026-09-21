@@ -22,6 +22,7 @@ export type TransactionState =
   | 'reserved'
   | 'staged'
   | 'verified'
+  | 'transformed'
   | 'committed'
   | 'source-delete-pending'
   | 'source-deleted'
@@ -60,6 +61,10 @@ export interface JournalRecord {
   sourceDeleteReceiptPath?: string;
   sourceDeleteReceiptState?: 'created' | 'exact';
   hash?: string;
+  sourceHash?: string;
+  outputHash?: string;
+  transformationVerified?: boolean;
+  transformationReceipt?: Readonly<Record<string, unknown>>;
   bytes?: number;
   committed?: boolean;
   sourceRetained?: boolean;

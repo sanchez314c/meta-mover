@@ -276,6 +276,7 @@ describe('CoordinatorEvidenceAdapter', () => {
       'candidate-observed',
       'resolution-decided',
       'operation-planned',
+      'preview-sealed',
       'start-rejected',
       'operation-committed',
       'job-closed',
@@ -322,7 +323,7 @@ describe('CoordinatorEvidenceAdapter', () => {
     });
     expect(JSON.stringify(events[1].payload)).not.toContain('rawValue');
     expect(JSON.stringify(events[2].payload)).not.toContain('rawValue');
-    expect(events[8].payload).toEqual({ terminal: terminal(prepared.jobId) });
+    expect(events[9].payload).toEqual({ terminal: terminal(prepared.jobId) });
     if (process.platform !== 'win32') {
       expect((await lstat(evidenceRoot)).mode & 0o777).toBe(0o700);
     }
@@ -382,7 +383,7 @@ describe('CoordinatorEvidenceAdapter', () => {
         confidence: 0,
         warnings: ['Needs Review'],
       },
-      warnings: ['Needs Review', 'Creation date requires review'],
+      warnings: ['Needs Review: unsupported format'],
     };
     const second = await CoordinatorEvidenceAdapter.create({
       evidenceRoot: path.join(parent, 'unsupported-evidence'),
@@ -421,6 +422,202 @@ describe('CoordinatorEvidenceAdapter', () => {
     );
     await expect(second.shutdown()).rejects.toThrow(/failed/i);
   });
+
+  it('rejects filesystem-modified evidence as a resolved creation date', async () => {
+    const prepared = preview('valid-low-fallback');
+    const privateAudit = audit(prepared);
+    prepared.rows![0].dateEvidence = {
+      value: '2026-03-27T21:38:45.000Z',
+      source: DateEvidenceSource.FILESYSTEM_MODIFIED,
+      field: 'FileSystem:ModifiedTime',
+      confidence: 0.4,
+      warnings: ['FILESYSTEM_MODIFIED_FALLBACK', 'RESOLVED_LOW_CONFIDENCE'],
+    };
+    const resolution = privateAudit.decisionRecords[0].resolution;
+    resolution.status = 'resolved';
+    resolution.confidence = 'low';
+    resolution.reasonCodes = ['FILESYSTEM_MODIFIED_FALLBACK', 'RESOLVED_LOW_CONFIDENCE'];
+    resolution.selectedValue = {
+      localIso: '2026-03-27T21:38:45.000',
+      instantUtc: '2026-03-27T21:38:45.000Z',
+      zoneBasis: 'spec-defined-utc',
+      precision: 'millisecond',
+      fractionalDigits: '000',
+    };
+    resolution.candidates[0].semantic = 'filesystem-modified';
+    resolution.candidates[0].sourceKind = 'filesystem';
+    resolution.candidates[0].sourceFamily = 'filesystem-modified';
+    resolution.candidates[0].tag = 'FileSystem:ModifiedTime';
+    resolution.candidates[0].rawValue = '2026-03-27T21:38:45.000Z';
+    resolution.candidates[0].value = { ...resolution.selectedValue };
+    resolution.candidates[0].score = {
+      base: 45,
+      modifiers: [],
+      semanticCap: 45,
+      final: 45,
+    };
+    resolution.selectedGroupScore = 45;
+
+    const adapter = await CoordinatorEvidenceAdapter.create({
+      evidenceRoot,
+      policyVersion: 'date-policy/1',
+    });
+    await expect(adapter.recordPreview(prepared, privateAudit)).rejects.toThrow(
+      /resolved status|high or medium|confidence/i
+    );
+    await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+  });
+
+  it.each(['high', 'medium'] as const)(
+    'rejects forged resolved/%s filesystem modification evidence before persistence',
+    async (confidence) => {
+      const prepared = preview(`forged-${confidence}-filesystem-modified`);
+      const privateAudit = audit(prepared);
+      const instant = '2026-03-27T21:38:45.000Z';
+      const selectedValue = {
+        localIso: '2026-03-27T21:38:45.000',
+        instantUtc: instant,
+        zoneBasis: 'spec-defined-utc' as const,
+        precision: 'millisecond' as const,
+        fractionalDigits: '000',
+      };
+      prepared.rows![0].dateEvidence = {
+        value: instant,
+        source: DateEvidenceSource.EMBEDDED,
+        field: 'FileSystem:ModifiedTime',
+        confidence: confidence === 'high' ? 1 : 0.7,
+        warnings: [`RESOLVED_${confidence.toUpperCase()}_CONFIDENCE`],
+      };
+      const resolution = privateAudit.decisionRecords[0].resolution;
+      resolution.confidence = confidence;
+      resolution.reasonCodes = [`RESOLVED_${confidence.toUpperCase()}_CONFIDENCE`];
+      resolution.selectedValue = selectedValue;
+      resolution.selectedGroupScore = 99;
+      resolution.candidates[0] = {
+        ...resolution.candidates[0],
+        semantic: 'filesystem-modified',
+        sourceKind: 'filesystem',
+        sourceFamily: 'filesystem-modified',
+        tag: 'FileSystem:ModifiedTime',
+        rawValue: instant,
+        value: selectedValue,
+        eligibility: 'eligible',
+        score: {
+          base: 99,
+          modifiers: [],
+          semanticCap: 100,
+          final: 99,
+        },
+        resolutionIssues: [],
+      };
+
+      const adapter = await CoordinatorEvidenceAdapter.create({
+        evidenceRoot,
+        policyVersion: 'date-policy/1',
+      });
+      await expect(adapter.recordPreview(prepared, privateAudit)).rejects.toThrow(
+        /filesystem|eligible|creation evidence|selected candidate/i
+      );
+      await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+    }
+  );
+
+  it.each([
+    ['high', 'FileSystem:ModifiedTime', 'exif-primary'],
+    ['medium', 'XMP:MetadataDate', 'xmp-primary'],
+    ['high', 'ICC_Profile:ProfileDateTime', 'exif-primary'],
+    ['medium', 'EXIF:DateTimeOriginal', 'filesystem-modified'],
+  ] as const)(
+    'rejects relabeled resolved/%s non-creation provenance %s / %s',
+    async (confidence, tag, sourceFamily) => {
+      const prepared = preview(`relabeled-${confidence}-${tag}`);
+      const privateAudit = audit(prepared);
+      prepared.rows![0].dateEvidence.confidence = confidence === 'high' ? 1 : 0.7;
+      prepared.rows![0].dateEvidence.field = tag;
+      const resolution = privateAudit.decisionRecords[0].resolution;
+      resolution.confidence = confidence;
+      resolution.reasonCodes = [`RESOLVED_${confidence.toUpperCase()}_CONFIDENCE`];
+      resolution.candidates[0].tag = tag;
+      resolution.candidates[0].sourceFamily = sourceFamily;
+
+      const adapter = await CoordinatorEvidenceAdapter.create({
+        evidenceRoot,
+        policyVersion: 'date-policy/1',
+      });
+      await expect(adapter.recordPreview(prepared, privateAudit)).rejects.toThrow(
+        /provenance|creation evidence|selected candidate/i
+      );
+      await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+    }
+  );
+
+  it('admits a valid filename creation claim as filename evidence', async () => {
+    const prepared = preview('valid-filename-evidence');
+    const privateAudit = audit(prepared);
+    prepared.rows![0].dateEvidence = {
+      ...prepared.rows![0].dateEvidence,
+      source: DateEvidenceSource.FILENAME,
+      field: 'filename:Screenshot_20240102_030405',
+      confidence: 0.7,
+    };
+    const resolution = privateAudit.decisionRecords[0].resolution;
+    resolution.confidence = 'medium';
+    resolution.selectedGroupScore = 82;
+    resolution.reasonCodes = ['RESOLVED_MEDIUM_CONFIDENCE'];
+    resolution.candidates[0] = {
+      ...resolution.candidates[0],
+      semantic: 'filename-claim',
+      sourceKind: 'filename',
+      sourceFamily: 'screenshot-filename',
+      tag: 'filename:Screenshot_20240102_030405',
+      score: {
+        base: 82,
+        modifiers: [],
+        semanticCap: 85,
+        final: 82,
+      },
+    };
+
+    const adapter = await CoordinatorEvidenceAdapter.create({
+      evidenceRoot,
+      policyVersion: 'date-policy/1',
+    });
+    await expect(adapter.recordPreview(prepared, privateAudit)).resolves.toBeUndefined();
+    await expect(adapter.shutdown()).resolves.toBeUndefined();
+  });
+
+  it.each(['high', 'medium'] as const)(
+    'rejects resolved/%s filesystem metadata relabeled as filename evidence',
+    async (confidence) => {
+      const prepared = preview(`filename-relabeled-filesystem-${confidence}`);
+      const privateAudit = audit(prepared);
+      prepared.rows![0].dateEvidence = {
+        ...prepared.rows![0].dateEvidence,
+        source: DateEvidenceSource.FILENAME,
+        field: 'FileSystem:ModifiedTime',
+        confidence: confidence === 'high' ? 1 : 0.7,
+      };
+      const resolution = privateAudit.decisionRecords[0].resolution;
+      resolution.confidence = confidence;
+      resolution.reasonCodes = [`RESOLVED_${confidence.toUpperCase()}_CONFIDENCE`];
+      resolution.candidates[0] = {
+        ...resolution.candidates[0],
+        semantic: 'filename-claim',
+        sourceKind: 'filename',
+        sourceFamily: 'filename-timestamp',
+        tag: 'FileSystem:ModifiedTime',
+      };
+
+      const adapter = await CoordinatorEvidenceAdapter.create({
+        evidenceRoot,
+        policyVersion: 'date-policy/1',
+      });
+      await expect(adapter.recordPreview(prepared, privateAudit)).rejects.toThrow(
+        /provenance|creation evidence|selected candidate/i
+      );
+      await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+    }
+  );
 
   it('persists real floating-local EXIF evidence and rejects partial selection groups', async () => {
     const prepared = preview('floating-local');
@@ -1084,13 +1281,13 @@ describe('CoordinatorEvidenceAdapter', () => {
     const manifestPath = adapter.manifestPathForJob(prepared.jobId);
     await expect(EvidenceManifest.verify(manifestPath)).resolves.toMatchObject({
       valid: true,
-      eventCount: 123,
+      eventCount: 124,
     });
     const sequences = (await readFile(manifestPath, 'utf8'))
       .trimEnd()
       .split('\n')
       .map((line) => (JSON.parse(line) as { sequence: number }).sequence);
-    expect(sequences).toEqual(Array.from({ length: 123 }, (_, index) => index + 1));
+    expect(sequences).toEqual(Array.from({ length: 124 }, (_, index) => index + 1));
   });
 
   it('rejects a contradictory concurrent terminal instead of reporting discarded evidence as durable', async () => {
@@ -1162,7 +1359,7 @@ describe('CoordinatorEvidenceAdapter', () => {
       EvidenceManifest.verify(adapter.manifestPathForJob(prepared.jobId))
     ).resolves.toMatchObject({
       valid: true,
-      eventCount: 103,
+      eventCount: 104,
     });
     await expect(
       adapter.recordLedgerEntry({
@@ -1256,7 +1453,7 @@ describe('CoordinatorEvidenceAdapter', () => {
     await adapter.recordTerminal(terminal(prepared.jobId));
     await expect(
       EvidenceManifest.verify(adapter.manifestPathForJob(prepared.jobId))
-    ).resolves.toMatchObject({ valid: true, eventCount: 7 });
+    ).resolves.toMatchObject({ valid: true, eventCount: 8 });
     await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
   });
 
@@ -1277,7 +1474,7 @@ describe('CoordinatorEvidenceAdapter', () => {
     await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
     await expect(
       EvidenceManifest.verify(adapter.manifestPathForJob(prepared.jobId))
-    ).resolves.toMatchObject({ valid: true, eventCount: 7 });
+    ).resolves.toMatchObject({ valid: true, eventCount: 8 });
   });
 
   it('rejects accessor-bearing configuration without executing its getter', async () => {

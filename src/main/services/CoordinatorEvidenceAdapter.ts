@@ -25,6 +25,8 @@ import {
   isValidDateEvidenceValue,
 } from '../../shared/types/processing';
 import type { PreviewResultDTO, TerminalProcessingEvent } from '../../shared/types/processing';
+import { isResolvedCreationProvenance, isSelectedValueSupported } from '../core/date';
+import type { ParsedDateValue } from '../core/date';
 
 export interface CoordinatorEvidenceAdapterOptions {
   evidenceRoot: string;
@@ -88,7 +90,7 @@ const SOURCE_KINDS = [
   'filesystem',
   'user-override',
 ] as const;
-
+const PREVIEW_EVIDENCE_BATCH_SIZE = 256;
 function requireFiniteNumber(value: CanonicalJsonValue | undefined, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value))
     invalidSchema(`${label} must be finite`);
@@ -335,6 +337,21 @@ function validateResolution(value: CanonicalJsonValue | undefined, label: string
     (!hasSelection || !['high', 'medium'].includes(resolution.confidence as string))
   )
     invalidSchema(`${label} resolved status requires a high or medium confidence selection`);
+  if (
+    resolution.status === 'resolved' &&
+    selected !== undefined &&
+    (selected.eligibility !== 'eligible' ||
+      (requireObject(selected.score, `${label}.selected candidate score`).final as number) <= 0 ||
+      !isResolvedCreationProvenance({
+        mediaKind: selected.mediaKind as string,
+        semantic: selected.semantic as string,
+        sourceKind: selected.sourceKind as string,
+        sourceFamily: selected.sourceFamily as string,
+        tag: selected.tag as string,
+      }))
+  ) {
+    invalidSchema(`${label} resolved status requires eligible creation evidence`);
+  }
   if (resolution.status === 'review-required' && (!hasSelection || resolution.confidence !== 'low'))
     invalidSchema(`${label} review-required status requires a low confidence selection`);
   if (resolution.status === 'ambiguous' && (hasSelection || resolution.confidence !== 'none'))
@@ -344,7 +361,10 @@ function validateResolution(value: CanonicalJsonValue | undefined, label: string
   if (
     selected !== undefined &&
     resolution.selectedValue !== undefined &&
-    canonicalJson(selected.value) !== canonicalJson(resolution.selectedValue)
+    !isSelectedValueSupported(
+      resolution.selectedValue as unknown as ParsedDateValue,
+      selected.value as unknown as ParsedDateValue
+    )
   )
     invalidSchema(`${label}.selectedValue does not match selected candidate`);
 }
@@ -755,7 +775,6 @@ function validatePreview(snapshot: Record<string, CanonicalJsonValue>): {
     if (!Object.values(ConflictPolicy).includes(row.conflictPolicy as ConflictPolicy))
       invalidSchema(`${label}.conflictPolicy is invalid`);
     const rowWarnings = requireStringArray(row.warnings, `${label}.warnings`);
-    if (rowWarnings.includes('Creation date requires review')) unresolvedDates += 1;
 
     const dateEvidence = requireObject(row.dateEvidence, `${label}.dateEvidence`);
     assertKeys(
@@ -771,6 +790,12 @@ function validatePreview(snapshot: Record<string, CanonicalJsonValue>): {
         invalidSchema(`${label}.dateEvidence.value must be null when unresolved`);
     } else {
       requireDateEvidenceValue(dateEvidence.value, `${label}.dateEvidence.value`);
+    }
+    if (
+      dateEvidence.source === DateEvidenceSource.UNRESOLVED ||
+      rowWarnings.includes('Creation date requires review')
+    ) {
+      unresolvedDates += 1;
     }
     if (dateEvidence.field !== undefined && typeof dateEvidence.field !== 'string')
       invalidSchema(`${label}.dateEvidence.field must be a string`);
@@ -1378,13 +1403,25 @@ export class CoordinatorEvidenceAdapter implements CoordinatorHistoryPort {
       }
       const ready = EvidenceManifest.create(manifestPath, jobId, this.policyVersion).then(
         async (manifest) => {
+          const pending: Array<Parameters<typeof manifest.appendBatch>[0][number]> = [];
+          const append = async (
+            kind: Parameters<typeof manifest.append>[0],
+            payload: unknown
+          ): Promise<void> => {
+            pending.push({ kind, payload });
+            if (pending.length < PREVIEW_EVIDENCE_BATCH_SIZE) return;
+            await manifest.appendBatch(pending.splice(0));
+          };
+          const flush = async (): Promise<void> => {
+            if (pending.length > 0) await manifest.appendBatch(pending.splice(0));
+          };
           const { rows, ...previewHeader } = snapshot;
-          await manifest.append('preview-recorded', {
+          await append('preview-recorded', {
             preview: previewHeader,
             rowCount: (rows as CanonicalJsonValue[]).length,
           });
           for (let rowIndex = 0; rowIndex < (rows as CanonicalJsonValue[]).length; rowIndex += 1) {
-            await manifest.append('file-observed', {
+            await append('file-observed', {
               previewId,
               rowIndex,
               row: (rows as CanonicalJsonValue[])[rowIndex],
@@ -1404,7 +1441,7 @@ export class CoordinatorEvidenceAdapter implements CoordinatorHistoryPort {
                 candidateIndex < candidates.length;
                 candidateIndex += 1
               ) {
-                await manifest.append('candidate-observed', {
+                await append('candidate-observed', {
                   previewId,
                   rowIndex: decision.rowIndex,
                   candidateIndex,
@@ -1412,7 +1449,7 @@ export class CoordinatorEvidenceAdapter implements CoordinatorHistoryPort {
                   candidate: candidates[candidateIndex],
                 });
               }
-              await manifest.append('resolution-decided', {
+              await append('resolution-decided', {
                 previewId,
                 rowIndex: decision.rowIndex,
                 sourcePath: decision.sourcePath,
@@ -1420,9 +1457,15 @@ export class CoordinatorEvidenceAdapter implements CoordinatorHistoryPort {
               });
             }
             for (const operation of auditSnapshot.operationRecords as CanonicalJsonValue[]) {
-              await manifest.append('operation-planned', { previewId, operation });
+              await append('operation-planned', { previewId, operation });
             }
+            await append('preview-sealed', {
+              previewId,
+              decisionCount: decisions.length,
+              operationCount: (auditSnapshot.operationRecords as CanonicalJsonValue[]).length,
+            });
           }
+          await flush();
           return manifest;
         }
       );

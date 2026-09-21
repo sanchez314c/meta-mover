@@ -1,6 +1,11 @@
 import path from 'path';
 
 import type { IpcRegistrarPort } from '../services/ProcessingIPCController';
+import type {
+  GatherTestRunRequest,
+  TestRunCorpusBuilder,
+  TestRunProgress,
+} from '../services/TestRunCorpusBuilder';
 
 export const CORE_IPC_CHANNELS = Object.freeze([
   'system:info',
@@ -11,6 +16,9 @@ export const CORE_IPC_CHANNELS = Object.freeze([
   'open-external',
   'system:openPath',
   'system:getPath',
+  'test-run:gather',
+  'test-run:discard',
+  'test-run:cancel',
 ] as const);
 
 type CoreIpcChannel = (typeof CORE_IPC_CHANNELS)[number];
@@ -61,6 +69,8 @@ export interface CoreIPCDependencies {
   shell: CoreShellPort;
   app: CoreAppPort;
   system: CoreSystemPort;
+  testRuns: Pick<TestRunCorpusBuilder, 'gather' | 'discard' | 'cancel'>;
+  publishTestRunProgress(event: TestRunProgress): void;
 }
 
 export class CoreIPCCleanupError extends Error {
@@ -173,6 +183,48 @@ export class CoreIPCController {
         if (typeof value !== 'string' || !ALLOWED_APP_PATHS.has(value)) return null;
         return this.dependencies.app.getPath(value);
       });
+      this.handle('test-run:gather', async (value) => {
+        if (
+          typeof value !== 'object' ||
+          value === null ||
+          Array.isArray(value) ||
+          Object.keys(value).sort().join(',') !== 'destinationPath,fileCount,sourcePath'
+        )
+          return responseError('Test run request is invalid');
+        const request = value as Partial<GatherTestRunRequest>;
+        const sourcePath = canonicalAbsolutePath(request.sourcePath);
+        const destinationPath = canonicalAbsolutePath(request.destinationPath);
+        if (!sourcePath || !destinationPath || request.fileCount !== 15000)
+          return responseError(
+            'Test run requires canonical source and destination paths and exactly 15000 files'
+          );
+        try {
+          return {
+            success: true,
+            data: await this.dependencies.testRuns.gather(
+              { sourcePath, destinationPath, fileCount: 15000 },
+              (event) => this.dependencies.publishTestRunProgress(event)
+            ),
+          };
+        } catch (error) {
+          return responseError(
+            error instanceof Error ? error.message : 'Test run gathering failed'
+          );
+        }
+      });
+      this.handle('test-run:discard', async (value) => {
+        const temporarySourcePath = canonicalAbsolutePath(value);
+        if (!temporarySourcePath) return responseError('Test run cleanup path is invalid');
+        try {
+          await this.dependencies.testRuns.discard(temporarySourcePath);
+          return { success: true } as const;
+        } catch (error) {
+          return responseError(error instanceof Error ? error.message : 'Test run cleanup failed');
+        }
+      });
+      this.handle('test-run:cancel', () => ({
+        success: this.dependencies.testRuns.cancel(),
+      }));
       this.registered = true;
     } catch (error) {
       const failures = this.removeOwnedHandlers();

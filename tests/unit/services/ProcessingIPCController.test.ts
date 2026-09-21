@@ -45,6 +45,15 @@ function harness(
       update: jest.fn().mockResolvedValue({ version: 2, theme: 'dark' }),
       reset: jest.fn().mockResolvedValue({ version: 2, theme: 'system' }),
     },
+    audit: {
+      summary: jest.fn().mockResolvedValue({ revision: 'rev-1', total: 1 }),
+      cohorts: jest.fn().mockResolvedValue({ revision: 'rev-1', items: [] }),
+      sample: jest.fn().mockResolvedValue({ revision: 'rev-1', items: [] }),
+      rows: jest.fn().mockResolvedValue({ revision: 'rev-1', items: [] }),
+      decision: jest.fn().mockResolvedValue({ recordId: 'record-1' }),
+      approve: jest.fn().mockResolvedValue({ revision: 'rev-1', approved: true }),
+      dryRun: jest.fn().mockResolvedValue({ revision: 'rev-1', items: [] }),
+    },
     publishEvent: (event) => published.push(event),
   };
   const controller = new ProcessingIPCController(dependencies);
@@ -113,6 +122,58 @@ describe('ProcessingIPCController', () => {
     });
   });
 
+  it('registers the complete normalization-audit surface and forwards strict requests', async () => {
+    const test = harness();
+    const dataset = { previewId: 'preview-1' };
+
+    await expect(test.invoke('normalization-audit:summary', dataset)).resolves.toMatchObject({
+      success: true,
+    });
+    await expect(
+      test.invoke('normalization-audit:cohorts', { ...dataset, limit: 50 })
+    ).resolves.toMatchObject({ success: true });
+    await expect(
+      test.invoke('normalization-audit:sample', { ...dataset, seed: 'seed', targetSize: 25 })
+    ).resolves.toMatchObject({ success: true });
+    await expect(
+      test.invoke('normalization-audit:rows', { ...dataset, limit: 100 })
+    ).resolves.toMatchObject({ success: true });
+    await expect(
+      test.invoke('normalization-audit:decision', { ...dataset, recordId: 'record-1' })
+    ).resolves.toMatchObject({ success: true });
+    await expect(
+      test.invoke('normalization-audit:approve', {
+        ...dataset,
+        revision: 'rev-1',
+        cohortKey: 'cohort-1',
+        approved: true,
+      })
+    ).resolves.toMatchObject({ success: true });
+    await expect(
+      test.invoke('normalization-audit:dry-run', { ...dataset, revision: 'rev-1', limit: 100 })
+    ).resolves.toMatchObject({ success: true });
+
+    expect(test.dependencies.audit.rows).toHaveBeenCalledWith({
+      previewId: 'preview-1',
+      limit: 100,
+    });
+  });
+
+  it('rejects unsafe audit requests and page sizes above 100 before reaching the service', async () => {
+    const test = harness();
+    await expect(
+      test.invoke('normalization-audit:rows', { previewId: 'preview-1', limit: 101 })
+    ).resolves.toMatchObject({ success: false, error: { code: 'INVALID_IPC_REQUEST' } });
+    await expect(
+      test.invoke('normalization-audit:sample', { previewId: 'preview-1', seed: '', targetSize: 1 })
+    ).resolves.toMatchObject({ success: false, error: { code: 'INVALID_IPC_REQUEST' } });
+    await expect(
+      test.invoke('normalization-audit:summary', { previewId: 'preview-1', extra: true })
+    ).resolves.toMatchObject({ success: false, error: { code: 'INVALID_IPC_REQUEST' } });
+    expect(test.dependencies.audit.rows).not.toHaveBeenCalled();
+    expect(test.dependencies.audit.sample).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed and unknown IPC fields before calling the coordinator', async () => {
     const test = harness();
 
@@ -164,6 +225,17 @@ describe('ProcessingIPCController', () => {
     const forwarded = (test.dependencies.coordinator.createPreview as jest.Mock).mock.calls[0][0];
     expect(forwarded.options).toEqual(request.options);
     expect(forwarded.options).not.toHaveProperty('corruptionDetection');
+  });
+
+  it('accepts and forwards opt-in metadata date normalization', async () => {
+    const test = harness();
+    const request = previewRequest();
+    request.options.writeMetadataDates = true;
+
+    await expect(test.invoke('processing:preview', request)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(test.dependencies.coordinator.createPreview).toHaveBeenCalledWith(request);
   });
 
   it('maps coordinator failures without leaking stacks or foreign error objects', async () => {
@@ -224,7 +296,7 @@ describe('ProcessingIPCController', () => {
     expect(test.handlers.size).toBe(0);
     fail = false;
     expect(() => test.controller.register()).not.toThrow();
-    expect(test.handlers.size).toBe(8);
+    expect(test.handlers.size).toBe(15);
   });
 
   it('gates a wrapper leaked by failed registration rollback', async () => {

@@ -17,6 +17,7 @@ import {
   ProductionRuntimeOptions,
 } from './ProductionApplicationRuntime';
 import type { ProcessingEvent } from '../../shared/types/processing';
+import { TestRunCorpusBuilder } from '../services/TestRunCorpusBuilder';
 
 export interface ElectronQuitEventPort {
   preventDefault(): void;
@@ -335,6 +336,10 @@ export class ElectronMain {
         platform: this.dependencies.platform,
         architecture: this.dependencies.architecture,
         ...this.dependencies.system,
+      },
+      testRuns: new TestRunCorpusBuilder(),
+      publishTestRunProgress: (event) => {
+        this.liveWindow()?.webContents.send('test-run:progress', event);
       },
     };
   }

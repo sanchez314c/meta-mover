@@ -1,7 +1,6 @@
 import { createHash } from 'crypto';
-import { constants } from 'fs';
-import { chmod, lstat, mkdtemp, open, rmdir, statfs, unlink } from 'fs/promises';
-import { tmpdir } from 'os';
+import { constants, Stats } from 'fs';
+import { lstat, open } from 'fs/promises';
 import path from 'path';
 
 import {
@@ -21,7 +20,6 @@ import {
   MetadataCollectionResult,
 } from '../core/metadata/MetadataCandidateCollector';
 import { MediaPlanner } from '../core/planning/MediaPlanner';
-import { copyHandleToStaging, hashFileHandle } from '../core/transaction/Hashing';
 import {
   assertProcessingRootIdentitiesUnchanged,
   ProcessingRootValidator,
@@ -57,7 +55,6 @@ export interface PlannedMediaPayload {
   };
   modifiedTimeMs: number;
   mediaKind: MediaKind;
-  contentSha256: string;
   destinationSnapshot: DestinationSnapshot;
   dateResolution: DateResolutionRecord;
 }
@@ -77,20 +74,13 @@ export interface DestinationSnapshot {
 }
 
 export interface SourceContentSnapshot {
-  sha256: string;
-  verifiedExtractionPath: string;
+  seekableExtractionPath: string;
   filesystemBirthTimeUtc: string | null;
   release(): Promise<void>;
 }
 
 export interface SourceContentProbePort {
   capture(file: Readonly<InventoryMediaFile>, signal?: AbortSignal): Promise<SourceContentSnapshot>;
-}
-
-export interface SnapshotCleanupFilesystem {
-  chmod(filePath: string, mode: number): Promise<void>;
-  unlink(filePath: string): Promise<void>;
-  rmdir(directoryPath: string): Promise<void>;
 }
 
 export interface MediaInventoryPort {
@@ -123,12 +113,13 @@ export interface MediaPreviewPlannerDependencies {
   platform?: NodeJS.Platform;
   maxCollisionAttempts?: number;
   analysisResources?: AdaptiveWorkPoolOptions;
-  temporaryStorageBudget?: () => Promise<number>;
 }
 
 export type PreviewProgressReporter = (
   progress: Readonly<PreviewProgressDTO>
 ) => Promise<void> | void;
+
+const ANALYSIS_BATCH_SIZE = 256;
 
 class FilesystemDestinationProbe implements DestinationProbePort {
   async inspect(targetPath: string): Promise<DestinationSnapshot> {
@@ -161,12 +152,8 @@ class FilesystemDestinationProbe implements DestinationProbePort {
   }
 }
 
-const DEFAULT_SNAPSHOT_CLEANUP_FILESYSTEM: SnapshotCleanupFilesystem = { chmod, unlink, rmdir };
-
 export class FilesystemSourceContentProbe implements SourceContentProbePort {
-  constructor(
-    private readonly cleanupFilesystem: SnapshotCleanupFilesystem = DEFAULT_SNAPSHOT_CLEANUP_FILESYSTEM
-  ) {}
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
 
   async capture(
     file: Readonly<InventoryMediaFile>,
@@ -177,270 +164,66 @@ export class FilesystemSourceContentProbe implements SourceContentProbePort {
       file.filePath,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
     );
-    let snapshotHandle: Awaited<ReturnType<typeof open>> | undefined;
-    let snapshotDirectory: string | undefined;
-    let snapshotPath: string | undefined;
-    const cleanupState: SnapshotCleanupState = {
-      sourceClosed: false,
-      snapshotClosed: true,
-      directoryWritable: true,
-      snapshotWritable: true,
-      snapshotRemoved: true,
-      directoryRemoved: true,
-    };
     try {
       const before = await sourceHandle.stat();
-      assertSourceIdentity(file, before, 'before hashing');
-      snapshotDirectory = await mkdtemp(path.join(tmpdir(), 'meta-mover-metadata-'));
-      cleanupState.directoryRemoved = false;
-      snapshotPath = path.join(snapshotDirectory, `snapshot${path.extname(file.filePath)}`);
-      cleanupState.snapshotRemoved = false;
-      const copied = await copyHandleToStaging(sourceHandle, snapshotPath, signal);
-      if (copied.bytes !== file.size) {
-        throw new Error(`Source size changed while creating metadata snapshot: ${file.filePath}`);
-      }
-      const after = await sourceHandle.stat();
-      assertSourceIdentity(file, after, 'after hashing');
-
-      await this.cleanupFilesystem.chmod(snapshotPath, 0o400);
-      cleanupState.snapshotWritable = false;
-      snapshotHandle = await open(snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      cleanupState.snapshotClosed = false;
-      const snapshotIdentity = await snapshotHandle.stat();
-      assertSnapshotIdentity(snapshotPath, snapshotIdentity, copied.bytes);
-      const pathIdentity = await lstat(snapshotPath);
-      assertSameSnapshot(snapshotPath, snapshotIdentity, pathIdentity);
-      const initialSnapshotHash = await hashFileHandle(snapshotHandle, signal);
-      if (initialSnapshotHash !== copied.hash) {
-        throw new Error(`Metadata snapshot digest mismatch: ${file.filePath}`);
-      }
-      await this.cleanupFilesystem.chmod(snapshotDirectory, 0o500);
-      cleanupState.directoryWritable = false;
-
-      let verificationAttempted = false;
-      let verificationError: unknown;
+      assertSourceIdentity(file, before, 'before metadata extraction');
+      const visibleBefore = await lstat(file.filePath);
+      assertVisibleSourceIdentity(file, before, visibleBefore);
+      const extractionPath =
+        this.platform === 'linux' ? `/proc/${process.pid}/fd/${sourceHandle.fd}` : file.filePath;
       let releasePromise: Promise<void> | undefined;
-      let terminalReleasePromise: Promise<void> | undefined;
-      const heldSource = sourceHandle;
-      const heldSnapshot = snapshotHandle;
-      const heldDirectory = snapshotDirectory;
-      const heldPath = snapshotPath;
+      let released = false;
       return {
-        sha256: copied.hash,
-        verifiedExtractionPath: heldPath,
+        seekableExtractionPath: extractionPath,
         filesystemBirthTimeUtc: Number.isFinite(before.birthtime.getTime())
           ? before.birthtime.toISOString()
           : null,
         release: async () => {
-          if (terminalReleasePromise) return terminalReleasePromise;
+          if (released) return;
           if (releasePromise) return releasePromise;
-          const attempt = async () => {
-            if (!verificationAttempted) {
-              verificationAttempted = true;
-              try {
-                const currentPathIdentity = await lstat(heldPath);
-                assertSameSnapshot(heldPath, snapshotIdentity, currentPathIdentity);
-                const finalSnapshotHash = await hashFileHandle(heldSnapshot);
-                if (finalSnapshotHash !== copied.hash) {
-                  throw new Error(`Metadata snapshot changed during extraction: ${file.filePath}`);
-                }
-                const finalSource = await heldSource.stat();
-                assertSourceIdentity(file, finalSource, 'during metadata extraction');
-              } catch (error) {
-                verificationError = error;
+          releasePromise = (async () => {
+            let primaryError: unknown;
+            try {
+              const after = await sourceHandle.stat();
+              assertSourceIdentity(file, after, 'during metadata extraction');
+              const visibleAfter = await lstat(file.filePath);
+              assertVisibleSourceIdentity(file, after, visibleAfter);
+            } catch (error) {
+              primaryError = error;
+            }
+            try {
+              await sourceHandle.close();
+              released = true;
+            } catch (closeError) {
+              if (primaryError !== undefined) {
+                throw new CombinedPreviewError(
+                  [primaryError, closeError],
+                  'Source verification and handle close both failed'
+                );
               }
+              throw closeError;
             }
-            const cleanupErrors = await cleanupSnapshot(
-              cleanupState,
-              heldSource,
-              heldSnapshot,
-              heldPath,
-              heldDirectory,
-              this.cleanupFilesystem
-            );
-            if (cleanupErrors.length > 0 && !snapshotCleanupComplete(cleanupState)) {
-              cleanupErrors.push(
-                ...(await cleanupSnapshot(
-                  cleanupState,
-                  heldSource,
-                  heldSnapshot,
-                  heldPath,
-                  heldDirectory,
-                  this.cleanupFilesystem
-                ))
-              );
-            }
-            const errors = [verificationError, ...cleanupErrors].filter(
-              (error) => error !== undefined
-            );
-            if (errors.length > 1) {
-              throw new CombinedPreviewError(errors, 'Snapshot verification and cleanup failed');
-            }
-            if (errors.length === 1) throw errors[0];
-          };
-          releasePromise = attempt();
+            if (primaryError !== undefined) throw primaryError;
+          })();
           try {
             await releasePromise;
-            terminalReleasePromise = Promise.resolve();
-          } catch (error) {
-            if (snapshotCleanupComplete(cleanupState)) {
-              terminalReleasePromise = Promise.reject(error);
-              terminalReleasePromise.catch(() => undefined);
-            }
-            throw error;
           } finally {
             releasePromise = undefined;
           }
         },
       };
     } catch (error) {
-      const cleanupErrors = await cleanupSnapshot(
-        cleanupState,
-        sourceHandle,
-        snapshotHandle,
-        snapshotPath,
-        snapshotDirectory,
-        this.cleanupFilesystem
-      );
-      if (cleanupErrors.length > 0 && !snapshotCleanupComplete(cleanupState)) {
-        cleanupErrors.push(
-          ...(await cleanupSnapshot(
-            cleanupState,
-            sourceHandle,
-            snapshotHandle,
-            snapshotPath,
-            snapshotDirectory,
-            this.cleanupFilesystem
-          ))
-        );
-      }
-      if (cleanupErrors.length > 0) {
+      try {
+        await sourceHandle.close();
+      } catch (closeError) {
         throw new CombinedPreviewError(
-          [error, ...cleanupErrors],
-          'Snapshot capture and cleanup both failed'
+          [error, closeError],
+          'Source admission and handle close both failed'
         );
       }
       throw error;
     }
   }
-}
-
-function assertSnapshotIdentity(
-  snapshotPath: string,
-  stats: Awaited<ReturnType<typeof lstat>>,
-  expectedSize: number
-): void {
-  if (!stats.isFile() || stats.nlink !== 1 || stats.size !== expectedSize) {
-    throw new Error(`Metadata snapshot identity is unsafe: ${snapshotPath}`);
-  }
-}
-
-function assertSameSnapshot(
-  snapshotPath: string,
-  expected: Awaited<ReturnType<typeof lstat>>,
-  actual: Awaited<ReturnType<typeof lstat>>
-): void {
-  if (
-    !actual.isFile() ||
-    actual.dev !== expected.dev ||
-    actual.ino !== expected.ino ||
-    actual.nlink !== expected.nlink ||
-    actual.size !== expected.size
-  ) {
-    throw new Error(`Metadata snapshot pathname changed during extraction: ${snapshotPath}`);
-  }
-}
-
-interface SnapshotCleanupState {
-  sourceClosed: boolean;
-  snapshotClosed: boolean;
-  directoryWritable: boolean;
-  snapshotWritable: boolean;
-  snapshotRemoved: boolean;
-  directoryRemoved: boolean;
-}
-
-function cleanupErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
-  return (error as NodeJS.ErrnoException).code;
-}
-
-function snapshotCleanupComplete(state: SnapshotCleanupState): boolean {
-  return (
-    state.sourceClosed && state.snapshotClosed && state.snapshotRemoved && state.directoryRemoved
-  );
-}
-
-async function cleanupSnapshot(
-  state: SnapshotCleanupState,
-  sourceHandle: Awaited<ReturnType<typeof open>>,
-  snapshotHandle?: Awaited<ReturnType<typeof open>>,
-  snapshotPath?: string,
-  snapshotDirectory?: string,
-  filesystem: SnapshotCleanupFilesystem = DEFAULT_SNAPSHOT_CLEANUP_FILESYSTEM
-): Promise<unknown[]> {
-  const errors: unknown[] = [];
-  const attempt = async (
-    operation: () => Promise<unknown>,
-    complete: () => void
-  ): Promise<void> => {
-    try {
-      await operation();
-      complete();
-    } catch (error) {
-      if (cleanupErrorCode(error) === 'ENOENT' || cleanupErrorCode(error) === 'EBADF') complete();
-      else errors.push(error);
-    }
-  };
-  if (snapshotHandle && !state.snapshotClosed) {
-    await attempt(
-      () => snapshotHandle.close(),
-      () => {
-        state.snapshotClosed = true;
-      }
-    );
-  }
-  if (!state.sourceClosed) {
-    await attempt(
-      () => sourceHandle.close(),
-      () => {
-        state.sourceClosed = true;
-      }
-    );
-  }
-  if (snapshotDirectory && !state.directoryWritable && !state.directoryRemoved) {
-    await attempt(
-      () => filesystem.chmod(snapshotDirectory, 0o700),
-      () => {
-        state.directoryWritable = true;
-      }
-    );
-  }
-  if (snapshotPath && !state.snapshotWritable && !state.snapshotRemoved) {
-    await attempt(
-      () => filesystem.chmod(snapshotPath, 0o600),
-      () => {
-        state.snapshotWritable = true;
-      }
-    );
-  }
-  if (snapshotPath && !state.snapshotRemoved && state.directoryWritable) {
-    await attempt(
-      () => filesystem.unlink(snapshotPath),
-      () => {
-        state.snapshotRemoved = true;
-      }
-    );
-  }
-  if (snapshotDirectory && !state.directoryRemoved && state.snapshotRemoved) {
-    await attempt(
-      () => filesystem.rmdir(snapshotDirectory),
-      () => {
-        state.directoryRemoved = true;
-      }
-    );
-  }
-  return errors;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -478,6 +261,24 @@ function assertSourceIdentity(
   }
 }
 
+function assertVisibleSourceIdentity(
+  file: Readonly<InventoryMediaFile>,
+  held: Stats,
+  visible: Awaited<ReturnType<typeof lstat>>
+): void {
+  if (
+    visible.isSymbolicLink() ||
+    !visible.isFile() ||
+    visible.dev !== held.dev ||
+    visible.ino !== held.ino ||
+    visible.nlink !== file.links
+  ) {
+    throw new Error(
+      `Source pathname identity changed during metadata extraction: ${file.filePath}`
+    );
+  }
+}
+
 function validateInventoryFile(file: InventoryMediaFile): void {
   const classifiedKind = classifyMediaExtension(file.filePath);
   if (
@@ -509,17 +310,6 @@ function safeAdd(total: number, value: number, label: string): number {
   const next = total + value;
   if (!Number.isSafeInteger(next)) throw new Error(`${label} exceeds the safe integer range`);
   return next;
-}
-
-const MAX_TEMPORARY_SNAPSHOT_BYTES = 32 * 1024 * 1024 * 1024;
-
-async function defaultTemporaryStorageBudget(): Promise<number> {
-  const storage = await statfs(tmpdir());
-  const available = storage.bavail * storage.bsize;
-  if (!Number.isFinite(available) || available <= 0) {
-    throw new Error('Temporary storage has no measurable free space');
-  }
-  return Math.max(1, Math.min(MAX_TEMPORARY_SNAPSHOT_BYTES, Math.floor(available * 0.5)));
 }
 
 function conflictKey(targetPath: string, platform: NodeJS.Platform): string {
@@ -579,7 +369,6 @@ function payloadFor(
   file: SupportedInventoryMediaFile,
   roots: ValidatedProcessingRoots,
   resolution: DateResolutionRecord,
-  contentSha256: string,
   destinationSnapshot: DestinationSnapshot
 ): PlannedMediaPayload {
   return {
@@ -598,7 +387,6 @@ function payloadFor(
     },
     modifiedTimeMs: file.modifiedTimeMs,
     mediaKind: file.mediaKind,
-    contentSha256,
     destinationSnapshot,
     dateResolution: resolution,
   };
@@ -614,7 +402,6 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
   private readonly platform: NodeJS.Platform;
   private readonly maxCollisionAttempts: number;
   private readonly analysisPool: AdaptiveWorkPool;
-  private readonly temporaryStorageBudget: () => Promise<number>;
   private readonly planner = new MediaPlanner();
 
   constructor(dependencies: MediaPreviewPlannerDependencies) {
@@ -627,8 +414,6 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
     this.platform = dependencies.platform ?? process.platform;
     this.maxCollisionAttempts = dependencies.maxCollisionAttempts ?? 10_000;
     this.analysisPool = new AdaptiveWorkPool(dependencies.analysisResources);
-    this.temporaryStorageBudget =
-      dependencies.temporaryStorageBudget ?? defaultTemporaryStorageBudget;
     if (!Number.isSafeInteger(this.maxCollisionAttempts) || this.maxCollisionAttempts <= 0) {
       throw new Error('maxCollisionAttempts must be a positive safe integer');
     }
@@ -700,241 +485,222 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
       files[0]?.filePath
     );
 
-    const supportedFiles = files.filter(isSupportedInventoryFile);
-    const temporaryStorageBudget =
-      supportedFiles.length === 0 ? 1 : await this.temporaryStorageBudget();
-    if (!Number.isSafeInteger(temporaryStorageBudget) || temporaryStorageBudget <= 0) {
-      throw new Error('Temporary storage budget must be a positive safe integer');
-    }
-    const largestSnapshot = supportedFiles.reduce(
-      (largest, file) => Math.max(largest, file.size),
-      0
-    );
-    if (largestSnapshot > temporaryStorageBudget) {
-      throw new Error(
-        `Insufficient temporary storage for the largest media snapshot (${largestSnapshot} bytes required, ${temporaryStorageBudget} bytes budgeted)`
-      );
-    }
-
-    const completedAnalysis = new Array<boolean>(files.length).fill(false);
-    let completedPrefix = 0;
-    let progressQueue = Promise.resolve();
-    const analyses = await this.analysisPool.mapOrdered(
-      files,
-      async (file, _fileIndex, workSignal) => {
-        throwIfAborted(workSignal);
-        if (!isSupportedInventoryFile(file)) return { kind: 'unsupported' as const, file };
-        const fileId = `${file.device}:${file.inode}`;
-        const sourceSnapshot = await this.sourceContent.capture(file, workSignal);
-        const contentSha256 = sourceSnapshot.sha256;
-        let metadata: MetadataCollectionResult | undefined;
-        const boundaryErrors: unknown[] = [];
-        try {
-          if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
-            throw new Error(`Source content probe returned an invalid SHA-256: ${file.filePath}`);
+    const analyzeBatch = async (batchStart: number) => {
+      const batch = files.slice(batchStart, batchStart + ANALYSIS_BATCH_SIZE);
+      const completedAnalysis = new Array<boolean>(batch.length).fill(false);
+      let completedPrefix = 0;
+      let progressQueue = Promise.resolve();
+      return this.analysisPool.mapOrdered(
+        batch,
+        async (file, _fileIndex, workSignal) => {
+          throwIfAborted(workSignal);
+          if (!isSupportedInventoryFile(file)) return { kind: 'unsupported' as const, file };
+          const fileId = `${file.device}:${file.inode}`;
+          const sourceSnapshot = await this.sourceContent.capture(file, workSignal);
+          let metadata: MetadataCollectionResult | undefined;
+          const boundaryErrors: unknown[] = [];
+          try {
+            metadata = await this.metadata.collectDetailed({
+              fileId,
+              filePath: file.filePath,
+              seekableExtractionPath: sourceSnapshot.seekableExtractionPath,
+              filesystemBirthTimeUtc: sourceSnapshot.filesystemBirthTimeUtc,
+              mediaKind: file.mediaKind,
+              signal: workSignal,
+            });
+          } catch (error) {
+            boundaryErrors.push(error);
           }
-          metadata = await this.metadata.collectDetailed({
+          try {
+            await sourceSnapshot.release();
+          } catch (error) {
+            boundaryErrors.push(error);
+          }
+          if (boundaryErrors.length > 1) {
+            throw new CombinedPreviewError(
+              boundaryErrors,
+              `Metadata extraction and source-boundary release both failed: ${file.filePath}`
+            );
+          }
+          if (boundaryErrors.length === 1) throw boundaryErrors[0];
+          if (metadata === undefined) {
+            throw new Error(`Metadata extraction completed without a result: ${file.filePath}`);
+          }
+          const resolution = resolveDateCandidates({
             fileId,
-            filePath: file.filePath,
-            verifiedExtractionPath: sourceSnapshot.verifiedExtractionPath,
-            expectedContentSha256: contentSha256,
-            expectedContentBytes: file.size,
-            filesystemBirthTimeUtc: sourceSnapshot.filesystemBirthTimeUtc,
             mediaKind: file.mediaKind,
-            signal: workSignal,
+            evaluationTimeUtc,
+            candidates: metadata.candidates,
           });
-        } catch (error) {
-          boundaryErrors.push(error);
+          const planned = this.planner.planForPreview({
+            sourcePath: file.filePath,
+            destinationRoot: roots.destinationPath,
+            mediaKind: file.mediaKind,
+            resolution,
+            operation: request.options.operation,
+            conflictPolicy: request.options.conflictPolicy,
+            folderStructure: request.options.folderStructure,
+            appendScreenshotSuffix: request.options.appendScreenshotSuffix,
+            screenshotDetected: metadata.screenshotEvidence !== undefined,
+          });
+          return {
+            kind: 'supported' as const,
+            file,
+            metadata,
+            resolution,
+            planned,
+          };
+        },
+        signal,
+        async (_analysis, fileIndex) => {
+          completedAnalysis[fileIndex] = true;
+          progressQueue = progressQueue.then(async () => {
+            while (completedAnalysis[completedPrefix]) {
+              completedPrefix += 1;
+              const corpusPrefix = batchStart + completedPrefix;
+              if (corpusPrefix < files.length) {
+                await publishProgress(
+                  corpusPrefix,
+                  ProcessingPhase.METADATA,
+                  files[corpusPrefix].filePath
+                );
+              }
+            }
+          });
+          await progressQueue;
+        },
+        undefined
+      );
+    };
+
+    for (let batchStart = 0; batchStart < files.length; batchStart += ANALYSIS_BATCH_SIZE) {
+      const analyses = await analyzeBatch(batchStart);
+      for (const analysis of analyses) {
+        throwIfAborted(signal);
+        const { file } = analysis;
+        if (analysis.kind === 'unsupported') {
+          const warning = unsupportedWarning(file);
+          skippedFiles += 1;
+          unresolvedDates += 1;
+          rows.push({
+            sourcePath: file.filePath,
+            targetPath: null,
+            operation: 'skip',
+            conflictPolicy: request.options.conflictPolicy,
+            dateEvidence: {
+              value: null,
+              source: DateEvidenceSource.UNRESOLVED,
+              confidence: 0,
+              warnings: [warning],
+            },
+            fingerprint: {
+              size: file.size,
+              modifiedAt: new Date(file.modifiedTimeMs).toISOString(),
+            },
+            warnings: [warning],
+          });
+          continue;
         }
-        try {
-          await sourceSnapshot.release();
-        } catch (error) {
-          boundaryErrors.push(error);
-        }
-        if (boundaryErrors.length > 1) {
-          throw new CombinedPreviewError(
-            boundaryErrors,
-            `Metadata extraction and verified snapshot release both failed: ${file.filePath}`
+        if (!isSupportedInventoryFile(file)) {
+          throw new Error(
+            `Parallel analysis returned an invalid supported result: ${file.filePath}`
           );
         }
-        if (boundaryErrors.length === 1) throw boundaryErrors[0];
-        if (metadata === undefined) {
-          throw new Error(`Metadata extraction completed without a result: ${file.filePath}`);
-        }
-        const resolution = resolveDateCandidates({
-          fileId,
-          mediaKind: file.mediaKind,
-          evaluationTimeUtc,
-          candidates: metadata.candidates,
-        });
-        const planned = this.planner.planForPreview({
-          sourcePath: file.filePath,
-          destinationRoot: roots.destinationPath,
-          mediaKind: file.mediaKind,
-          resolution,
-          operation: request.options.operation,
-          conflictPolicy: request.options.conflictPolicy,
-          folderStructure: request.options.folderStructure,
-          appendScreenshotSuffix: request.options.appendScreenshotSuffix,
-          screenshotDetected: metadata.screenshotEvidence !== undefined,
-        });
-        return {
-          kind: 'supported' as const,
-          file,
-          contentSha256,
-          metadata,
-          resolution,
-          planned,
+        const { metadata, planned, resolution } = analysis;
+        if (planned.needsReview) unresolvedDates += 1;
+
+        const originalTarget = planned.targetPath;
+        let targetPath = originalTarget;
+        const inspectTarget = async (candidatePath: string): Promise<DestinationSnapshot> => {
+          throwIfAborted(signal);
+          if (reserved.has(conflictKey(candidatePath, this.platform))) {
+            return { path: candidatePath, occupied: true, source: 'preview-reservation' };
+          }
+          const snapshot = JSON.parse(
+            JSON.stringify(await this.destination.inspect(candidatePath))
+          ) as DestinationSnapshot;
+          throwIfAborted(signal);
+          if (
+            snapshot.path !== candidatePath ||
+            typeof snapshot.occupied !== 'boolean' ||
+            snapshot.source !== 'filesystem' ||
+            (snapshot.occupied && snapshot.identity === undefined)
+          ) {
+            throw new Error(`Destination probe returned an invalid snapshot: ${candidatePath}`);
+          }
+          return {
+            ...snapshot,
+            ...(snapshot.identity ? { identity: { ...snapshot.identity } } : {}),
+          };
         };
-      },
-      signal,
-      async (_analysis, fileIndex) => {
-        completedAnalysis[fileIndex] = true;
-        progressQueue = progressQueue.then(async () => {
-          while (completedAnalysis[completedPrefix]) {
-            completedPrefix += 1;
-            if (completedPrefix < files.length) {
-              await publishProgress(
-                completedPrefix,
-                ProcessingPhase.METADATA,
-                files[completedPrefix].filePath
+        let destinationSnapshot = await inspectTarget(targetPath);
+        let occupied = destinationSnapshot.occupied;
+        let renamed = false;
+        if (occupied && request.options.conflictPolicy === ConflictPolicy.RENAME) {
+          let sequence = 1;
+          do {
+            if (sequence > this.maxCollisionAttempts) {
+              throw new Error(
+                `Target remained occupied after ${this.maxCollisionAttempts} collision attempts`
               );
             }
-          }
-        });
-        await progressQueue;
-      },
-      {
-        maxInFlightWeight: temporaryStorageBudget,
-        weight: (file) => (isSupportedInventoryFile(file) ? Math.max(1, file.size) : 0),
-      }
-    );
+            throwIfAborted(signal);
+            targetPath = renamedTarget(originalTarget, sequence);
+            sequence += 1;
+            destinationSnapshot = await inspectTarget(targetPath);
+            occupied = destinationSnapshot.occupied;
+          } while (occupied);
+          renamed = true;
+          renamedFiles += 1;
+        }
 
-    for (const analysis of analyses) {
-      throwIfAborted(signal);
-      const { file } = analysis;
-      if (analysis.kind === 'unsupported') {
-        const warning = unsupportedWarning(file);
-        skippedFiles += 1;
-        unresolvedDates += 1;
+        const skip = occupied && request.options.conflictPolicy === ConflictPolicy.SKIP;
+        if (skip) skippedFiles += 1;
+        else reserved.add(conflictKey(targetPath, this.platform));
+
+        const evidence = dateEvidence(resolution);
+        const warnings = [
+          ...metadata.warnings,
+          ...evidence.warnings,
+          ...(request.options.appendScreenshotSuffix && metadata.screenshotEvidence
+            ? [
+                `Screenshot detected from ${metadata.screenshotEvidence.source} evidence (${metadata.screenshotEvidence.field}); target filename includes -screen-shot`,
+              ]
+            : []),
+          ...(planned.needsReview ? ['Creation date requires review'] : []),
+          ...(skip ? ['Target already exists'] : []),
+          ...(renamed ? ['Target renamed to avoid a conflict'] : []),
+        ];
+        const rowIndex = rows.length;
         rows.push({
           sourcePath: file.filePath,
-          targetPath: null,
-          operation: 'skip',
+          targetPath,
+          operation: skip ? 'skip' : request.options.operation,
           conflictPolicy: request.options.conflictPolicy,
-          dateEvidence: {
-            value: null,
-            source: DateEvidenceSource.UNRESOLVED,
-            confidence: 0,
-            warnings: [warning],
-          },
+          dateEvidence: { ...evidence, warnings: [...new Set(warnings)] },
           fingerprint: {
             size: file.size,
             modifiedAt: new Date(file.modifiedTimeMs).toISOString(),
           },
-          warnings: [warning],
+          destinationSnapshot,
+          warnings: [...new Set(warnings)],
         });
-        continue;
-      }
-      if (!isSupportedInventoryFile(file)) {
-        throw new Error(`Parallel analysis returned an invalid supported result: ${file.filePath}`);
-      }
-      const { contentSha256, metadata, planned, resolution } = analysis;
-      if (planned.needsReview) unresolvedDates += 1;
+        decisionRecords.push({ rowIndex, sourcePath: file.filePath, resolution });
 
-      const originalTarget = planned.targetPath;
-      let targetPath = originalTarget;
-      const inspectTarget = async (candidatePath: string): Promise<DestinationSnapshot> => {
-        throwIfAborted(signal);
-        if (reserved.has(conflictKey(candidatePath, this.platform))) {
-          return { path: candidatePath, occupied: true, source: 'preview-reservation' };
+        if (!skip) {
+          operations.push({
+            id: operationId(file, targetPath),
+            sourcePath: file.filePath,
+            targetPath,
+            bytes: file.size,
+            payload: payloadFor(
+              file,
+              roots,
+              resolution,
+              destinationSnapshot
+            ) as unknown as PlannedOperation['payload'],
+          });
         }
-        const snapshot = JSON.parse(
-          JSON.stringify(await this.destination.inspect(candidatePath))
-        ) as DestinationSnapshot;
-        throwIfAborted(signal);
-        if (
-          snapshot.path !== candidatePath ||
-          typeof snapshot.occupied !== 'boolean' ||
-          snapshot.source !== 'filesystem' ||
-          (snapshot.occupied && snapshot.identity === undefined)
-        ) {
-          throw new Error(`Destination probe returned an invalid snapshot: ${candidatePath}`);
-        }
-        return {
-          ...snapshot,
-          ...(snapshot.identity ? { identity: { ...snapshot.identity } } : {}),
-        };
-      };
-      let destinationSnapshot = await inspectTarget(targetPath);
-      let occupied = destinationSnapshot.occupied;
-      let renamed = false;
-      if (occupied && request.options.conflictPolicy === ConflictPolicy.RENAME) {
-        let sequence = 1;
-        do {
-          if (sequence > this.maxCollisionAttempts) {
-            throw new Error(
-              `Target remained occupied after ${this.maxCollisionAttempts} collision attempts`
-            );
-          }
-          throwIfAborted(signal);
-          targetPath = renamedTarget(originalTarget, sequence);
-          sequence += 1;
-          destinationSnapshot = await inspectTarget(targetPath);
-          occupied = destinationSnapshot.occupied;
-        } while (occupied);
-        renamed = true;
-        renamedFiles += 1;
-      }
-
-      const skip = occupied && request.options.conflictPolicy === ConflictPolicy.SKIP;
-      if (skip) skippedFiles += 1;
-      else reserved.add(conflictKey(targetPath, this.platform));
-
-      const evidence = dateEvidence(resolution);
-      const warnings = [
-        ...metadata.warnings,
-        ...evidence.warnings,
-        ...(request.options.appendScreenshotSuffix && metadata.screenshotEvidence
-          ? [
-              `Screenshot detected from ${metadata.screenshotEvidence.source} evidence (${metadata.screenshotEvidence.field}); target filename includes -screen-shot`,
-            ]
-          : []),
-        ...(planned.needsReview ? ['Creation date requires review'] : []),
-        ...(skip ? ['Target already exists'] : []),
-        ...(renamed ? ['Target renamed to avoid a conflict'] : []),
-      ];
-      const rowIndex = rows.length;
-      rows.push({
-        sourcePath: file.filePath,
-        targetPath,
-        operation: skip ? 'skip' : request.options.operation,
-        conflictPolicy: request.options.conflictPolicy,
-        dateEvidence: { ...evidence, warnings: [...new Set(warnings)] },
-        fingerprint: {
-          size: file.size,
-          modifiedAt: new Date(file.modifiedTimeMs).toISOString(),
-          hash: contentSha256,
-        },
-        destinationSnapshot,
-        warnings: [...new Set(warnings)],
-      });
-      decisionRecords.push({ rowIndex, sourcePath: file.filePath, resolution });
-
-      if (!skip) {
-        operations.push({
-          id: operationId(file, targetPath),
-          sourcePath: file.filePath,
-          targetPath,
-          bytes: file.size,
-          payload: payloadFor(
-            file,
-            roots,
-            resolution,
-            contentSha256,
-            destinationSnapshot
-          ) as unknown as PlannedOperation['payload'],
-        });
       }
     }
 

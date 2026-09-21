@@ -1,6 +1,12 @@
 import path from 'path';
 
-import { DateResolutionRecord, MediaKind, ParsedDateValue } from '../date';
+import {
+  DateResolutionRecord,
+  MediaKind,
+  ParsedDateValue,
+  isResolvedCreationProvenance,
+  isSelectedValueSupported,
+} from '../date';
 import { ConflictPolicy, FolderStructure, OperationMode } from '../../../shared/types/processing';
 
 export interface MediaPlanRequest {
@@ -57,10 +63,18 @@ function appendScreenshotSuffix(basename: string): string {
 function trustedResolution(resolution: DateResolutionRecord): resolution is DateResolutionRecord & {
   selectedValue: ParsedDateValue;
 } {
+  const selectedCandidate = resolution.candidates.find(
+    (candidate) => candidate.id === resolution.selectedCandidateId
+  );
   return (
     resolution.status === 'resolved' &&
     (resolution.confidence === 'high' || resolution.confidence === 'medium') &&
-    resolution.selectedValue !== undefined
+    resolution.selectedValue !== undefined &&
+    selectedCandidate !== undefined &&
+    selectedCandidate.eligibility === 'eligible' &&
+    selectedCandidate.score.final > 0 &&
+    isResolvedCreationProvenance(selectedCandidate) &&
+    isSelectedValueSupported(resolution.selectedValue, selectedCandidate.value)
   );
 }
 
@@ -80,6 +94,20 @@ function dateParts(value: ParsedDateValue): DateParts | null {
   };
 }
 
+// Top-level destination folder per media kind. Names match the original Meta Mover layout.
+const MEDIA_KIND_FOLDER: Record<MediaKind, string> = {
+  image: 'Photos',
+  raw: 'Photos',
+  video: 'Videos',
+  audio: 'Audio',
+  document: 'Documents',
+  art: 'Art',
+};
+
+export function mediaKindFolder(mediaKind: MediaKind): string {
+  return MEDIA_KIND_FOLDER[mediaKind] ?? 'Other';
+}
+
 function trustedTarget(
   request: MediaPlanRequest,
   basename: string,
@@ -96,13 +124,17 @@ function trustedTarget(
       ? appendScreenshotSuffix(generated)
       : generated;
 
+  const typeRoot = path.join(request.destinationRoot, mediaKindFolder(request.mediaKind));
   if (request.folderStructure === FolderStructure.FLAT) {
-    return path.join(request.destinationRoot, filename);
+    return path.join(typeRoot, filename);
   }
   if (request.folderStructure === FolderStructure.YEAR_MONTH_FLAT) {
-    return path.join(request.destinationRoot, `${parts.year}-${parts.month}`, filename);
+    return path.join(typeRoot, `${parts.year}-${parts.month}`, filename);
   }
-  return path.join(request.destinationRoot, parts.year, parts.month, filename);
+  if (request.folderStructure === FolderStructure.YEAR) {
+    return path.join(typeRoot, parts.year, filename);
+  }
+  return path.join(typeRoot, parts.year, parts.month, filename);
 }
 
 export class MediaPlanner {
@@ -127,7 +159,14 @@ export class MediaPlanner {
 
     return {
       sourcePath: request.sourcePath,
-      targetPath: trustedPath ?? path.join(request.destinationRoot, '_Needs Review', basename),
+      targetPath:
+        trustedPath ??
+        path.join(
+          request.destinationRoot,
+          mediaKindFolder(request.mediaKind),
+          '_Needs Review',
+          basename
+        ),
       mediaKind: request.mediaKind,
       operation: request.operation,
       conflictPolicy: request.conflictPolicy,

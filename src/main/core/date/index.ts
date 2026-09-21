@@ -1,4 +1,10 @@
-export { DATE_RESOLUTION_POLICY_VERSION, resolveDateCandidates } from './DateResolver';
+export {
+  DATE_RESOLUTION_POLICY_VERSION,
+  isResolvedCreationProvenance,
+  isSelectedValueSupported,
+  resolveDateCandidates,
+} from './DateResolver';
+export type { CandidateProvenance } from './DateResolver';
 export type {
   CandidateEligibility,
   CandidateScore,

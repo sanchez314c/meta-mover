@@ -10,6 +10,12 @@ import type {
   RawExifTags,
   VerifiedRawExifRead,
 } from '../core/metadata/MetadataCandidateCollector';
+import type {
+  MetadataDateWriterPort,
+  MetadataNormalizationReceipt,
+  NormalizeDateMetadataRequest,
+} from '../core/metadata/MetadataDateWriter';
+import { buildMetadataNormalizationPlan } from '../core/metadata/MetadataNormalizationPolicy';
 import {
   BrokerLaunchTrustPolicy,
   developmentBrokerLaunchTrustPolicy,
@@ -19,6 +25,7 @@ import { nativePackageBrokerLaunchTrustPolicy } from '../native/NativePackageTru
 import { BundledRuntimeHealth } from './BundledRuntimeHealth';
 
 const VERIFIED_READ_ARGS = ['-json', '-G1', '-a', '-s', '-'] as const;
+const DIRECT_READ_ARGS = ['-json', '-G1', '-a', '-s', '--'] as const;
 const MAX_VERIFIED_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VERIFIED_ERROR_BYTES = 64 * 1024;
 
@@ -77,10 +84,12 @@ function resolveLaunchTrustPolicy(
   return nativePackageBrokerLaunchTrustPolicy(platform);
 }
 
-export class BundledExifToolAdapter implements ExifToolReadAdapter {
+export class BundledExifToolAdapter implements ExifToolReadAdapter, MetadataDateWriterPort {
   private readonly spawnProcess: SpawnProcess;
   private readonly verifiedExecutable: string;
   private readonly verifiedArguments: readonly string[];
+  private readonly directArgumentPrefix: readonly string[];
+  private readonly commandPrefix: readonly string[];
   private readonly spawnOptions: SpawnOptions;
   private closed = false;
 
@@ -124,6 +133,8 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter {
       paths.platform === 'win32'
         ? [...VERIFIED_READ_ARGS]
         : [paths.exiftoolPath, ...VERIFIED_READ_ARGS];
+    this.commandPrefix = paths.platform === 'win32' ? [] : [paths.exiftoolPath];
+    this.directArgumentPrefix = [...this.commandPrefix, ...DIRECT_READ_ARGS];
     this.spawnOptions = {
       detached: false,
       env: { ...environment },
@@ -169,7 +180,64 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter {
   }
 
   async readRaw(filePath: string, signal?: AbortSignal): Promise<RawExifTags> {
-    return (await this.readRawVerified(filePath, signal)).tags;
+    this.assertUsablePath(filePath);
+    throwIfAdapterAborted(signal);
+    const output = await this.runProcess([...this.directArgumentPrefix, filePath], signal);
+    if (output.code !== 0) {
+      throw new Error(
+        `Bundled ExifTool direct read failed with code ${String(output.code)}: ${output.stderr}`
+      );
+    }
+    return parseVerifiedTags(output.stdout);
+  }
+
+  async normalizeDateMetadata(
+    request: Readonly<NormalizeDateMetadataRequest>
+  ): Promise<MetadataNormalizationReceipt> {
+    this.assertUsablePath(request.filePath);
+    throwIfAdapterAborted(request.signal);
+    const plan = buildMetadataNormalizationPlan(request.filePath, request.selectedDate);
+    const before = await this.readRaw(request.filePath, request.signal);
+    if (plan.assignments.every((entry) => assignmentVerified(before, entry))) {
+      return {
+        family: plan.family,
+        idempotent: true,
+        verified: true,
+        before,
+        after: before,
+        normalizedTags: plan.assignments.map(({ tag }) => tag),
+      };
+    }
+    const output = await this.runProcess(
+      [
+        ...this.commandPrefix,
+        '-overwrite_original_in_place',
+        ...plan.assignments.map(({ tag, value }) => `-${tag}=${value}`),
+        '--',
+        request.filePath,
+      ],
+      request.signal
+    );
+    const stdout = output.stdout.toString('utf8');
+    if (
+      output.code !== 0 ||
+      !/\b1 (?:image|video|audio|document|files?) files? updated\b/i.test(stdout)
+    ) {
+      const detail = output.stderr.trim() || stdout.trim() || 'ExifTool reported no updated file';
+      throw new Error(
+        `Bundled ExifTool metadata write failed with code ${String(output.code)}: ${detail}`
+      );
+    }
+    const after = await this.readRaw(request.filePath, request.signal);
+    verifyMetadataNormalization(before, after, plan.assignments);
+    return {
+      family: plan.family,
+      idempotent: false,
+      verified: true,
+      before,
+      after,
+      normalizedTags: plan.assignments.map(({ tag }) => tag),
+    };
   }
 
   async readRawVerified(filePath: string, signal?: AbortSignal): Promise<VerifiedRawExifRead> {
@@ -241,6 +309,93 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter {
     if (this.closed) return;
     this.closed = true;
   }
+
+  private assertUsablePath(filePath: string): void {
+    if (this.closed) throw new Error('BundledExifToolAdapter is closed');
+    if (!path.isAbsolute(filePath) || /\p{Cc}/u.test(filePath)) {
+      throw new Error(
+        'Bundled ExifTool input path must be absolute and contain no control characters'
+      );
+    }
+  }
+
+  private async runProcess(
+    argumentsList: string[],
+    signal?: AbortSignal
+  ): Promise<VerifiedProcessOutput> {
+    const child = this.spawnProcess(this.verifiedExecutable, argumentsList, {
+      ...this.spawnOptions,
+    });
+    const capture = captureVerifiedProcess(child, signal);
+    try {
+      await endChildInput(child, signal);
+    } catch (error) {
+      capture.fail(error);
+    }
+    return capture.completion;
+  }
+}
+
+function verifyMetadataNormalization(
+  before: RawExifTags,
+  after: RawExifTags,
+  assignments: readonly { tag: string; value: string }[]
+): void {
+  const normalized = new Set(assignments.map(({ tag }) => tag));
+  for (const entry of assignments) {
+    if (!assignmentVerified(after, entry)) {
+      const { tag } = entry;
+      throw new Error(`Bundled ExifTool metadata readback did not verify ${tag}`);
+    }
+  }
+  for (const [tag, value] of Object.entries(before)) {
+    if (
+      !isNormalizedReadbackTag(tag, normalized) &&
+      !isStructuralObservation(tag) &&
+      JSON.stringify(after[tag]) !== JSON.stringify(value)
+    ) {
+      throw new Error(`Bundled ExifTool metadata write changed protected tag ${tag}`);
+    }
+  }
+  for (const tag of Object.keys(after)) {
+    if (
+      !isNormalizedReadbackTag(tag, normalized) &&
+      !isStructuralObservation(tag) &&
+      !(tag in before)
+    ) {
+      throw new Error(`Bundled ExifTool metadata write fabricated protected tag ${tag}`);
+    }
+  }
+}
+
+function assignmentVerified(
+  tags: RawExifTags,
+  assignment: { tag: string; value: string }
+): boolean {
+  if (tags[assignment.tag] === assignment.value) return true;
+  const name = assignment.tag.slice(assignment.tag.indexOf(':') + 1);
+  if (!/^QuickTime:(?:Track|Media)CreateDate$/.test(assignment.tag)) return false;
+  const streamValues = Object.entries(tags).filter(([tag]) =>
+    new RegExp(`^(?:QuickTime|Track\\d+):${name}$`).test(tag)
+  );
+  return streamValues.length > 0 && streamValues.every(([, value]) => value === assignment.value);
+}
+
+function isNormalizedReadbackTag(tag: string, normalized: ReadonlySet<string>): boolean {
+  if (normalized.has(tag)) return true;
+  const name = tag.slice(tag.indexOf(':') + 1);
+  return /^Track\d+:(?:Track|Media)CreateDate$/.test(tag) && normalized.has(`QuickTime:${name}`);
+}
+
+function isStructuralObservation(tag: string): boolean {
+  return (
+    /^(?:File|System|ExifTool|Composite):/.test(tag) ||
+    /^IFD0:(?:XResolution|YResolution|ResolutionUnit|YCbCrPositioning)$/.test(tag) ||
+    /^ExifIFD:(?:ExifVersion|FlashpixVersion|ComponentsConfiguration|ColorSpace)$/.test(tag) ||
+    /^IPTC:ApplicationRecordVersion$/.test(tag) ||
+    /^XMP-x:XMPToolkit$/.test(tag) ||
+    /^QuickTime:(?:Media|Movie)Data(?:Offset|Size)$/.test(tag)
+  );
 }
 
 class AdapterAggregateError extends Error {

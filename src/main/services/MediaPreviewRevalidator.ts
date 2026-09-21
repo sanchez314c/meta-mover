@@ -32,7 +32,7 @@ interface ExpectedSourceIdentity {
 interface RevalidationPayload {
   sourceIdentity: ExpectedSourceIdentity;
   modifiedTimeMs: number;
-  contentSha256: string;
+  contentSha256?: string;
   destinationSnapshot: {
     path: string;
     occupied: boolean;
@@ -120,8 +120,8 @@ function payload(value: unknown): RevalidationPayload | null {
     !finiteNonNegative(identity.links) ||
     !finiteNonNegative(identity.size) ||
     !finiteNonNegative(record.modifiedTimeMs) ||
-    typeof record.contentSha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(record.contentSha256) ||
+    (record.contentSha256 !== undefined &&
+      (typeof record.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(record.contentSha256))) ||
     typeof destination.path !== 'string' ||
     typeof destination.occupied !== 'boolean' ||
     destination.occupied !== (destinationIdentity !== undefined)
@@ -136,7 +136,9 @@ function payload(value: unknown): RevalidationPayload | null {
       size: identity.size,
     },
     modifiedTimeMs: record.modifiedTimeMs,
-    contentSha256: record.contentSha256,
+    ...(record.contentSha256 === undefined
+      ? {}
+      : { contentSha256: record.contentSha256 as string }),
     destinationSnapshot: {
       path: destination.path,
       occupied: destination.occupied,
@@ -198,14 +200,16 @@ export class MediaPreviewRevalidator implements PreviewRevalidatorPort {
         const handle = await open(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         let before;
         let after;
-        let digest: string;
+        let digest: string | undefined;
         try {
           before = await handle.stat();
           if ((before.mode & 0o444) === 0) {
             sourceFingerprintMatches = false;
             reasons.push(`Source is not readable: ${sourcePath}`);
           }
-          digest = await hashFileHandle(handle);
+          if (expected.contentSha256 !== undefined) {
+            digest = await hashFileHandle(handle);
+          }
           after = await handle.stat();
         } finally {
           await handle.close();
@@ -231,7 +235,7 @@ export class MediaPreviewRevalidator implements PreviewRevalidatorPort {
           sourceFingerprintMatches = false;
           reasons.push(`Source changed after preview: ${sourcePath}`);
         }
-        if (digest !== expected.contentSha256) {
+        if (expected.contentSha256 !== undefined && digest !== expected.contentSha256) {
           sourceFingerprintMatches = false;
           reasons.push(`Source content changed after preview: ${sourcePath}`);
         }

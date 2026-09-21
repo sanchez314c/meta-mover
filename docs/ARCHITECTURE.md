@@ -23,7 +23,7 @@ There is no Python bridge, SQLite manager, FFmpeg worker, old processing engine,
 
 `MetadataCandidateCollector` asks bundled ExifTool for metadata without modifying the file. `DateResolver` scores candidates by media kind, semantic meaning, source, timezone basis, precision, consistency, and warnings. It keeps the raw value, parsed local value, UTC instant when available, offset, subseconds, source tag, and rejected candidates.
 
-Only a resolved high- or medium-confidence result enters a dated folder. Ambiguous, low-confidence, or unresolved files target `_Needs Review`.
+Every target sits under a top-level media-type folder (`Photos`, `Videos`, `Audio`, `Documents`, `Art`). Only a resolved high- or medium-confidence result enters a dated folder beneath it. Ambiguous, low-confidence, or unresolved files target `_Needs Review`.
 
 ## Preview and execution
 

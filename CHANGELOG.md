@@ -1,14 +1,89 @@
 # Changelog
 
+## 2026-09-21 audit preparation cache and concurrency correction
+
+- Bound durable normalization indexes, cohort summaries, dataset revisions, and approvals to a canonical SHA-256 fingerprint of the active audit and transform policy. A policy change now rebuilds derived data and invalidates prior approvals.
+- Added process-wide single-flight preparation across repository instances sharing an evidence root. Randomized build artifacts prevent writer collisions, and legacy interrupted artifacts are discarded before a new build.
+- Reopen now verifies and reuses the private sealed snapshot before considering a source recopy. Cold preparation verifies the temporary snapshot before publication and retains the post-index verification that detects evidence mutation during derivation.
+- Corrected the reviewer follow-up: persisted support classification now comes from the target format policy, every failed or cancelled preparation removes its randomized snapshot/index/cohort artifacts before rejection, approval writes serialize across repository instances, and canonical roots prevent lexical path aliases from bypassing either shared lock.
+- Focused validation passes 15 repository tests covering concurrent and aliased instances, interrupted-build recovery, malformed and cancelled preparation cleanup with immediate retry, stale policy metadata and approvals, unsupported formats, immutable authorization binding, large-dataset progress and cancellation, TypeScript, and scoped ESLint.
+- Final project validation passes all 55 suites and 1,085 tests with 89.18 percent statement, 84.44 percent branch, 91.74 percent function, and 91.11 percent line coverage. The explicit 100,000-record job-plan scale test passes. Independent re-review returned `LGTM` after all five findings were closed.
+- Refreshed seven transitive build packages through `npm audit fix`; both complete and production-only audits now report zero vulnerabilities. No direct dependency or application runtime contract changed.
+
+## 2026-09-17 audit preparation progress, cancellation, and indexed authorization
+
+- Correction for the 2026-09-12 evening 100,000-file run that appeared frozen at `2 / 100,000`: two files had completed, and the first eligible file was blocked behind authorization evidence preparation with no visible stage and no cancellation path.
+- `NormalizationAuthorizationPort` now carries an `AbortSignal` and a progress channel through the executor's authorization await. The audit repository streams the sealed evidence snapshot through cancellable, progress-reporting passes scoped per request via `AsyncLocalStorage`, and treats aborts as rejections rather than invalid evidence.
+- Hash-chain verification strength is unchanged: canonical JSON, sequence, previous-hash linkage, per-event hashes, sealed ending, and pre/post identity checks still run.
+- Authorization replaced the full-resolution in-memory Map with an indexed lookup carrying `sourcePath`, `outputPath`, and resolution-hash binding checks plus duplicate-operation corruption detection.
+- The Organize view shows a `Preparing metadata audit` card with stage, counts, and percentage while preparation runs, with cancellation enabled. The stage rides the `preparation` payload of ephemeral job progress; the processing phase enum is unchanged, so the file counter still shows last-completed counts during preparation.
+- Job progress additionally reports committed `bytesProcessed`, `totalBytes`, `throughput`, and estimated time remaining.
+- Validation on 2026-09-17: TypeScript, ESLint, and the complete Jest suite pass with 55 suites and 1,077 tests. Independent adversarial review confirmed the correction is implemented end to end and enumerated the remaining gaps: duplicate full-snapshot verification on the cold path, per-session snapshot recopying before the durable-index reuse check, no single-flight sharing of preparation across concurrent authorizations, and missing large-evidence, shared-preparation, and authorization-decision tests.
+
+## 2026-09-12 15:42 EDT omitted-subsecond preview serialization correction
+
+- Corrected the date resolver's omitted-subsecond output to exclude `fractionalDigits` instead of emitting an own property with `undefined`, which the coordinator rejected during strict JSON preview admission.
+- Preserved conservative fractional-evidence rejection, original candidate values, and strict preview validation. This correction does not change the standalone repair script or source media.
+- Added coordinator/planner serialization regressions for absent, unverified floating, unverified offset-bearing, and verified fractions. The focused four-suite run passes 183 tests; no full-corpus or live-runtime result is claimed here.
+- Read-only production metadata replay of 100 real test files reproduced four baseline failures, including operation 36, `input/Duplicates/2000-08-11_19-51-59.000038.jpeg`. The correction retains the same whole-second selections and reason codes without media writes. Type checking and focused ESLint pass; the 82-test resolver coverage run exceeds 90 percent statements and branches. The full 100,000-file preview has not been rerun.
+
+## 2026-09-09 20:55 EDT image-format and embedded-date repair expansion
+
+- Expanded the standalone repair contract beyond JPEG and two EXIF tags to semantic embedded date/time fractions, including EXIF modification subseconds and XMP timestamps.
+- Required actual file-type detection, explicit accounting of scanned images and unsupported capabilities, staged writes, and format-appropriate content verification. No universal write-support claim is made.
+- Whole dates/times, offsets, trailing zeros, unrelated metadata, and filenames remain protected. Final validation passes 42 tests, 85 percent combined coverage, and independent `SHIP` review.
+- The 228-file copied/fixture corpus contained 215 matching repair candidates and 13 negative/format controls. All 215 candidates were repaired with 666 fractional changes; all 13 controls stayed untouched. All 215 backups are byte-exact, and a second dry-run found zero candidates.
+- Successful repairs covered JPEG, DNG, HEIC, PNG, TIFF, animated WebP, animated GIF, and AVIF across 209 real matching files and six matching synthetic fixtures. The three warning-only WebP controls had no repair targets.
+- Verified all 228 original source hashes and modification timestamps, all 269 decoded frames/pages, raw DNG/TIFF strips/tiles, and embedded preview/OtherImage bytes unchanged, with zero protected metadata differences. BMP remains explicitly unsupported; no universal write claim or full-library mutation is included.
+- Eight-worker apply took 33.307 seconds and repeated dry-run 6.227 seconds on the cached sample; these timings are not extrapolated to the full library.
+
+## 2026-09-09 20:26 EDT explicit six-digit subsecond override
+
+- User revised `tools/repair_subsecond_padding.py` to remove leading zeros independently from existing EXIF `SubSecTimeOriginal` and `SubSecTimeDigitized` values containing exactly six ASCII digits. All zeros become `0`; trailing zeros are preserved.
+- The explicit manual conversion replaces corroboration and date-confidence requirements for this standalone script only. Other metadata fields, filenames, and normal application behavior remain unchanged.
+- Revised validation passes 21 Python tests with 84 percent branch-inclusive coverage and independent `SHIP` review. A fresh 200-copy trial repaired 194 files (388 Original/Digitized values), refused four pre-existing `IPTCDigest` warnings, and excluded two HEIC files.
+- All 200 original source hashes and modification timestamps, decoded pixels/frames, thumbnails, and embedded previews remain unchanged; all 194 backups match exactly. Metadata relocation pointers are checked through unchanged embedded-image content. Other protected metadata and filenames remain unchanged.
+- The repeated dry-run found zero candidates. Eight-worker apply took 3.158 seconds on this warm-cache sample; no full-library writes or throughput extrapolation are included.
+
+## 2026-09-09 20:15 EDT standalone legacy subsecond repair
+
+- Added `tools/repair_subsecond_padding.py` with configurable parallel workers, persistent ExifTool processes, bounded streaming, progress, dry-run by default, and verified explicit writes.
+- Restricted the historical repair to supported six-digit left-padding cases. Valid leading zeros and uncertain fractional timestamps must remain unchanged.
+- Validated 20 passing Python tests and independent `SHIP` review. A 200-copy real-image trial repaired 48, preserved 146 uncertain files, refused four pre-existing `IPTCDigest` warnings, and skipped two HEIC files. A rerun found zero repair candidates.
+- Verified all 200 original source hashes and modification timestamps unchanged, unchanged decoded pixels/frames and thumbnails, zero protected metadata differences, and 48 exact original backups. Only test copies were modified; the roughly 900,000-image library remains untouched.
+- Eight-worker apply completed in 1.507 seconds on the copied sample. Warm-cache scans measured 0.928/0.589/0.596 seconds at four/eight/sixteen workers; no full-library performance claim is inferred from that sample.
+
+## 2026-09-06 integrated random test runs
+
+- Added a persisted Test Mode toggle to Settings. When enabled, Organize displays a persistent TEST MODE warning and replaces normal preview with `Gather & Build Test Preview`.
+- The test action copies 15,000 random files into an app-owned temporary corpus and automatically previews only those copies.
+- Added bounded reservoir sampling, eight-worker copy concurrency, relative-path preservation, prior-test-run exclusion, strict IPC validation, and owned-path cleanup after successful processing.
+- Originals are never processed by test-run mode. Failed and cancelled runs retain the temporary corpus for inspection.
+- Moved temporary gathering from the OS system disk to an app-owned staging root beside the destination, enabling copy-on-write clones when the filesystem supports them.
+- Added live scan count, copy count, percentage, current filename, and Stop Test Run. Cancellation removes incomplete app-owned staging before returning.
+- Corrected evidence-summary validation for unsupported files: unresolved rows are now conserved from their explicit `UNRESOLVED` evidence state instead of requiring one UI warning string.
+- Persistence errors now include the failing sink's underlying validation message instead of collapsing the useful cause to `evidence`.
+- Extended the production preview lifetime from 15 minutes to 24 hours. Immediate start-time revalidation still rejects changed sources, destinations, runtime health, or processing settings.
+- Changing processing settings while a preview is open now rebuilds the preview from the selected source, including an already-gathered test corpus, without gathering another random corpus. Expired, drifted, and consumed starts follow the same recovery path.
+- Retained `.meta-mover-test-runs/run-*/source` folders are recognized after an application relaunch and can be previewed directly without another gathering pass. Relaunch-recovered corpora are not auto-deleted because the new process did not create them.
+- Repeated attempts against an expired preview continue to report `PREVIEW_EXPIRED` instead of incorrectly changing to `PREVIEW_CONSUMED`.
+- Replaced per-record `fsync` and identity validation during initial preview-evidence creation with bounded 256-event durable batches. The hash chain and private-file checks remain intact, while transaction, rejection, and terminal records retain individual durable appends.
+
+## 2026-09-04 optional month subfolders
+
+- Added a `Year only (no month folders)` organization setting. Resolved media now supports `Type/Year/Filename` alongside the existing `Type/Year/Month/Filename` default.
+- Preserved existing year-month and flat layouts and added planner, persistence, and UI regressions.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-09-03
+## [Unreleased] - 2026-09-04
 
 ### Added
 
+- Added a default-off Settings option to normalize writable destination date fields from the resolver-selected creation date after an approved copy or move. Source files and unresolved items are never written.
 - Added an opt-in screenshot filename label. Verified image screenshots now receive `-screen-shot` immediately before the extension in both trusted-date and `_Needs Review` targets.
 - Screenshot classification accepts explicit `Screenshot`, `Screen Shot`, or `Screen Capture` filename wording and exact iOS/macOS `UserComment` evidence, including the established CGRect partial-capture form. It does not guess from dimensions, file format, device brand, or generic desktop wording.
 - Added a Settings checkbox for screenshot labeling. The option defaults off, is included in the immutable preview and execution contract, and is visible in preview warnings when applied.
@@ -16,9 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Preview metadata extraction no longer copies or hashes complete media files. Bundled ExifTool reads a seekable held source descriptor on Linux, while other platforms use a guarded direct path. Approved transactions still perform one full integrity hash.
+- Removed size-weighted temporary snapshot admission. Large videos now receive the same parallel metadata scheduling as photos under the existing 80 percent CPU ceiling.
+- Runtime health now reports bundled ExifTool as the dependency for destination metadata normalization. No dependency was added.
 - Preview analysis now runs independent snapshot, SHA-256, and bundled ExifTool work in parallel. It reserves 25 percent of logical processors, caps the pool at 16 workers, and pauses new work when sampled host CPU reaches 80 percent.
 - Concurrent snapshot bytes are limited to the smaller of 32 GiB or half of currently available temporary storage. Large files receive fewer parallel slots, and a single file that cannot fit the safe budget is rejected before copying begins.
 - Date resolution and destination collision allocation remain ordered and deterministic. Faster metadata reads cannot change evidence ranking, preview row order, or suffix assignment.
+- Preserved the valid metadata and filename extraction union recovered from the Python and TypeScript generations while keeping filesystem modification time outside creation-date selection.
 - A cache-order challenge using 45 real PNG files on Linux x64 reduced preview time from 7095 ms with one worker to 721 ms with the adaptive pool, a 9.8x speedup. Peak sampled host CPU was 71.7 percent.
 - Preview analysis now publishes real discovery and per-file metadata progress with the current path, stable counts, and an accessible determinate or indeterminate progress indicator.
 - The organizer stays mounted across navigation so an active preview, its Stop control, and its completed result are not lost when changing tabs.
@@ -61,14 +140,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made Linux helper releases static PIE executables and reject staged helpers with a dynamic interpreter.
 - Consolidated transaction cleanup ownership into named, failure-preserving close and value probes so admission and execution errors retain their original cause while every acquired resource is settled.
 
+- Output is now grouped by media type at the top level of the destination: `Photos` (images and raw), `Videos`, `Audio`, `Documents`, `Art`. The chosen folder structure (`year/month`, `year-month`, `flat`) and `_Needs Review` apply inside the type folder. Names match the original Meta Mover layout.
+
 ### Fixed
 
-- Restored the core most-likely creation-date behavior after a real 3,122-file scan exposed 2,066 rows routed to review or unresolved. The corrected resolver produced 1,958 resolved, 82 genuinely ambiguous, 1,082 without defensible creation evidence, and zero weak review-required decisions on the same batch.
+- Eliminated repeated whole-file preview I/O that made a 7.64 GB video behave like a copy job. The held-descriptor metadata command completed against that real file in 0.25 seconds with no output writes.
+- Metadata normalization failures now surface as failed committed-destination residue instead of reporting a completed operation.
+- Stopped reporting `STRONG_CONFLICT` for two groups that describe the same UTC instant rendered in different zones (QuickTime `Keys:CreationDate` with an offset versus UTC container and track dates plus a UTC-rendered filename). The offset-bearing capture time is selected at high confidence with `SAME_INSTANT_CONTENDER`.
+- Stopped reporting `STRONG_CONFLICT` when a corroborated authoritative original (EXIF `DateTimeOriginal`, QuickTime `Keys:CreationDate`, `UserData:DateTimeOriginal`, BWF origination) is contradicted by a lower-authority editorial, sidecar, or container date. The original is selected at medium confidence with `AUTHORITATIVE_ORIGINAL_PREFERRED`; the conflicting claim stays visible in the evidence. Replaying the User's 3,122-file run moved 60 of 82 ambiguous files to resolved (10 high, 50 medium); the remaining 22 are genuine conflicts.
+- Flagged exact-midnight timestamps that still claim second-or-finer precision as placeholders (`MIDNIGHT_PLACEHOLDER`, -25). A placeholder can no longer act as an authoritative original, and when it is still the best available claim the file goes to `_Needs Review` with the date visible (`MIDNIGHT_PLACEHOLDER_REVIEW`) instead of being renamed at high confidence. In the User's run this moved 76 files stamped `2022-01-01 00:00:00`, `2022-12-12 00:00:00`, and `2015-10-18 00:00:00` out of high confidence, and let real IPTC/XMP timestamps win in 2 more.
+- The Organize view now re-reads saved settings from the main process each time it builds a preview. It previously used a snapshot taken at startup, so switching Default operation to Move in Settings still produced a Copy preview and a `Start Copy` button until the app was restarted.
+- Move within one filesystem is now a single rename. The core checks that source and destination share a device, renames without staging or hashing, and verifies the same inode landed. Cross-device moves and copies keep the verified staged path. A 2 GB video that took minutes to move now takes milliseconds.
+- Cancelled or failed operations no longer leave staging hard links behind. When a committed destination shares the staging file's inode the staging link is reclaimed immediately, and every core open sweeps staging and reservation residue of terminal operations. Leftover links previously caused `Hard-linked media is rejected because path identity is ambiguous` on the next preview of files that had been moved back into a source folder.
+- Removed the erroneous filesystem-modification fallback. UUID-named files with no embedded creation claim now remain unresolved instead of being renamed from an unrelated file-handling timestamp.
+- Closed planner and evidence-ledger bypasses that could accept forged high- or medium-confidence filesystem modification records, relabeled metadata/profile dates, filesystem tags mislabeled as filename claims, or a selected value that did not match its selected candidate. Resolver, planner, and persistence now share one provenance rule. Filename tags require the `filename:` namespace while the basename content remains separate from metadata-tag blacklists.
 - Recognized the family-1 tag names actually emitted by bundled ExifTool, including numbered QuickTime tracks, QuickTime container creation, XMP EXIF, XMP create, and XMP PDF creation dates, UserData original dates, ItemList content dates, Samsung timestamps, GPS date-time pairs, IPTC digital creation pairs, and PNG creation fields.
 - Stopped treating matching local timestamps as conflicting only because one source included an offset. Explicit offsets now win selection when credible sources agree on the local capture clock, while different dates and materially different times remain ambiguous.
 - Resolved corroborated whole-second agreement when metadata formats encode fractional seconds differently. Unsupported high-precision disagreements still remain ambiguous.
 - Restored bounded legacy filename extraction for screenshot wording, separated and contiguous full timestamps, camera-prefixed timestamps, and explicit date-only camera names. Numeric UUID segments are not accepted as date-only evidence.
-- Promoted complete timestamp filenames to medium-confidence evidence and explicit date-only camera names to calendar-organization evidence. Filesystem modification time, current time, and ICC profile creation time remain forbidden as capture-date fallbacks.
+- Promoted complete timestamp filenames to medium-confidence evidence and explicit date-only camera names to calendar-organization evidence. Filesystem modification time, current time, metadata modification tags, filesystem change time, and ICC profile creation time remain forbidden.
 - Parallel preview cancellation now stops queued admission, aborts active ExifTool reads, waits for snapshot cleanup, and returns the first causal failure. The CPU sample timer remains referenced so non-Electron hosts cannot exit before analysis starts.
 - Prevented parallel large-media analysis from multiplying temporary-space demand by the worker count and exhausting the system volume.
 - Added Stop Preview through the typed cancellation path. Cancellation now reaches recursive inventory as well as metadata work and does not mutate source media.
@@ -655,3 +745,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposed cancellation residue in durable history, Redux, the active terminal card, and job history without calling it a successful Move.
 - Preserved zero-byte post-commit Move residue as an explicit committed-destination state across executor, coordinator, evidence, history, Redux, and both UIs. Unsupported rows display `(no destination)` instead of a blank target.
 - Added executor, coordinator, evidence, persistence, history, Redux, and UI regressions. The focused grid passes 214 tests with open-handle detection.
+
+# 2026-09-09
+
+### Changed
+
+- Preview Source and Target columns now display basenames instead of full filesystem paths.
+- Proposed names retain a nonzero subsecond only when exact fractional precision is independently corroborated by authoritative embedded metadata or explicitly supplied by a user override.
+
+### Fixed
+
+- Prevented filename, filesystem, repeated single-family, zero-only, and conflicting fractional claims from silently controlling output names or normalized creation timestamps.
+- Added explicit evidence reasons when unverified subseconds are omitted or authoritative fractional claims conflict.
+
+# 2026-09-08
+
+### Added
+
+- Evidence-backed normalization audit with five fail-closed dispositions, deterministic cohorts, persisted approvals, bounded paging, stratified sampling, and planned tag dry runs.
+- Hash-chained preview sealing so audit and authorization work before processing begins.
+- Format-specific creation-date normalization policies and real JPEG/MOV ExifTool integration tests.
+- Chunked durable job-plan storage with checkpoint recovery and a one-million-record scale protocol.
+
+### Changed
+
+- Metadata writes now occur only in private transaction staging and require immutable audit authorization plus verified post-write receipts.
+- EXIF timestamps store local wall time with dedicated offset tags; UTC-based containers require a resolved UTC instant.
+- Preview analysis runs in ordered 256-file batches, renderer previews are capped at 500 rows, and operation/evidence binding is linear instead of quadratic.
+- The Metadata navigation item is now Audit and automatically follows the latest successful preview.
+
+### Fixed
+
+- Prevented blanket normalization of every merely resolved date.
+- Prevented audit deadlock caused by requiring terminal job closure before pre-run review.
+- Prevented source deletion or destination publication after unverified metadata mutation.
+- Preserved legitimate GPS, timecode, history, non-date metadata, TrackCreateDate, and MediaCreateDate semantics.

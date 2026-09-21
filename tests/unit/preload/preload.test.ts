@@ -56,6 +56,37 @@ describe('preload processing API', () => {
     expect(removeListener).toHaveBeenCalledWith('processing:event', wrapped);
   });
 
+  it('maps every normalization audit operation to a fixed request-response channel', async () => {
+    const bridge = api();
+    const dataset = { previewId: 'preview-1' };
+    await bridge.getNormalizationAuditSummary(dataset);
+    await bridge.getNormalizationAuditCohorts({ ...dataset, limit: 20 });
+    await bridge.getNormalizationAuditSample({ ...dataset, seed: 'seed', targetSize: 10 });
+    await bridge.getNormalizationAuditRows({ ...dataset, limit: 50 });
+    await bridge.getNormalizationAuditDecision({ ...dataset, recordId: 'record-1' });
+    await bridge.approveNormalizationAuditCohort({
+      ...dataset,
+      revision: 'rev-1',
+      cohortKey: 'cohort-1',
+      approved: true,
+    });
+    await bridge.dryRunNormalizationAudit({ ...dataset, revision: 'rev-1', limit: 100 });
+    expect(invoke.mock.calls).toEqual(
+      expect.arrayContaining([
+        ['normalization-audit:summary', dataset],
+        ['normalization-audit:cohorts', { ...dataset, limit: 20 }],
+        ['normalization-audit:sample', { ...dataset, seed: 'seed', targetSize: 10 }],
+        ['normalization-audit:rows', { ...dataset, limit: 50 }],
+        ['normalization-audit:decision', { ...dataset, recordId: 'record-1' }],
+        [
+          'normalization-audit:approve',
+          { ...dataset, revision: 'rev-1', cohortKey: 'cohort-1', approved: true },
+        ],
+        ['normalization-audit:dry-run', { ...dataset, revision: 'rev-1', limit: 100 }],
+      ])
+    );
+  });
+
   it('does not expose listener-wide removal, pause, resume, or database escape hatches', () => {
     const bridge = api();
     expect(bridge).not.toHaveProperty('removeProcessingListeners');

@@ -27,6 +27,13 @@ export const PROCESSING_IPC_CHANNELS = Object.freeze([
   'config:get',
   'config:update',
   'config:reset',
+  'normalization-audit:summary',
+  'normalization-audit:cohorts',
+  'normalization-audit:sample',
+  'normalization-audit:rows',
+  'normalization-audit:decision',
+  'normalization-audit:approve',
+  'normalization-audit:dry-run',
 ] as const);
 
 type ProcessingIpcChannel = (typeof PROCESSING_IPC_CHANNELS)[number];
@@ -60,12 +67,23 @@ export interface ConfigIpcPort {
   reset(): Promise<AppConfig | unknown>;
 }
 
+export interface NormalizationAuditIpcPort {
+  summary(request: unknown): Promise<unknown>;
+  cohorts(request: unknown): Promise<unknown>;
+  sample(request: unknown): Promise<unknown>;
+  rows(request: unknown): Promise<unknown>;
+  decision(request: unknown): Promise<unknown>;
+  approve(request: unknown): Promise<unknown>;
+  dryRun(request: unknown): Promise<unknown>;
+}
+
 export interface ProcessingIPCDependencies {
   ipc: IpcRegistrarPort;
   coordinator: ProcessingCoordinatorPort;
   health: RuntimeHealthPort;
   history: HistoryListPort;
   config: ConfigIpcPort;
+  audit: NormalizationAuditIpcPort;
   publishEvent(event: Readonly<ProcessingEvent>): void;
 }
 
@@ -128,7 +146,7 @@ function parseOptions(value: unknown): ProcessingOptionsDTO {
     (options.workerCount as number) < 1 ||
     (options.workerCount as number) > 10 ||
     options.verifyIntegrity !== true ||
-    options.writeMetadataDates !== false
+    typeof options.writeMetadataDates !== 'boolean'
   ) {
     throw new IPCValidationError('Processing options are invalid');
   }
@@ -191,6 +209,32 @@ function parseHistoryLimit(value: unknown): number {
     throw new IPCValidationError('History limit must be an integer from 1 through 200');
   }
   return value as number;
+}
+
+function boundedToken(value: unknown, label: string, maximum = 256): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > maximum) {
+    throw new IPCValidationError(`${label} must be a non-empty bounded string`);
+  }
+  return value;
+}
+
+function auditRequest(value: unknown, fields: readonly string[]): Record<string, unknown> {
+  const request = dataRecord(value, ['previewId', ...fields]);
+  request.previewId = boundedToken(request.previewId, 'previewId', 128);
+  return request;
+}
+
+function auditPageRequest(value: unknown): Record<string, unknown> {
+  const request = auditRequest(value, ['limit', 'cursor']);
+  if (
+    !Number.isSafeInteger(request.limit) ||
+    (request.limit as number) < 1 ||
+    (request.limit as number) > 100
+  ) {
+    throw new IPCValidationError('Audit page limit must be an integer from 1 through 100');
+  }
+  if (request.cursor !== undefined) request.cursor = boundedToken(request.cursor, 'cursor', 128);
+  return request;
 }
 
 function responseError(error: unknown): ProcessingResponseDTO<never> {
@@ -277,6 +321,55 @@ export class ProcessingIPCController {
         success: true,
         data: await this.dependencies.config.reset(),
       }));
+      this.handle('normalization-audit:summary', async (value) => ({
+        success: true,
+        data: await this.dependencies.audit.summary(auditRequest(value, [])),
+      }));
+      this.handle('normalization-audit:cohorts', async (value) => ({
+        success: true,
+        data: await this.dependencies.audit.cohorts(auditPageRequest(value)),
+      }));
+      this.handle('normalization-audit:rows', async (value) => ({
+        success: true,
+        data: await this.dependencies.audit.rows(auditPageRequest(value)),
+      }));
+      this.handle('normalization-audit:sample', async (value) => {
+        const request = auditRequest(value, ['seed', 'targetSize']);
+        request.seed = boundedToken(request.seed, 'seed');
+        if (
+          !Number.isSafeInteger(request.targetSize) ||
+          (request.targetSize as number) < 1 ||
+          (request.targetSize as number) > 100
+        )
+          throw new IPCValidationError('Audit sample size must be an integer from 1 through 100');
+        return { success: true, data: await this.dependencies.audit.sample(request) };
+      });
+      this.handle('normalization-audit:decision', async (value) => {
+        const request = auditRequest(value, ['recordId']);
+        request.recordId = boundedToken(request.recordId, 'recordId', 512);
+        return { success: true, data: await this.dependencies.audit.decision(request) };
+      });
+      this.handle('normalization-audit:approve', async (value) => {
+        const request = auditRequest(value, ['revision', 'cohortKey', 'approved']);
+        request.revision = boundedToken(request.revision, 'revision', 128);
+        request.cohortKey = boundedToken(request.cohortKey, 'cohortKey', 128);
+        if (typeof request.approved !== 'boolean')
+          throw new IPCValidationError('approved must be boolean');
+        return { success: true, data: await this.dependencies.audit.approve(request) };
+      });
+      this.handle('normalization-audit:dry-run', async (value) => {
+        const request = auditRequest(value, ['revision', 'limit', 'cursor']);
+        request.revision = boundedToken(request.revision, 'revision', 128);
+        if (
+          !Number.isSafeInteger(request.limit) ||
+          (request.limit as number) < 1 ||
+          (request.limit as number) > 100
+        )
+          throw new IPCValidationError('Audit dry-run limit must be an integer from 1 through 100');
+        if (request.cursor !== undefined)
+          request.cursor = boundedToken(request.cursor, 'cursor', 128);
+        return { success: true, data: await this.dependencies.audit.dryRun(request) };
+      });
       const unsubscribe = this.dependencies.coordinator.subscribe((event) => {
         if (this.accepting) this.dependencies.publishEvent(event);
       });

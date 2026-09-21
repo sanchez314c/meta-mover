@@ -36,6 +36,25 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  it('does not convert filesystem modified time into creation evidence', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'File:System:FileModifyDate': '2026:03:27 21:38:45-04:00',
+      }),
+      async () => ({ birthtime: new Date(Number.NaN) })
+    );
+
+    const result = await collector.collectDetailed({
+      fileId: '7:11',
+      filePath: '/media/0089b5ac-c91a-4b47-8c5e-7dddacffdb1b.jpg',
+      filesystemBirthTimeUtc: null,
+      mediaKind: 'image',
+    });
+
+    expect(result.candidates).toEqual([]);
+    await collector.close();
+  });
+
   it.each([
     ['Screenshot 2026-09-01 at 16.04.22.png', {} as RawExifTags, 'filename', 'filename'],
     ['Screen Shot 2026-09-01 at 16.04.22.PNG', {} as RawExifTags, 'filename', 'filename'],
@@ -428,6 +447,12 @@ describe('MetadataCandidateCollector', () => {
     ['IMG_20210615123045.jpg', '2021-06-15T12:30:45', 'second'],
     ['2021-06-15_123045.mov', '2021-06-15T12:30:45', 'second'],
     ['IMG_20210615.jpg', '2021-06-15', 'date'],
+    ['DSC_20210615_123045.jpg', '2021-06-15T12:30:45', 'second'],
+    ['IMG-20210615-WA0042.jpg', '2021-06-15', 'date'],
+    ['IMG_20210615_123045_LIVE.jpg', '2021-06-15T12:30:45', 'second'],
+    ['IMG_20210615_123045_BURST007.jpg', '2021-06-15T12:30:45', 'second'],
+    ['Instagram_20210615_123045.jpg', '2021-06-15T12:30:45', 'second'],
+    ['PXL_20210615_123045.jpg', '2021-06-15T12:30:45', 'second'],
   ] as const)(
     'extracts bounded legacy date pattern from %s',
     async (filename, localIso, precision) => {

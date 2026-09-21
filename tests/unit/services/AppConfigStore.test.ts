@@ -87,6 +87,37 @@ describe('AppConfigStore', () => {
     );
   });
 
+  it('defaults metadata date normalization off and persists an explicit processing toggle', async () => {
+    const store = await AppConfigStore.open(configPath);
+
+    expect(store.getAll().processing.writeMetadataDates).toBe(false);
+    await store.update({ processing: { writeMetadataDates: true } });
+
+    expect(store.getAll().processing.writeMetadataDates).toBe(true);
+    expect(JSON.parse(await readFile(configPath, 'utf8')).processing.writeMetadataDates).toBe(true);
+  });
+
+  it('defaults test mode off and persists an explicit test-mode toggle', async () => {
+    const store = await AppConfigStore.open(configPath);
+
+    expect(store.getAll().processing.testMode).toBe(false);
+    await store.update({ processing: { testMode: true } });
+
+    expect(store.getAll().processing.testMode).toBe(true);
+    expect(JSON.parse(await readFile(configPath, 'utf8')).processing.testMode).toBe(true);
+  });
+
+  it('persists the year-only folder structure used when month subfolders are disabled', async () => {
+    const store = await AppConfigStore.open(configPath);
+
+    await store.update({ organization: { folderStructure: 'year' } });
+
+    expect(store.getAll().organization.folderStructure).toBe('year');
+    expect(JSON.parse(await readFile(configPath, 'utf8')).organization.folderStructure).toBe(
+      'year'
+    );
+  });
+
   it('persists atomically with a private file and serializes concurrent updates', async () => {
     const store = await AppConfigStore.open(configPath);
 
@@ -287,6 +318,8 @@ describe('AppConfigStore', () => {
     [{ windowBounds: { width: 899, height: 600 } }, /width/i],
     [{ processing: { operation: 'delete' } }, /operation/i],
     [{ processing: { verifyIntegrity: false } }, /verifyIntegrity/i],
+    [{ processing: { writeMetadataDates: 'yes' } }, /writeMetadataDates/i],
+    [{ processing: { testMode: 'yes' } }, /testMode/i],
     [{ processing: { corruptionDetection: true } }, /corruptionDetection|unknown/i],
     [{ organization: { folderStructure: 'daily' } }, /folderStructure/i],
     [{ organization: { conflictPolicy: 'overwrite' } }, /conflictPolicy/i],

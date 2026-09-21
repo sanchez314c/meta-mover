@@ -25,6 +25,16 @@ describe('CoreIPCController', () => {
       dialog: { showOpenDialog: jest.fn() },
       shell: { openExternal: jest.fn(), showItemInFolder: jest.fn() },
       app: { getPath: jest.fn((name: string) => `/allowed/${name}`), getVersion: () => '1.0.0' },
+      testRuns: {
+        gather: jest.fn().mockResolvedValue({
+          temporarySourcePath: '/tmp/meta-mover-test-runs/run/source',
+          copiedFiles: 15000,
+          scannedFiles: 900000,
+        }),
+        discard: jest.fn().mockResolvedValue(undefined),
+        cancel: jest.fn().mockReturnValue(true),
+      },
+      publishTestRunProgress: jest.fn(),
       system: {
         platform: 'linux' as NodeJS.Platform,
         architecture: 'x64',
@@ -107,6 +117,25 @@ describe('CoreIPCController', () => {
     expect(test.dependencies.shell.openExternal).toHaveBeenCalledTimes(1);
   });
 
+  it('gathers and discards only validated test-run requests', async () => {
+    const test = harness();
+    await expect(
+      test.invoke('test-run:gather', {
+        sourcePath: '/media/source',
+        destinationPath: '/media/destination',
+        fileCount: 15000,
+      })
+    ).resolves.toMatchObject({ success: true, data: { copiedFiles: 15000 } });
+    await expect(
+      test.invoke('test-run:discard', '/tmp/meta-mover-test-runs/run/source')
+    ).resolves.toEqual({ success: true });
+    await expect(
+      test.invoke('test-run:gather', { sourcePath: '../source' })
+    ).resolves.toMatchObject({
+      success: false,
+    });
+  });
+
   it('rolls back every owned handler when registration fails partway through', () => {
     const handlers = new Map<string, unknown>();
     const removeHandler = jest.fn((channel: string) => handlers.delete(channel));
@@ -122,6 +151,8 @@ describe('CoreIPCController', () => {
       dialog: { showOpenDialog: jest.fn() },
       shell: { openExternal: jest.fn(), showItemInFolder: jest.fn() },
       app: { getPath: jest.fn(), getVersion: jest.fn() },
+      testRuns: { gather: jest.fn(), discard: jest.fn(), cancel: jest.fn() },
+      publishTestRunProgress: jest.fn(),
       system: {
         platform: 'linux',
         architecture: 'x64',

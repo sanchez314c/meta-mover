@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
 
 import type { AppConfig } from '../../main/services/AppConfigStore';
+import type { TestRunProgress } from '../../main/services/TestRunCorpusBuilder';
 import type {
   DependencyHealthDTO,
   PreviewResultDTO,
@@ -325,7 +326,7 @@ const FailureList = styled.ul`
   overflow-wrap: anywhere;
 `;
 
-type Stage = 'select' | 'previewing' | 'preview' | 'starting' | 'running';
+type Stage = 'select' | 'gathering' | 'previewing' | 'preview' | 'starting' | 'running';
 
 function optionsFromConfig(config: AppConfig): ProcessingOptionsDTO {
   return {
@@ -335,12 +336,35 @@ function optionsFromConfig(config: AppConfig): ProcessingOptionsDTO {
     appendScreenshotSuffix: config.organization.appendScreenshotSuffix,
     workerCount: config.processing.workerCount,
     verifyIntegrity: true,
-    writeMetadataDates: false,
+    writeMetadataDates: config.processing.writeMetadataDates,
   };
+}
+
+function processingOptionsMatch(left: ProcessingOptionsDTO, right: ProcessingOptionsDTO): boolean {
+  return (
+    left.operation === right.operation &&
+    left.conflictPolicy === right.conflictPolicy &&
+    left.folderStructure === right.folderStructure &&
+    left.appendScreenshotSuffix === right.appendScreenshotSuffix &&
+    left.workerCount === right.workerCount &&
+    left.verifyIntegrity === right.verifyIntegrity &&
+    left.writeMetadataDates === right.writeMetadataDates
+  );
+}
+
+function isRetainedTestCorpus(sourcePath: string | undefined): boolean {
+  return (
+    sourcePath !== undefined &&
+    /(?:^|[\\/])\.meta-mover-test-runs[\\/]run-[^\\/]+[\\/]source$/.test(sourcePath)
+  );
 }
 
 function rowWarnings(row: PreviewRowDTO): string[] {
   return Array.from(new Set([...row.dateEvidence.warnings, ...row.warnings]));
+}
+
+function displayFilename(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
 }
 
 export function ProcessingLauncher() {
@@ -363,6 +387,8 @@ export function ProcessingLauncher() {
   const [moveAcknowledged, setMoveAcknowledged] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
   const [previewCancelPending, setPreviewCancelPending] = useState(false);
+  const [temporarySourcePath, setTemporarySourcePath] = useState<string | null>(null);
+  const [testRunProgress, setTestRunProgress] = useState<TestRunProgress | null>(null);
   const previewRequestInFlight = useRef(false);
 
   const activeJob = useMemo(() => jobs.find((job) => job.id === activeJobId), [activeJobId, jobs]);
@@ -428,6 +454,17 @@ export function ProcessingLauncher() {
     };
   }, []);
 
+  useEffect(() => window.electronAPI?.onTestRunProgress(setTestRunProgress), []);
+
+  useEffect(() => {
+    const receiveConfig = (event: Event) => {
+      const updated = (event as CustomEvent<AppConfig>).detail;
+      if (updated?.version === 3) setConfig(updated);
+    };
+    window.addEventListener('meta-mover:config-updated', receiveConfig);
+    return () => window.removeEventListener('meta-mover:config-updated', receiveConfig);
+  }, []);
+
   const invalidatePreview = useCallback(() => {
     dispatch(clearPreviewBuild());
     setPreview(null);
@@ -469,58 +506,137 @@ export function ProcessingLauncher() {
   const previewFinalizing =
     previewActive && previewBuild.phase === 'organization' && previewBuild.percentage === 100;
   const busy =
-    previewActive || stage === 'previewing' || stage === 'starting' || stage === 'running';
+    previewActive ||
+    stage === 'gathering' ||
+    stage === 'previewing' ||
+    stage === 'starting' ||
+    stage === 'running';
   const canPreview =
     Boolean(sourcePaths.length > 0 && destinationPath && config && previewAvailable) && !busy;
+  const canReuseTestCorpus =
+    temporarySourcePath !== null ||
+    (sourcePaths.length === 1 && isRetainedTestCorpus(sourcePaths[0]));
 
-  const buildPreview = useCallback(async () => {
-    const api = window.electronAPI;
-    if (
-      !api ||
-      sourcePaths.length === 0 ||
-      !destinationPath ||
-      !config ||
-      !previewAvailable ||
-      previewActive ||
-      previewRequestInFlight.current
-    )
-      return;
-    previewRequestInFlight.current = true;
-    setStage('previewing');
-    dispatch(clearPreviewBuild());
-    setActionError(null);
-    setActionNotice(null);
-    setPreviewCancelPending(false);
-    setPreview(null);
-    setMoveAcknowledged(false);
-    try {
-      const response = await api.previewProcessing({
-        sourcePaths: [...sourcePaths],
-        destinationPath,
-        options: optionsFromConfig(config),
-      });
-      if (!response.success || !response.data) {
-        if (response.error?.code === 'PREVIEW_CANCELLED') {
-          setActionNotice('Preview analysis stopped. No files were changed.');
-        } else {
-          setActionError(response.error?.message ?? 'Preview failed.');
+  const buildPreviewFor = useCallback(
+    async (selectedSources: string[]) => {
+      const api = window.electronAPI;
+      if (
+        !api ||
+        selectedSources.length === 0 ||
+        !destinationPath ||
+        !config ||
+        !previewAvailable ||
+        previewActive ||
+        previewRequestInFlight.current
+      )
+        return;
+      previewRequestInFlight.current = true;
+      setStage('previewing');
+      dispatch(clearPreviewBuild());
+      setActionError(null);
+      setActionNotice(null);
+      setPreviewCancelPending(false);
+      setPreview(null);
+      setMoveAcknowledged(false);
+      try {
+        // Settings can change in the Settings view while this view stays mounted, so the
+        // preview must be planned from what is saved now, not from the startup snapshot.
+        const latestConfig = await api.getConfig();
+        if (!latestConfig.success || !latestConfig.data) {
+          setActionError(
+            latestConfig.error?.message ?? 'Processing settings could not be reloaded.'
+          );
+          dispatch(clearPreviewBuild());
+          setStage('select');
+          return;
         }
+        setConfig(latestConfig.data);
+        const response = await api.previewProcessing({
+          sourcePaths: [...selectedSources],
+          destinationPath,
+          options: optionsFromConfig(latestConfig.data),
+        });
+        if (!response.success || !response.data) {
+          if (response.error?.code === 'PREVIEW_CANCELLED') {
+            setActionNotice('Preview analysis stopped. No files were changed.');
+          } else {
+            setActionError(response.error?.message ?? 'Preview failed.');
+          }
+          dispatch(clearPreviewBuild());
+          setPreviewCancelPending(false);
+          setStage('select');
+          return;
+        }
+        setPreview(response.data);
+        localStorage.setItem('meta-mover:last-preview-id', response.data.previewId);
+        window.dispatchEvent(
+          new CustomEvent<string>('meta-mover:preview-ready', { detail: response.data.previewId })
+        );
+        setStage('preview');
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : 'Preview failed.');
         dispatch(clearPreviewBuild());
         setPreviewCancelPending(false);
         setStage('select');
+      } finally {
+        previewRequestInFlight.current = false;
+      }
+    },
+    [config, destinationPath, dispatch, previewActive, previewAvailable]
+  );
+
+  const buildPreview = useCallback(() => {
+    void buildPreviewFor(sourcePaths);
+  }, [buildPreviewFor, sourcePaths]);
+
+  useEffect(() => {
+    if (
+      !preview ||
+      stage !== 'preview' ||
+      !config ||
+      processingOptionsMatch(preview.effectiveOptions, optionsFromConfig(config))
+    ) {
+      return;
+    }
+    setActionNotice('Settings changed. Rebuilding the preview from the existing source files.');
+    void buildPreviewFor(sourcePaths);
+  }, [buildPreviewFor, config, preview, sourcePaths, stage]);
+
+  const gatherTestRun = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api || sourcePaths.length !== 1 || !destinationPath || busy) return;
+    setStage('gathering');
+    setActionError(null);
+    setActionNotice('Copying a random 15,000-file test corpus. Originals remain untouched.');
+    try {
+      setTestRunProgress(null);
+      const response = await api.gatherTestRun({
+        sourcePath: sourcePaths[0],
+        destinationPath,
+        fileCount: 15000,
+      });
+      if (!response.success || !response.data) {
+        setActionError(response.error?.message ?? 'Test-run gathering failed.');
+        setStage('select');
         return;
       }
-      setPreview(response.data);
-      setStage('preview');
+      const copiedSource = response.data.temporarySourcePath;
+      setTemporarySourcePath(copiedSource);
+      setSourcePaths([copiedSource]);
+      setActionNotice(
+        `Copied ${response.data.copiedFiles.toLocaleString()} random files. Building preview from the temporary corpus.`
+      );
+      await buildPreviewFor([copiedSource]);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Preview failed.');
-      dispatch(clearPreviewBuild());
-      setPreviewCancelPending(false);
+      setActionError(error instanceof Error ? error.message : 'Test-run gathering failed.');
       setStage('select');
-    } finally {
-      previewRequestInFlight.current = false;
     }
-  }, [config, destinationPath, dispatch, previewActive, previewAvailable, sourcePaths]);
+  }, [buildPreviewFor, busy, destinationPath, sourcePaths]);
+
+  const cancelTestRun = useCallback(async () => {
+    const response = await window.electronAPI?.cancelTestRun();
+    if (!response?.success) setActionError('No active test run could be stopped.');
+  }, []);
 
   const cancelPreview = useCallback(async () => {
     const api = window.electronAPI;
@@ -565,6 +681,17 @@ export function ProcessingLauncher() {
         acknowledgeDestructiveOperation: isMove && moveAcknowledged,
       });
       if (!response.success || !response.data) {
+        if (
+          response.error?.code === 'PREVIEW_EXPIRED' ||
+          response.error?.code === 'PREVIEW_CONSUMED' ||
+          response.error?.code === 'PREVIEW_DRIFT'
+        ) {
+          setActionNotice(
+            'Preview changed or expired. Rebuilding it from the existing source files.'
+          );
+          await buildPreviewFor(sourcePaths);
+          return;
+        }
         setActionError(response.error?.message ?? 'Processing could not be started.');
         setStage('preview');
         return;
@@ -575,7 +702,7 @@ export function ProcessingLauncher() {
       setActionError(error instanceof Error ? error.message : 'Processing could not be started.');
       setStage('preview');
     }
-  }, [moveAcknowledged, preview, startAvailable]);
+  }, [buildPreviewFor, moveAcknowledged, preview, sourcePaths, startAvailable]);
 
   const cancelProcessing = useCallback(async () => {
     const api = window.electronAPI;
@@ -618,6 +745,16 @@ export function ProcessingLauncher() {
     activeJob?.status === 'cancelled';
   const cancellationRequested = cancelPending || activeJob?.status === 'cancelling';
 
+  useEffect(() => {
+    if (activeJob?.status !== 'completed' || !temporarySourcePath) return;
+    const ownedPath = temporarySourcePath;
+    setTemporarySourcePath(null);
+    void window.electronAPI?.discardTestRun(ownedPath).then((response) => {
+      if (response.success) setActionNotice('Processing completed. Temporary test corpus removed.');
+      else setActionError(response.error?.message ?? `Temporary corpus retained at ${ownedPath}`);
+    });
+  }, [activeJob?.status, temporarySourcePath]);
+
   return (
     <Container>
       <HeroCard>
@@ -646,6 +783,12 @@ export function ProcessingLauncher() {
         )}
         {actionError && <Banner $tone="error">{actionError}</Banner>}
         {actionNotice && <Banner $tone="warning">{actionNotice}</Banner>}
+        {config?.processing.testMode && (
+          <Banner $tone="warning">
+            <strong>TEST MODE</strong>: META Mover will copy 15,000 random files into private
+            temporary storage and process only those copies. Originals remain untouched.
+          </Banner>
+        )}
         <FolderRow>
           <FolderLabel>Sources</FolderLabel>
           {sourcePaths.length === 0 ? (
@@ -688,12 +831,73 @@ export function ProcessingLauncher() {
             Browse
           </BrowseButton>
         </FolderRow>
-        {!preview && stage !== 'running' && (
-          <FullButton onClick={buildPreview} disabled={!canPreview}>
-            {stage === 'previewing' ? 'Building Preview...' : 'Build Preview'}
-          </FullButton>
-        )}
+        {!preview &&
+          stage !== 'running' &&
+          (config?.processing.testMode ? (
+            <FullButton
+              aria-label={
+                canReuseTestCorpus ? 'Rebuild existing test preview' : 'Gather 15,000-file test run'
+              }
+              onClick={canReuseTestCorpus ? buildPreview : () => void gatherTestRun()}
+              disabled={sourcePaths.length !== 1 || !destinationPath || busy}
+            >
+              {stage === 'gathering'
+                ? 'Gathering Test Run...'
+                : canReuseTestCorpus
+                  ? 'Rebuild Test Preview'
+                  : 'Gather & Build Test Preview'}
+            </FullButton>
+          ) : (
+            <FullButton onClick={buildPreview} disabled={!canPreview}>
+              {stage === 'previewing' ? 'Building Preview...' : 'Build Preview'}
+            </FullButton>
+          ))}
       </HeroCard>
+
+      {stage === 'gathering' && (
+        <Card role="status" aria-live="polite" aria-atomic="false">
+          <CardTitle>
+            {testRunProgress?.phase === 'copying'
+              ? 'Copying temporary test corpus'
+              : 'Scanning source collection'}
+          </CardTitle>
+          <ProgressCopy>
+            <span>
+              {testRunProgress?.phase === 'copying'
+                ? `${testRunProgress.copiedFiles.toLocaleString()} / 15,000 files (${Math.round(testRunProgress.percentage ?? 0)}%)`
+                : `${(testRunProgress?.scannedFiles ?? 0).toLocaleString()} files scanned`}
+            </span>
+            <span>
+              {testRunProgress?.phase === 'copying' ? 'Clone-first copy' : 'Random sampling'}
+            </span>
+          </ProgressCopy>
+          <ProgressTrack
+            role="progressbar"
+            aria-label="Test run gathering progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              testRunProgress?.percentage === null || testRunProgress?.percentage === undefined
+                ? undefined
+                : Math.round(testRunProgress.percentage)
+            }
+          >
+            <ProgressFill
+              $percentage={testRunProgress?.percentage ?? 0}
+              $indeterminate={testRunProgress?.phase !== 'copying'}
+            />
+          </ProgressTrack>
+          {testRunProgress?.currentFile && (
+            <CurrentFile>
+              <strong>Current file</strong>
+              <span>{testRunProgress.currentFile}</span>
+            </CurrentFile>
+          )}
+          <FullButton $danger type="button" aria-label="Stop Test Run" onClick={cancelTestRun}>
+            Stop Test Run
+          </FullButton>
+        </Card>
+      )}
 
       {stage === 'previewing' && (
         <Card role="status" aria-live="polite" aria-atomic="false">
@@ -786,10 +990,14 @@ export function ProcessingLauncher() {
                     return (
                       <tr key={row.sourcePath}>
                         <td>
-                          <PathCell>{row.sourcePath}</PathCell>
+                          <PathCell>{displayFilename(row.sourcePath)}</PathCell>
                         </td>
                         <td>
-                          <PathCell>{row.targetPath ?? 'No target'}</PathCell>
+                          <PathCell>
+                            {row.targetPath === null
+                              ? 'No target'
+                              : displayFilename(row.targetPath)}
+                          </PathCell>
                         </td>
                         <td>
                           {row.dateEvidence.source}: {row.dateEvidence.value ?? 'Unresolved'}
@@ -857,7 +1065,13 @@ export function ProcessingLauncher() {
 
       {stage === 'running' && !terminal && (
         <Card>
-          <CardTitle>{cancellationRequested ? 'Cancellation requested' : 'Processing'}</CardTitle>
+          <CardTitle>
+            {cancellationRequested
+              ? 'Cancellation requested'
+              : activeJob?.preparation
+                ? 'Preparing metadata audit'
+                : 'Processing'}
+          </CardTitle>
           <ProgressCopy>
             <span>
               {activeJob
@@ -869,6 +1083,18 @@ export function ProcessingLauncher() {
           <ProgressTrack>
             <ProgressFill $percentage={activeJob?.progress ?? 0} />
           </ProgressTrack>
+          {activeJob?.preparation && (
+            <CurrentFile role="status">
+              <strong>{activeJob.preparation.stage}</strong>
+              <span>
+                {activeJob.preparation.total === undefined
+                  ? `${activeJob.preparation.completed.toLocaleString()} ${activeJob.preparation.unit}`
+                  : `${activeJob.preparation.completed.toLocaleString()} / ${activeJob.preparation.total.toLocaleString()} ${activeJob.preparation.unit} (${Math.round(
+                      (activeJob.preparation.completed / activeJob.preparation.total) * 100
+                    )}%)`}
+              </span>
+            </CurrentFile>
+          )}
           <FullButton $danger onClick={cancelProcessing} disabled={cancellationRequested}>
             {cancellationRequested ? 'Cancellation Requested' : 'Cancel Processing'}
           </FullButton>

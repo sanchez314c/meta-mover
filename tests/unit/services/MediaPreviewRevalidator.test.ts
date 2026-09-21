@@ -27,7 +27,6 @@ describe('MediaPreviewRevalidator', () => {
 
   async function prepared(overrides: Record<string, unknown> = {}): Promise<PreparedPreview> {
     const stats = await lstat(sourcePath);
-    const contentSha256 = createHash('sha256').update('photo bytes').digest('hex');
     return {
       result: {
         jobId: 'job-1',
@@ -81,7 +80,6 @@ describe('MediaPreviewRevalidator', () => {
             },
             modifiedTimeMs: stats.mtimeMs,
             mediaKind: 'image',
-            contentSha256,
             destinationSnapshot: {
               path: path.join(root, 'target.jpg'),
               occupied: false,
@@ -107,7 +105,7 @@ describe('MediaPreviewRevalidator', () => {
     };
   }
 
-  it('accepts unchanged regular sources when the bundled runtime is ready', async () => {
+  it('accepts unchanged regular sources without requiring a preview-time content hash', async () => {
     const revalidator = new MediaPreviewRevalidator({
       runtime: { check: async () => ({ ready: true, reasons: [] }) },
     });

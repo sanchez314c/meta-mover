@@ -25,7 +25,12 @@ describe('ProductionApplicationRuntime', () => {
       getAll: jest.fn().mockReturnValue({
         version: 3,
         theme: 'system',
-        processing: { workerCount: 6, operation: OperationMode.COPY, verifyIntegrity: true },
+        processing: {
+          workerCount: 6,
+          operation: OperationMode.COPY,
+          verifyIntegrity: true,
+          writeMetadataDates: true,
+        },
         organization: {
           conflictPolicy: ConflictPolicy.RENAME,
           folderStructure: FolderStructure.YEAR_MONTH,
@@ -40,6 +45,17 @@ describe('ProductionApplicationRuntime', () => {
     const historyList = { listJobs: jest.fn() };
     const history = { coordinator: historyCoordinator, list: historyList, close: jest.fn() };
     const evidence = { shutdown: jest.fn() };
+    const audit = {
+      summary: jest.fn(),
+      cohorts: jest.fn(),
+      sample: jest.fn(),
+      rows: jest.fn(),
+      decision: jest.fn(),
+      approve: jest.fn(),
+      dryRun: jest.fn(),
+      authorizeNormalization: jest.fn(),
+      close: jest.fn(),
+    };
     const runtime = { verified: jest.fn(), getHealth: jest.fn(), check: jest.fn() };
     const metadata = { collectDetailed: jest.fn(), close: jest.fn() };
     const planner = { plan: jest.fn() };
@@ -57,6 +73,7 @@ describe('ProductionApplicationRuntime', () => {
       openConfig: jest.fn().mockResolvedValue(config),
       openHistory: jest.fn().mockResolvedValue(history),
       openEvidence: jest.fn().mockResolvedValue(evidence),
+      openAudit: jest.fn().mockResolvedValue(audit),
       verifyRuntime: jest.fn().mockResolvedValue(runtime),
       openMetadata: jest.fn().mockResolvedValue(metadata),
       createPlanner: jest.fn().mockReturnValue(planner),
@@ -70,6 +87,7 @@ describe('ProductionApplicationRuntime', () => {
       config,
       history,
       evidence,
+      audit,
       runtime,
       metadata,
       planner,
@@ -110,6 +128,7 @@ describe('ProductionApplicationRuntime', () => {
       evidenceRoot: path.join(root, 'evidence'),
       policyVersion: 'date-resolution/1',
     });
+    expect(test.bindings.openAudit).toHaveBeenCalledWith(path.join(root, 'evidence'));
     expect(test.bindings.verifyRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
         resourcesRoot: path.join(root, 'resources'),
@@ -123,7 +142,8 @@ describe('ProductionApplicationRuntime', () => {
       expect.objectContaining({ launchTrustPolicy: test.policy, runtime: test.runtime })
     );
     expect(test.bindings.openTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ launchTrustPolicy: test.policy })
+      expect.objectContaining({ launchTrustPolicy: test.policy }),
+      test.audit
     );
     expect(test.bindings.createCoordinator).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -133,7 +153,7 @@ describe('ProductionApplicationRuntime', () => {
         planner: test.planner,
         revalidator: test.revalidator,
         transaction: test.transaction,
-        previewTtlMs: 15 * 60 * 1000,
+        previewTtlMs: 24 * 60 * 60 * 1000,
         maxWorkerConcurrency: 10,
         defaultOptions: {
           operation: OperationMode.COPY,
@@ -142,7 +162,7 @@ describe('ProductionApplicationRuntime', () => {
           workerCount: 6,
           verifyIntegrity: true,
           appendScreenshotSuffix: false,
-          writeMetadataDates: false,
+          writeMetadataDates: true,
         },
       })
     );
@@ -152,6 +172,7 @@ describe('ProductionApplicationRuntime', () => {
       history: test.history.list,
       health: test.runtime,
       coordinator: test.coordinator,
+      audit: test.audit,
       publishEvent,
     });
     expect(test.ipc.register).toHaveBeenCalledTimes(1);

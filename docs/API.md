@@ -1,5 +1,12 @@
 # API
 
+## Test-run corpus IPC
+
+- `test-run:gather` accepts canonical absolute source and destination paths plus `fileCount: 15000`. It stages beside the destination, publishes `test-run:progress` scan/copy events, and returns the private temporary source path plus scanned and copied counts.
+- `test-run:discard` accepts only a corpus source path owned by META Mover's temporary root. Arbitrary paths are rejected.
+- `test-run:cancel` stops further scan or copy admission. An incomplete app-owned corpus is removed before cancellation returns.
+- Existing `META-Mover-Test-Run-*` directories are excluded from sampling. The renderer previews and processes only the returned copied corpus.
+
 The renderer has no generic IPC function. `src/preload/index.ts` exposes these named methods on `window.electronAPI`:
 
 | Method                                                  | Purpose                                       |
@@ -30,16 +37,19 @@ interface PreviewRequestDTO {
     operation: 'copy' | 'move';
     conflictPolicy: 'skip' | 'rename';
     folderStructure: 'year/month' | 'year-month' | 'flat';
+    appendScreenshotSuffix: boolean;
     workerCount: number;
     verifyIntegrity: true;
-    writeMetadataDates: false;
+    writeMetadataDates: boolean;
   };
 }
 ```
 
-`writeMetadataDates` is a compatibility field fixed to `false`. Any other value is rejected.
+`writeMetadataDates` defaults to `false`. When enabled, a successful approved copy or move with a resolved date removes writable destination date/time tags, writes the selected date to standard image, video-container, track, media, and filesystem fields, and preserves non-date metadata. It never writes the source or an unresolved file. ExifTool rewrites the committed destination, so this optional post-processing step is size-dependent.
 
 The preview result includes `jobId`, `previewId`, timestamps, effective options, summary counts, and rows. Each row includes source, proposed target, operation, conflict action, fingerprint, date evidence, confidence, and warnings.
+
+Date resolution ranks valid embedded creation metadata first and bounded filename timestamps second. Filesystem modification, access, inode-change, metadata-modification, and profile dates are never accepted as creation truth. Filesystem birth time may be retained as low-confidence provenance for review, but it cannot resolve a file by itself. Conflicting claims and files with no valid creation claim remain unresolved or ambiguous and keep their original basename under `_Needs Review`.
 
 ## Start and cancel
 

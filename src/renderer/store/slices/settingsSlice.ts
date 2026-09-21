@@ -9,7 +9,7 @@ interface ProcessingSettings {
 
 interface OrganizationSettings {
   dateFormat: string;
-  folderStructure: 'year/month' | 'year-month' | 'flat';
+  folderStructure: 'year/month' | 'year' | 'year-month' | 'flat';
   conflictResolution: 'skip' | 'rename' | 'overwrite';
 }
 

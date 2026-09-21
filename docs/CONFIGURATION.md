@@ -11,7 +11,8 @@ META Mover stores schema-3 JSON under Electron's `userData` directory. The app r
   "processing": {
     "workerCount": 4,
     "operation": "copy",
-    "verifyIntegrity": true
+    "verifyIntegrity": true,
+    "testMode": false
   },
   "organization": {
     "folderStructure": "year/month",
@@ -27,11 +28,16 @@ META Mover stores schema-3 JSON under Electron's `userData` directory. The app r
 | `processing.workerCount`              | integer 1 through 10               | `4`          |
 | `processing.operation`                | `copy`, `move`                     | `copy`       |
 | `processing.verifyIntegrity`          | `true` only                        | `true`       |
-| `organization.folderStructure`        | `year/month`, `year-month`, `flat` | `year/month` |
+| `processing.testMode`                 | `true`, `false`                    | `false`      |
+| `organization.folderStructure`        | `year/month`, `year`, `year-month`, `flat` | `year/month` |
+
+The folder structure applies beneath a fixed top-level media-type folder: `Photos` (images and raw), `Videos`, `Audio`, `Documents`, `Art`. Choose `year/month` to create month subfolders or `year` to place all resolved assets directly in the year folder. `_Needs Review` also lives inside the type folder.
 | `organization.conflictPolicy`         | `skip`, `rename`                   | `rename`     |
 | `organization.appendScreenshotSuffix` | `true`, `false`                    | `false`      |
 
 Window bounds may contain width, height, x, and y within validated limits.
+
+When `processing.testMode` is enabled, the Organize view replaces normal preview with a test-run action. It copies exactly 15,000 random files into META Mover's private temporary root, then previews and processes only that corpus.
 
 Unknown keys fail validation. Schema-2 configuration is migrated once to schema 3. The retired corruption option is dropped only during that legacy read and is rejected in current updates.
 

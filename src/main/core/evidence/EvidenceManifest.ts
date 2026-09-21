@@ -12,6 +12,7 @@ export type EvidenceEventKind =
   | 'candidate-observed'
   | 'resolution-decided'
   | 'operation-planned'
+  | 'preview-sealed'
   | 'operation-committed'
   | 'operation-skipped'
   | 'operation-failed'
@@ -46,6 +47,22 @@ export interface ManifestVerification {
   reason?: string;
 }
 
+export interface ManifestVerificationProgress {
+  bytesRead: number;
+  totalBytes: number;
+  eventCount: number;
+}
+
+export interface ManifestVerificationOptions {
+  /** Aborts verification; rejects with an AbortError, including mid-read. */
+  signal?: AbortSignal;
+  /**
+   * Receives bounded, monotonic byte progress. Reports are throttled to at
+   * most one per 250 ms plus one initial and one exact final report.
+   */
+  onProgress?: (progress: ManifestVerificationProgress) => void | Promise<void>;
+}
+
 export type EvidenceManifestErrorCode =
   | 'INVALID_INPUT'
   | 'UNSAFE_DIRECTORY'
@@ -75,6 +92,7 @@ interface CloseResult {
 const GENESIS_HASH = '0'.repeat(64);
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_EVENT_BYTES = 16 * 1024 * 1024;
+const MAX_BATCH_EVENTS = 256;
 const READ_CHUNK_BYTES = 64 * 1024;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -96,6 +114,7 @@ const EVENT_KINDS = new Set<EvidenceEventKind>([
   'candidate-observed',
   'resolution-decided',
   'operation-planned',
+  'preview-sealed',
   'operation-committed',
   'operation-skipped',
   'operation-failed',
@@ -392,6 +411,36 @@ export class EvidenceManifest {
     return this.enqueue(() => this.writeEvent(kind, payloadSnapshot));
   }
 
+  appendBatch(
+    records: readonly Readonly<{ kind: EvidenceEventKind; payload: unknown }>[]
+  ): Promise<readonly EvidenceEvent[]> {
+    if (this.closed || this.closePromise) {
+      return Promise.reject(
+        new EvidenceManifestError('MANIFEST_CLOSED', 'Manifest is closed or closing')
+      );
+    }
+    if (records.length === 0 || records.length > MAX_BATCH_EVENTS) {
+      return Promise.reject(
+        new EvidenceManifestError(
+          'INVALID_INPUT',
+          `Evidence batch must contain between 1 and ${MAX_BATCH_EVENTS} events`
+        )
+      );
+    }
+    let snapshots: Array<{ kind: EvidenceEventKind; payload: CanonicalJsonValue }>;
+    try {
+      snapshots = records.map(({ kind, payload }) => {
+        if (!EVENT_KINDS.has(kind) || kind === 'job-closed') {
+          throw new EvidenceManifestError('INVALID_INPUT', 'Use close() to close a manifest');
+        }
+        return { kind, payload: canonicalize(payload) };
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.enqueue(() => this.writeBatch(snapshots));
+  }
+
   close(payload: unknown): Promise<CloseResult> {
     if (this.closePromise) return this.closePromise;
     if (this.closed) {
@@ -443,28 +492,45 @@ export class EvidenceManifest {
     kind: EvidenceEventKind,
     payload: CanonicalJsonValue
   ): Promise<EvidenceEvent> {
+    return (await this.writeBatch([{ kind, payload }]))[0];
+  }
+
+  private async writeBatch(
+    records: readonly Readonly<{ kind: EvidenceEventKind; payload: CanonicalJsonValue }>[]
+  ): Promise<readonly EvidenceEvent[]> {
     await this.assertIdentity();
-    const unsigned: Omit<EvidenceEvent, 'eventHash'> = {
-      schemaVersion: 'meta-mover-evidence/1',
-      policyVersion: this.policyVersion,
-      jobId: this.jobId,
-      sequence: this.sequence + 1,
-      emittedAt: new Date().toISOString(),
-      previousHash: this.previousHash,
-      kind,
-      payload,
-    };
-    const event = deepFreeze({ ...unsigned, eventHash: calculateEventHash(unsigned) });
-    const line = canonicalJson(event);
-    if (Buffer.byteLength(line, 'utf8') > MAX_EVENT_BYTES) {
-      throw new EvidenceManifestError('INVALID_INPUT', 'Evidence event exceeds the size limit');
-    }
-    await this.handle.writeFile(`${line}\n`, 'utf8');
+    let sequence = this.sequence;
+    let previousHash = this.previousHash;
+    const events = records.map(({ kind, payload }) => {
+      const unsigned: Omit<EvidenceEvent, 'eventHash'> = {
+        schemaVersion: 'meta-mover-evidence/1',
+        policyVersion: this.policyVersion,
+        jobId: this.jobId,
+        sequence: sequence + 1,
+        emittedAt: new Date().toISOString(),
+        previousHash,
+        kind,
+        payload,
+      };
+      const event = deepFreeze({ ...unsigned, eventHash: calculateEventHash(unsigned) });
+      const line = canonicalJson(event);
+      if (Buffer.byteLength(line, 'utf8') > MAX_EVENT_BYTES) {
+        throw new EvidenceManifestError('INVALID_INPUT', 'Evidence event exceeds the size limit');
+      }
+      sequence = event.sequence;
+      previousHash = event.eventHash;
+      return { event, line };
+    });
+    await this.handle.writeFile(`${events.map(({ line }) => line).join('\n')}\n`, 'utf8');
     await this.handle.sync();
     await this.assertIdentity();
-    this.sequence = event.sequence;
-    this.previousHash = event.eventHash;
-    return event;
+    const final = events.at(-1);
+    if (final === undefined) {
+      throw new EvidenceManifestError('INVALID_INPUT', 'Evidence batch must not be empty');
+    }
+    this.sequence = final.event.sequence;
+    this.previousHash = final.event.eventHash;
+    return events.map(({ event }) => event);
   }
 
   private async assertIdentity(): Promise<void> {
@@ -502,10 +568,29 @@ export class EvidenceManifest {
     }
   }
 
-  static async verify(manifestPath: string): Promise<ManifestVerification> {
+  static verify(
+    manifestPath: string,
+    options?: ManifestVerificationOptions
+  ): Promise<ManifestVerification> {
+    return this.verifyEnding(manifestPath, 'job-closed', options);
+  }
+
+  static verifyPreviewSnapshot(
+    manifestPath: string,
+    options?: ManifestVerificationOptions
+  ): Promise<ManifestVerification> {
+    return this.verifyEnding(manifestPath, 'preview-sealed', options);
+  }
+
+  private static async verifyEnding(
+    manifestPath: string,
+    requiredEnding: 'job-closed' | 'preview-sealed',
+    options?: ManifestVerificationOptions
+  ): Promise<ManifestVerification> {
     let verifiedEvents = 0;
     let handle: FileHandle | undefined;
     try {
+      options?.signal?.throwIfAborted();
       const normalizedPath = requireAbsolutePath(manifestPath);
       const directoryPath = path.dirname(normalizedPath);
       const directoryIdentity = await validatePrivateDirectory(directoryPath);
@@ -612,6 +697,21 @@ export class EvidenceManifest {
         return undefined;
       };
 
+      const signal = options?.signal;
+      const totalBytes = held.size;
+      let lastReportAtMs = Number.NaN;
+      const report = async (bytesRead: number, force = false): Promise<void> => {
+        signal?.throwIfAborted();
+        if (force || Number.isNaN(lastReportAtMs) || Date.now() - lastReportAtMs >= 250) {
+          lastReportAtMs = Date.now();
+          // Awaiting the callback yields to timers even when it returns void,
+          // so abort deadlines can interrupt an otherwise CPU-bound pass.
+          await options?.onProgress?.({ bytesRead, totalBytes, eventCount: verifiedEvents });
+        }
+        signal?.throwIfAborted();
+      };
+      await report(0, true);
+
       const readBuffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
       let position = 0;
       let pending: Buffer[] = [];
@@ -619,6 +719,7 @@ export class EvidenceManifest {
       while (position < held.size) {
         const requested = Math.min(READ_CHUNK_BYTES, held.size - position);
         const { bytesRead } = await handle.read(readBuffer, 0, requested, position);
+        signal?.throwIfAborted();
         if (bytesRead === 0) break;
         position += bytesRead;
         let cursor = 0;
@@ -641,6 +742,7 @@ export class EvidenceManifest {
           pendingBytes = 0;
           cursor = newline + 1;
         }
+        await report(position);
       }
       if (position !== held.size || pendingBytes !== 0) {
         return invalidVerification(
@@ -673,11 +775,20 @@ export class EvidenceManifest {
       ) {
         return invalidVerification(verifiedEvents, 'Manifest identity changed during verification');
       }
-      if (lastKind !== 'job-closed') {
-        return invalidVerification(verifiedEvents, 'Manifest is not closed');
+      if (lastKind !== requiredEnding) {
+        return invalidVerification(
+          verifiedEvents,
+          requiredEnding === 'job-closed'
+            ? 'Manifest is not closed'
+            : 'Preview snapshot is not sealed'
+        );
       }
+      await report(position, true);
       return { valid: true, eventCount: verifiedEvents, finalHash: previousHash };
     } catch (error) {
+      // Cancellation must surface as a rejection, not as invalid evidence.
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (options?.signal?.aborted) options.signal.throwIfAborted();
       return invalidVerification(
         verifiedEvents,
         error instanceof Error ? error.message : 'Manifest cannot be verified'

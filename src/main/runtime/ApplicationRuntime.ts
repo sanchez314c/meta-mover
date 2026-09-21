@@ -12,7 +12,9 @@ import type {
   HistoryListPort,
   ProcessingCoordinatorPort,
   RuntimeHealthPort,
+  NormalizationAuditIpcPort,
 } from '../services/ProcessingIPCController';
+import type { NormalizationAuthorizationPort } from '../services/TransactionalOperationExecutor';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -32,6 +34,11 @@ export interface ApplicationHistoryPort {
 /** Owns all per-job evidence manifests created during the process lifetime. */
 export interface ApplicationEvidencePort extends CoordinatorHistoryPort {
   shutdown(): Promise<void>;
+}
+export interface ApplicationAuditPort
+  extends NormalizationAuditIpcPort,
+    NormalizationAuthorizationPort {
+  close(): Promise<void>;
 }
 
 /** Owns the packaged one-shot metadata reader. */
@@ -59,6 +66,7 @@ export interface ApplicationRuntimeComponents {
   config: ApplicationConfigPort;
   history: ApplicationHistoryPort;
   evidence: ApplicationEvidencePort;
+  audit: ApplicationAuditPort;
   runtime: ApplicationRuntimeHealthPort;
   metadata: ApplicationMetadataPort;
   planner: PreviewPlannerPort;
@@ -72,6 +80,7 @@ export interface ApplicationRuntimeFactories {
   openConfig(): Promise<ApplicationConfigPort>;
   openHistory(): Promise<ApplicationHistoryPort>;
   openEvidence(): Promise<ApplicationEvidencePort>;
+  openAudit(): Promise<ApplicationAuditPort>;
   verifyRuntime(): Promise<ApplicationRuntimeHealthPort>;
   openMetadata(context: {
     runtime: ApplicationRuntimeHealthPort;
@@ -80,7 +89,7 @@ export interface ApplicationRuntimeFactories {
   createRevalidator(context: {
     runtime: ApplicationRuntimeHealthPort;
   }): MaybePromise<PreviewRevalidatorPort>;
-  openTransaction(): Promise<ApplicationTransactionPort>;
+  openTransaction(context: { audit: ApplicationAuditPort }): Promise<ApplicationTransactionPort>;
   createCoordinator(context: {
     config: ApplicationConfigPort;
     history: CoordinatorHistoryPort;
@@ -94,6 +103,7 @@ export interface ApplicationRuntimeFactories {
     history: HistoryListPort;
     runtime: ApplicationRuntimeHealthPort;
     coordinator: ApplicationCoordinatorPort;
+    audit: ApplicationAuditPort;
   }): MaybePromise<ApplicationIpcPort>;
 }
 
@@ -114,8 +124,8 @@ export class CoordinatorHistoryFanoutError extends Error {
   ) {
     super(
       `Coordinator persistence ${operation} failed at: ${failures
-        .map((failure) => failure.sink)
-        .join(', ')}`
+        .map((failure) => `${failure.sink}: ${errorMessage(failure.error)}`)
+        .join('; ')}`
     );
     this.name = 'CoordinatorHistoryFanoutError';
   }
@@ -240,13 +250,16 @@ export class ApplicationRuntime {
       const evidence = await factories.openEvidence();
       cleanup.push({ name: 'evidence', order: 40, run: () => evidence.shutdown() });
 
+      const audit = await factories.openAudit();
+      cleanup.push({ name: 'audit', order: 35, run: () => audit.close() });
+
       const runtime = await factories.verifyRuntime();
       const metadata = await factories.openMetadata({ runtime });
       cleanup.push({ name: 'metadata', order: 50, run: () => metadata.close() });
 
       const planner = await factories.createPlanner({ metadata });
       const revalidator = await factories.createRevalidator({ runtime });
-      const transaction = await factories.openTransaction();
+      const transaction = await factories.openTransaction({ audit });
       cleanup.push({ name: 'transaction', order: 30, run: () => transaction.close() });
 
       const coordinatorHistory = composeCoordinatorHistory(history.coordinator, evidence);
@@ -265,6 +278,7 @@ export class ApplicationRuntime {
         history: history.list,
         runtime,
         coordinator,
+        audit,
       });
       cleanup.push({ name: 'ipc', order: 10, run: () => ipc.dispose() });
 
@@ -274,6 +288,7 @@ export class ApplicationRuntime {
           config,
           history,
           evidence,
+          audit,
           runtime,
           metadata,
           planner,

@@ -23,6 +23,7 @@ export type ConflictPolicy = (typeof ConflictPolicy)[keyof typeof ConflictPolicy
 
 export const FolderStructure = {
   YEAR_MONTH: 'year/month',
+  YEAR: 'year',
   YEAR_MONTH_FLAT: 'year-month',
   FLAT: 'flat',
 } as const;
@@ -304,6 +305,19 @@ export type JobStartedEvent = ProcessingEventBase<
   { phase: ProcessingPhase }
 >;
 
+/**
+ * Progress of durable authorization work (evidence verification, audit index
+ * construction) that precedes a file transaction. Reported through job
+ * progress so long preparation phases remain visible and cancellable.
+ */
+export interface AuditPreparationProgressDTO {
+  /** Human-readable stage, e.g. "Verifying preview evidence". */
+  stage: string;
+  completed: number;
+  total?: number;
+  unit: 'bytes' | 'records';
+}
+
 export type JobProgressEvent = ProcessingEventBase<
   typeof ProcessingEventKind.JOB_PROGRESS,
   {
@@ -312,6 +326,15 @@ export type JobProgressEvent = ProcessingEventBase<
     totalFiles: number;
     percentage: number;
     currentFile?: string;
+    /** Committed payload bytes, independent of skipped or failed files. */
+    bytesProcessed?: number;
+    totalBytes?: number;
+    /** Average committed bytes per second since processing started. */
+    throughput?: number;
+    /** Estimated seconds remaining; omitted until throughput is measurable. */
+    eta?: number;
+    /** Present while authorization evidence is being prepared for the current file. */
+    preparation?: AuditPreparationProgressDTO;
   }
 >;
 

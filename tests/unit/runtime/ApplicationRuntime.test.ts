@@ -85,6 +85,18 @@ function factories(
       if (options.failCleanupAt?.includes('evidence')) throw new Error('evidence shutdown failed');
     },
   };
+  const audit = {
+    summary: jest.fn(),
+    cohorts: jest.fn(),
+    sample: jest.fn(),
+    rows: jest.fn(),
+    decision: jest.fn(),
+    approve: jest.fn(),
+    dryRun: jest.fn(),
+    close: async () => {
+      events.push('audit.close');
+    },
+  };
   const runtime = {
     getHealth: async () => ({ ready: true }),
     check: async () => ({ ready: true, reasons: [] }),
@@ -156,6 +168,10 @@ function factories(
       events.push('evidence.open');
       return evidence;
     },
+    openAudit: async () => {
+      events.push('audit.open');
+      return audit;
+    },
     verifyRuntime: async () => {
       events.push('runtime.verify');
       if (options.failAt === 'runtime') throw new Error('runtime verification failed');
@@ -203,9 +219,14 @@ function factories(
       events.push('coordinator.create');
       return coordinator;
     },
-    createIpc: ({ coordinator: receivedCoordinator, history: receivedHistory }) => {
+    createIpc: ({
+      coordinator: receivedCoordinator,
+      history: receivedHistory,
+      audit: receivedAudit,
+    }) => {
       expect(receivedCoordinator).toBe(coordinator);
       expect(receivedHistory).toBe(historyAdapter);
+      expect(receivedAudit).toBe(audit);
       events.push('ipc.create');
       return ipc;
     },
@@ -223,6 +244,7 @@ describe('ApplicationRuntime', () => {
       'config.open',
       'history.open',
       'evidence.open',
+      'audit.open',
       'runtime.verify',
       'metadata.open',
       'planner.create',
@@ -317,6 +339,9 @@ describe('ApplicationRuntime', () => {
       { sink: 'history', error: historyError },
       { sink: 'evidence', error: evidenceError },
     ]);
+    expect((cause as CoordinatorHistoryFanoutError).message).toBe(
+      'Coordinator persistence recordPreview failed at: history: history preview failed; evidence: evidence preview failed'
+    );
   });
 
   it('closes each acquired resource when a middle factory fails', async () => {
@@ -325,7 +350,8 @@ describe('ApplicationRuntime', () => {
     await expect(
       ApplicationRuntime.create(factories(events, { failAt: 'planner' }))
     ).rejects.toBeInstanceOf(ApplicationRuntimeStartupError);
-    expect(events.slice(-4)).toEqual([
+    expect(events.slice(-5)).toEqual([
+      'audit.close',
       'evidence.shutdown',
       'metadata.close',
       'history.close',
@@ -339,10 +365,11 @@ describe('ApplicationRuntime', () => {
     await expect(
       ApplicationRuntime.create(factories(events, { failAt: 'ipc-register' }))
     ).rejects.toBeInstanceOf(ApplicationRuntimeStartupError);
-    expect(events.slice(-7)).toEqual([
+    expect(events.slice(-8)).toEqual([
       'ipc.dispose',
       'coordinator.shutdown',
       'transaction.close',
+      'audit.close',
       'evidence.shutdown',
       'metadata.close',
       'history.close',
@@ -382,6 +409,7 @@ describe('ApplicationRuntime', () => {
       'ipc.dispose',
       'coordinator.shutdown',
       'transaction.close',
+      'audit.close',
       'evidence.shutdown',
       'metadata.close',
       'history.close',

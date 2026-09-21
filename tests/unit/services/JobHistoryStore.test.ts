@@ -313,7 +313,22 @@ describe('JobHistoryStore', () => {
     await expect(
       store.appendEvent(
         job.jobId,
-        event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 4, {
+        event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 5, {
+          phase: 'metadata',
+          filesProcessed: 1,
+          totalFiles: 2,
+          percentage: 50,
+          bytesProcessed: 21,
+          totalBytes: 42,
+          throughput: 210,
+          eta: 0.1,
+        })
+      )
+    ).resolves.toMatchObject({ lastSequence: 5 });
+    await expect(
+      store.appendEvent(
+        job.jobId,
+        event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 5, {
           phase: 'metadata',
           filesProcessed: 1,
           totalFiles: 2,
@@ -324,7 +339,7 @@ describe('JobHistoryStore', () => {
 
     await store.appendEvent(
       job.jobId,
-      event(job.jobId, ProcessingEventKind.JOB_COMPLETED, 5, {
+      event(job.jobId, ProcessingEventKind.JOB_COMPLETED, 6, {
         statistics: {
           totalFiles: 2,
           processedFiles: 2,
@@ -339,14 +354,14 @@ describe('JobHistoryStore', () => {
     await expect(
       store.appendEvent(
         job.jobId,
-        event(job.jobId, ProcessingEventKind.JOB_FAILED, 6, {
+        event(job.jobId, ProcessingEventKind.JOB_FAILED, 7, {
           error: { code: 'LATE', message: 'too late', recoverable: false },
         })
       )
     ).rejects.toMatchObject({ code: 'EVENT_REJECTED', reason: 'already-terminal' });
 
     const persisted = (await fs.readFile(historyPath, 'utf8')).trim().split('\n');
-    expect(persisted).toHaveLength(4);
+    expect(persisted).toHaveLength(5);
     expect((await store.getJob(job.jobId))?.status).toBe('completed');
   });
 

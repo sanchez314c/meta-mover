@@ -86,6 +86,62 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('ProcessingCoordinator preview contract', () => {
+  it('bounds renderer preview rows while retaining the complete executable plan', async () => {
+    const plannedOperations = operations(750);
+    const rows = plannedOperations.map((operation) => ({
+      sourcePath: operation.sourcePath,
+      targetPath: operation.targetPath,
+      operation: OperationMode.COPY,
+      conflictPolicy: 'rename' as const,
+      dateEvidence: {
+        value: '2020-01-01T00:00:00Z',
+        source: 'embedded' as const,
+        confidence: 1,
+        warnings: [],
+      },
+      fingerprint: {
+        size: operation.bytes,
+        modifiedAt: '2020-01-01T00:00:00.000Z',
+      },
+      warnings: [],
+    }));
+    const execute = jest.fn(async (operation: Readonly<PlannedOperation>) => ({
+      operationId: operation.id,
+      outcome: 'committed' as const,
+      bytes: operation.bytes,
+    }));
+    const recordPreview = jest.fn(async () => undefined);
+    const coordinator = new ProcessingCoordinator({
+      planner: {
+        plan: jest.fn(async () => ({
+          operations: plannedOperations,
+          rows,
+          summary: summaryFor(plannedOperations),
+        })),
+      },
+      revalidator: matchingRevalidator,
+      executor: { execute },
+      history: { recordPreview },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 4,
+    });
+
+    const preview = await coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+    });
+    expect(preview.rows).toHaveLength(500);
+    expect(preview.summary.totalFiles).toBe(750);
+    expect(recordPreview.mock.calls[0][0].rows).toHaveLength(750);
+
+    const accepted = await coordinator.startProcessing({
+      previewId: preview.previewId,
+      acknowledgeDestructiveOperation: false,
+    });
+    await coordinator.waitForTerminal(accepted.jobId);
+    expect(execute).toHaveBeenCalledTimes(750);
+  });
+
   it('publishes validated planner progress in sequence before preview-ready', async () => {
     const plannedOperations = operations(2);
     const coordinator = new ProcessingCoordinator({
@@ -564,7 +620,6 @@ describe('ProcessingCoordinator preview contract', () => {
   });
 
   it.each([
-    ['metadata writeback', { writeMetadataDates: true }],
     ['disabled integrity verification', { verifyIntegrity: false }],
     ['retired corruption detection false', { corruptionDetection: false } as never],
     ['retired corruption detection true', { corruptionDetection: true } as never],
@@ -586,6 +641,37 @@ describe('ProcessingCoordinator preview contract', () => {
         options,
       })
     ).rejects.toMatchObject({ code: CoordinatorErrorCode.INVALID_CONFIGURATION });
+  });
+
+  it('accepts opt-in metadata date normalization and passes it to execution', async () => {
+    const execute = jest.fn(async (operation: PlannedOperation) => ({
+      operationId: operation.id,
+      outcome: 'committed' as const,
+      bytes: operation.bytes,
+    }));
+    const coordinator = new ProcessingCoordinator({
+      planner: plannerFor([operations(1)[0]]),
+      revalidator: matchingRevalidator,
+      executor: { execute },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const preview = await coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+      options: { writeMetadataDates: true },
+    });
+
+    await coordinator.startProcessing({
+      previewId: preview.previewId,
+      acknowledgeDestructiveOperation: false,
+    });
+    await coordinator.waitForTerminal(preview.jobId);
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ writeMetadataDates: true })
+    );
   });
 
   it.each([false, true, undefined])(
@@ -673,6 +759,12 @@ describe('ProcessingCoordinator preview contract', () => {
     expect(isSerializableProcessingValue(preview)).toBe(true);
 
     now += 1_000;
+    await expect(
+      coordinator.startProcessing({
+        previewId: preview.previewId,
+        acknowledgeDestructiveOperation: false,
+      })
+    ).rejects.toMatchObject({ code: CoordinatorErrorCode.PREVIEW_EXPIRED });
     await expect(
       coordinator.startProcessing({
         previewId: preview.previewId,
@@ -1502,6 +1594,48 @@ describe('ProcessingCoordinator execution contract', () => {
     expect(events.every(isSerializableProcessingValue)).toBe(true);
   });
 
+  it('reports byte throughput live while persisting only bounded progress checkpoints', async () => {
+    const plannedOperations = operations(12);
+    const recordEvent = jest.fn();
+    const coordinator = new ProcessingCoordinator({
+      planner: plannerFor(plannedOperations),
+      revalidator: matchingRevalidator,
+      executor: successfulExecutor,
+      history: { recordEvent },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const liveEvents: ProcessingEvent[] = [];
+    coordinator.subscribe((event) => liveEvents.push(event));
+    const preview = await coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+    });
+    const accepted = await coordinator.startProcessing({
+      previewId: preview.previewId,
+      acknowledgeDestructiveOperation: false,
+    });
+    await coordinator.waitForTerminal(accepted.jobId);
+
+    const liveProgress = liveEvents.filter(
+      (event): event is Extract<ProcessingEvent, { kind: 'job-progress' }> =>
+        event.kind === ProcessingEventKind.JOB_PROGRESS
+    );
+    const persistedProgress = recordEvent.mock.calls
+      .map(([event]) => event as ProcessingEvent)
+      .filter((event) => event.kind === ProcessingEventKind.JOB_PROGRESS);
+
+    expect(liveProgress).toHaveLength(12);
+    expect(persistedProgress.length).toBeLessThan(liveProgress.length);
+    expect(persistedProgress.at(-1)?.sequence).toBe(liveProgress.at(-1)?.sequence);
+    expect(liveProgress.at(-1)?.payload).toMatchObject({
+      bytesProcessed: 780,
+      totalBytes: 780,
+      throughput: expect.any(Number),
+      eta: 0,
+    });
+  });
+
   it('cancels cooperatively, stops new admission, and emits exactly one terminal event', async () => {
     const plannedOperations = operations(6);
     let admitted = 0;
@@ -1564,10 +1698,13 @@ describe('ProcessingCoordinator execution contract', () => {
 
   it('persists a nonempty failed-operation error before publishing a cancellation terminal', async () => {
     const recordLedgerEntry = jest.fn();
-    let coordinator!: ProcessingCoordinator;
+    const coordinatorRef: { current?: ProcessingCoordinator } = {};
     const executor: OperationExecutorPort = {
       execute: jest.fn(async (operation, context) => {
-        await coordinator.cancelProcessing(context.jobId, 'cancel after failed operation');
+        await coordinatorRef.current!.cancelProcessing(
+          context.jobId,
+          'cancel after failed operation'
+        );
         return {
           operationId: operation.id,
           outcome: 'failed' as const,
@@ -1575,7 +1712,7 @@ describe('ProcessingCoordinator execution contract', () => {
         };
       }),
     };
-    coordinator = new ProcessingCoordinator({
+    const coordinator = new ProcessingCoordinator({
       planner: plannerFor(operations(2)),
       revalidator: matchingRevalidator,
       executor,
@@ -1583,6 +1720,7 @@ describe('ProcessingCoordinator execution contract', () => {
       previewTtlMs: 60_000,
       maxWorkerConcurrency: 1,
     });
+    coordinatorRef.current = coordinator;
     const preview = await coordinator.createPreview({
       sourcePaths: ['/source'],
       destinationPath: '/destination',
@@ -2616,5 +2754,79 @@ describe('ProcessingCoordinator execution contract', () => {
     ]);
     expect(result).not.toBe('timeout');
     expect(result).toMatchObject({ code: CoordinatorErrorCode.HISTORY_PERSISTENCE_FAILED });
+  });
+});
+
+describe('ProcessingCoordinator audit preparation progress', () => {
+  it('surfaces authorization stage progress as ephemeral job progress', async () => {
+    const plannedOperations = operations(2);
+    const recordEvent = jest.fn(async () => undefined);
+    const executor: OperationExecutorPort = {
+      execute: jest.fn(async (operation, context) => {
+        if (operation.id === 'operation-0') {
+          await context.reportStageProgress?.({
+            stage: 'Verifying preview evidence',
+            completed: 5,
+            total: 10,
+            unit: 'records',
+          });
+          // A second report inside the throttle window must not publish again.
+          await context.reportStageProgress?.({
+            stage: 'Verifying preview evidence',
+            completed: 10,
+            total: 10,
+            unit: 'records',
+          });
+        }
+        return { operationId: operation.id, outcome: 'committed' as const, bytes: operation.bytes };
+      }),
+    };
+    const coordinator = new ProcessingCoordinator({
+      planner: plannerFor(plannedOperations),
+      revalidator: matchingRevalidator,
+      executor,
+      history: { recordEvent },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const events: ProcessingEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+
+    const preview = await coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+    });
+    const accepted = await coordinator.startProcessing({
+      previewId: preview.previewId,
+      acknowledgeDestructiveOperation: false,
+    });
+    const terminal = await coordinator.waitForTerminal(accepted.jobId);
+    expect(terminal.kind).toBe(ProcessingEventKind.JOB_COMPLETED);
+
+    const stageEvents = events.filter(
+      (event) =>
+        event.kind === ProcessingEventKind.JOB_PROGRESS &&
+        (event.payload as { preparation?: unknown }).preparation !== undefined
+    );
+    expect(stageEvents).toHaveLength(1);
+    expect(stageEvents[0].payload).toMatchObject({
+      phase: 'organization',
+      filesProcessed: 0,
+      totalFiles: 2,
+      percentage: 0,
+      preparation: {
+        stage: 'Verifying preview evidence',
+        completed: 5,
+        total: 10,
+        unit: 'records',
+      },
+    });
+    expect(
+      recordEvent.mock.calls.some(
+        ([event]) =>
+          event.kind === ProcessingEventKind.JOB_PROGRESS &&
+          (event.payload as { preparation?: unknown }).preparation !== undefined
+      )
+    ).toBe(false);
   });
 });

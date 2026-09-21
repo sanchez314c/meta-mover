@@ -6,6 +6,7 @@ import {
   ValidatedProcessingRoots,
 } from '../security/ProcessingRoots';
 import {
+  AuditPreparationProgressDTO,
   ConflictPolicy,
   CancellationFileState,
   FolderStructure,
@@ -87,6 +88,8 @@ export interface PreviewAuditRecord {
 export interface PreparedPreview {
   result: Readonly<PreviewResultDTO>;
   operations: readonly Readonly<PlannedOperation>[];
+  /** Complete private rows; renderer transport remains bounded. */
+  allRows?: readonly Readonly<PreviewRowDTO>[];
   audit: Readonly<PreviewAuditRecord>;
 }
 
@@ -126,7 +129,14 @@ export interface OperationExecutionContext {
   jobId: string;
   previewId: string;
   mode: ProcessingOptionsDTO['operation'];
+  writeMetadataDates: boolean;
   signal: AbortSignal;
+  /**
+   * Optional channel for durable authorization work (evidence verification,
+   * audit index construction) that precedes a file transaction. Executors
+   * forward it so long preparation phases stay visible and cancellable.
+   */
+  reportStageProgress?: (progress: Readonly<AuditPreparationProgressDTO>) => Promise<void> | void;
 }
 
 export interface OperationExecutorPort {
@@ -244,6 +254,13 @@ interface ActiveJob extends EventContext {
   readonly controller: AbortController;
   readonly ledger: OperationLedgerEntry[];
   readonly startedAtMs: number;
+  readonly totalBytes: number;
+  processedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
+  processedBytes: number;
+  settledFiles: number;
+  lastProgressPersistedAtMs?: number;
   readonly terminalPromise: Promise<TerminalProcessingEvent>;
   readonly resolveTerminal: (event: TerminalProcessingEvent) => void;
   readonly rejectTerminal: (error: unknown) => void;
@@ -268,6 +285,13 @@ const BUILTIN_DEFAULT_OPTIONS: ProcessingOptionsDTO = {
   verifyIntegrity: true,
   writeMetadataDates: false,
 };
+
+const PROGRESS_PERSIST_INTERVAL_MS = 1_000;
+const MAX_PUBLIC_PREVIEW_ROWS = 500;
+
+function operationBindingKey(sourcePath: string, targetPath: string, bytes: number): string {
+  return `${sourcePath.length}:${sourcePath}${targetPath.length}:${targetPath}${bytes}`;
+}
 
 function publicPreviewRow(row: PreviewRowDTO): PreviewRowDTO {
   return {
@@ -566,44 +590,47 @@ export class ProcessingCoordinator {
         request: normalizedRequest,
         effectiveOptions: { ...effectiveOptions },
         summary: { ...plan.summary },
-        ...(plan.rows === undefined ? {} : { rows: plan.rows.map(publicPreviewRow) }),
+        ...(plan.rows === undefined
+          ? {}
+          : { rows: plan.rows.slice(0, MAX_PUBLIC_PREVIEW_ROWS).map(publicPreviewRow) }),
       };
-      const prepared = freezeDeep(
-        snapshotSerializable<PreparedPreview>(
-          {
-            result,
-            operations: plan.operations.map((operation) => ({ ...operation })),
-            audit: {
-              jobId,
-              previewId,
-              decisionRecords: (plan.decisionRecords ?? []).map((record) => ({ ...record })),
-              operationRecords: plan.operations.flatMap((operation, operationIndex) => {
-                const decision = plan.decisionRecords?.find((record) => {
-                  const row = plan.rows?.[record.rowIndex];
-                  return (
-                    record.sourcePath === operation.sourcePath &&
-                    row?.targetPath === operation.targetPath &&
-                    row.fingerprint.size === operation.bytes
-                  );
-                });
-                return decision === undefined
-                  ? []
-                  : [
-                      {
-                        operationIndex,
-                        operationId: operation.id,
-                        sourcePath: operation.sourcePath,
-                        targetPath: operation.targetPath,
-                        bytes: operation.bytes,
-                        decisionRowIndex: decision.rowIndex,
-                      },
-                    ];
-              }),
-            },
-          },
-          'preview plan'
-        )
-      );
+      const decisionByOperation = new Map<string, PreviewDecisionRecord>();
+      for (const record of plan.decisionRecords ?? []) {
+        const row = plan.rows?.[record.rowIndex];
+        if (row?.targetPath !== null && row?.targetPath !== undefined) {
+          decisionByOperation.set(
+            operationBindingKey(record.sourcePath, row.targetPath, row.fingerprint.size),
+            record
+          );
+        }
+      }
+      const prepared = freezeDeep<PreparedPreview>({
+        result,
+        operations: plan.operations,
+        ...(plan.rows === undefined ? {} : { allRows: plan.rows }),
+        audit: {
+          jobId,
+          previewId,
+          decisionRecords: plan.decisionRecords === undefined ? [] : [...plan.decisionRecords],
+          operationRecords: plan.operations.flatMap((operation, operationIndex) => {
+            const decision = decisionByOperation.get(
+              operationBindingKey(operation.sourcePath, operation.targetPath, operation.bytes)
+            );
+            return decision === undefined
+              ? []
+              : [
+                  {
+                    operationIndex,
+                    operationId: operation.id,
+                    sourcePath: operation.sourcePath,
+                    targetPath: operation.targetPath,
+                    bytes: operation.bytes,
+                    decisionRowIndex: decision.rowIndex,
+                  },
+                ];
+          }),
+        },
+      });
       const entry: PreviewEntry = {
         jobId: context.jobId,
         machine: context.machine,
@@ -618,7 +645,12 @@ export class ProcessingCoordinator {
       };
 
       await this.persistHistory('preview creation', () =>
-        this.history?.recordPreview?.(prepared.result, prepared.audit)
+        this.history?.recordPreview?.(
+          prepared.allRows === undefined
+            ? prepared.result
+            : { ...prepared.result, rows: prepared.allRows.map(publicPreviewRow) },
+          prepared.audit
+        )
       );
       entry.historyReady = true;
       await this.publish(entry, ProcessingEventKind.PREVIEW_READY, {
@@ -661,7 +693,6 @@ export class ProcessingCoordinator {
       );
     }
     if (this.now() >= entry.expiresAtMs) {
-      entry.consumed = true;
       await this.rejectStart(entry, CoordinatorErrorCode.PREVIEW_EXPIRED, ['preview expired']);
     }
     if (
@@ -709,7 +740,6 @@ export class ProcessingCoordinator {
     }
     if (revalidatedAtMs >= entry.expiresAtMs) {
       entry.starting = false;
-      entry.consumed = true;
       await this.rejectStart(entry, CoordinatorErrorCode.PREVIEW_EXPIRED, [
         'preview expired during revalidation',
       ]);
@@ -750,6 +780,15 @@ export class ProcessingCoordinator {
       controller: new AbortController(),
       ledger: [],
       startedAtMs,
+      totalBytes: entry.prepared.operations.reduce(
+        (total, operation) => total + operation.bytes,
+        0
+      ),
+      processedFiles: 0,
+      skippedFiles: 0,
+      failedFiles: 0,
+      processedBytes: 0,
+      settledFiles: 0,
       terminalPromise,
       resolveTerminal,
       rejectTerminal,
@@ -898,6 +937,35 @@ export class ProcessingCoordinator {
         job.prepared.result.effectiveOptions.workerCount,
         operationCount
       );
+      // Authorization evidence for the first eligible file can take minutes at
+      // corpus scale. Publish it as ephemeral job progress so the run stays
+      // visibly active instead of appearing frozen between file counters.
+      let lastStageProgressAtMs = -Infinity;
+      const reportStageProgress = async (
+        reported: Readonly<AuditPreparationProgressDTO>
+      ): Promise<void> => {
+        if (job.controller.signal.aborted) return;
+        const progressAtMs = this.now();
+        if (progressAtMs - lastStageProgressAtMs < 250) return;
+        lastStageProgressAtMs = progressAtMs;
+        const preparation = snapshotSerializable(
+          reported,
+          'stage progress'
+        ) as AuditPreparationProgressDTO;
+        await this.publish(
+          job,
+          ProcessingEventKind.JOB_PROGRESS,
+          {
+            phase: ProcessingPhase.ORGANIZATION,
+            filesProcessed: job.processedFiles,
+            totalFiles: operationCount,
+            percentage: operationCount === 0 ? 100 : (job.processedFiles / operationCount) * 100,
+            preparation,
+          },
+          progressAtMs,
+          false
+        );
+      };
 
       const worker = async (): Promise<void> => {
         try {
@@ -915,7 +983,9 @@ export class ProcessingCoordinator {
                   jobId: job.jobId,
                   previewId: job.previewId,
                   mode: job.prepared.result.effectiveOptions.operation,
+                  writeMetadataDates: job.prepared.result.effectiveOptions.writeMetadataDates,
                   signal: job.controller.signal,
+                  reportStageProgress,
                 })
               );
             } catch (error) {
@@ -944,6 +1014,21 @@ export class ProcessingCoordinator {
             // outcome in memory before attempting the fallible audit append so a persistence
             // outage cannot erase committed work from the terminal truth.
             job.ledger.push(immutableEntry);
+            job.settledFiles += 1;
+            switch (immutableEntry.outcome) {
+              case 'committed':
+                job.processedFiles += 1;
+                job.processedBytes += immutableEntry.bytes;
+                break;
+              case 'skipped':
+                job.skippedFiles += 1;
+                break;
+              case 'failed':
+                job.failedFiles += 1;
+                break;
+              case 'cancelled':
+                break;
+            }
             await this.persistHistory('ledger entry', () =>
               this.history?.recordLedgerEntry?.(
                 freezeDeep({
@@ -955,16 +1040,37 @@ export class ProcessingCoordinator {
             );
 
             if (!job.controller.signal.aborted && !hasWorkerFailure) {
-              const filesProcessed = job.ledger.filter(
-                (entry) => entry.outcome === 'committed'
-              ).length;
-              await this.publish(job, ProcessingEventKind.JOB_PROGRESS, {
-                phase: ProcessingPhase.ORGANIZATION,
-                filesProcessed,
-                totalFiles: operationCount,
-                percentage: operationCount === 0 ? 100 : (filesProcessed / operationCount) * 100,
-                currentFile: operation.sourcePath,
-              });
+              const progressAtMs = this.now();
+              const durationMs = Math.max(0, progressAtMs - job.startedAtMs);
+              const throughput = durationMs === 0 ? 0 : job.processedBytes / (durationMs / 1_000);
+              const remainingBytes = Math.max(0, job.totalBytes - job.processedBytes);
+              const persistProgress =
+                job.lastProgressPersistedAtMs === undefined ||
+                job.settledFiles === operationCount ||
+                progressAtMs - job.lastProgressPersistedAtMs >= PROGRESS_PERSIST_INTERVAL_MS;
+              if (persistProgress) job.lastProgressPersistedAtMs = progressAtMs;
+              await this.publish(
+                job,
+                ProcessingEventKind.JOB_PROGRESS,
+                {
+                  phase: ProcessingPhase.ORGANIZATION,
+                  filesProcessed: job.processedFiles,
+                  totalFiles: operationCount,
+                  percentage:
+                    operationCount === 0 ? 100 : (job.processedFiles / operationCount) * 100,
+                  currentFile: operation.sourcePath,
+                  bytesProcessed: job.processedBytes,
+                  totalBytes: job.totalBytes,
+                  throughput,
+                  ...(remainingBytes === 0
+                    ? { eta: 0 }
+                    : throughput > 0
+                      ? { eta: remainingBytes / throughput }
+                      : {}),
+                },
+                progressAtMs,
+                persistProgress
+              );
             }
           }
         } catch (error) {
@@ -1047,20 +1153,16 @@ export class ProcessingCoordinator {
     job: ActiveJob,
     countUnrecordedAsFailed: boolean = false
   ): ProcessingStatisticsDTO {
-    const committed = job.ledger.filter((entry) => entry.outcome === 'committed');
-    const recordedOperationIds = new Set(job.ledger.map((entry) => entry.operationId));
     const unrecordedCount = countUnrecordedAsFailed
-      ? job.prepared.operations.filter((operation) => !recordedOperationIds.has(operation.id))
-          .length
+      ? job.prepared.operations.length - job.settledFiles
       : 0;
     return {
       totalFiles: job.prepared.operations.length,
-      processedFiles: committed.length,
-      skippedFiles: job.ledger.filter((entry) => entry.outcome === 'skipped').length,
-      failedFiles:
-        job.ledger.filter((entry) => entry.outcome === 'failed').length + unrecordedCount,
-      totalBytes: job.prepared.operations.reduce((total, operation) => total + operation.bytes, 0),
-      processedBytes: committed.reduce((total, entry) => total + entry.bytes, 0),
+      processedFiles: job.processedFiles,
+      skippedFiles: job.skippedFiles,
+      failedFiles: job.failedFiles + unrecordedCount,
+      totalBytes: job.totalBytes,
+      processedBytes: job.processedBytes,
       durationMs: Math.max(0, this.now() - job.startedAtMs),
     };
   }
@@ -1239,7 +1341,7 @@ export class ProcessingCoordinator {
       ])
     );
     const fileOutcomes: ProcessingCancellationFileOutcomeDTO[] =
-      job.prepared.result.rows === undefined
+      job.prepared.allRows === undefined
         ? job.prepared.operations.map((operation) =>
             outcomeForOperation(
               operation,
@@ -1248,7 +1350,7 @@ export class ProcessingCoordinator {
               operation.bytes
             )
           )
-        : job.prepared.result.rows.map((row, rowIndex) => {
+        : job.prepared.allRows.map((row, rowIndex) => {
             if (row.operation === 'skip') {
               return {
                 sourcePath: row.sourcePath,
@@ -1356,7 +1458,8 @@ export class ProcessingCoordinator {
     context: EventContext,
     kind: K,
     payload: Extract<ProcessingEvent, { kind: K }>['payload'],
-    emittedAtMs: number = this.now()
+    emittedAtMs: number = this.now(),
+    persistEvent: boolean = true
   ): Promise<Extract<ProcessingEvent, { kind: K }>> {
     const operation = context.eventQueue.then(async () => {
       const event = freezeDeep({
@@ -1370,7 +1473,8 @@ export class ProcessingCoordinator {
       if (
         context.historyReady &&
         kind !== ProcessingEventKind.PREVIEW_STARTED &&
-        kind !== ProcessingEventKind.PREVIEW_READY
+        kind !== ProcessingEventKind.PREVIEW_READY &&
+        persistEvent
       ) {
         await this.persistHistory(`event ${kind}`, () => this.history?.recordEvent?.(event));
       }
@@ -1473,10 +1577,10 @@ export class ProcessingCoordinator {
         'verifyIntegrity must remain enabled'
       );
     }
-    if (options.writeMetadataDates !== false) {
+    if (typeof options.writeMetadataDates !== 'boolean') {
       throw new ProcessingCoordinatorError(
         CoordinatorErrorCode.INVALID_CONFIGURATION,
-        'writeMetadataDates is unsupported until a metadata writeback path exists'
+        'writeMetadataDates must be boolean'
       );
     }
     return {

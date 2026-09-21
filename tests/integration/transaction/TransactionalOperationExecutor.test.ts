@@ -2,7 +2,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 
-import { hashFile, TransactionalFileCore } from '../../../src/main/core/transaction';
+import { hashFile } from '../../../src/main/core/transaction';
 import { PlannedOperation } from '../../../src/main/services/ProcessingCoordinator';
 import { TransactionalOperationExecutor } from '../../../src/main/services/TransactionalOperationExecutor';
 import { OperationMode } from '../../../src/shared/types/processing';
@@ -136,6 +136,34 @@ describe('TransactionalOperationExecutor integration', () => {
       });
       expect(await readFile(targetPath, 'utf8')).toBe('external-winner');
       expect(await readFile(planned.sourcePath, 'utf8')).toBe('executor-ground-truth');
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('moves a file on the same filesystem via rename fast path with committed outcome', async () => {
+    const targetPath = path.join(destinationRoot, 'rename-move.jpg');
+    const planned = await operation(targetPath);
+    // Remove contentSha256 to enable the fast path: the normal preview
+    // payload sets contentSha256 from hashFile, but a real preview-only
+    // payload omits it so the fast path engages.
+    delete (planned.payload as Record<string, unknown>).contentSha256;
+    const executor = nativeExecutor();
+    try {
+      const entry = await executor.execute(planned, {
+        ...context(),
+        mode: OperationMode.MOVE,
+      });
+
+      expect(entry).toMatchObject({
+        operationId: planned.id,
+        outcome: 'committed',
+        bytes: planned.bytes,
+      });
+      // Destination exists
+      expect(await readFile(targetPath, 'utf8')).toBe('executor-ground-truth');
+      // Source should be gone
+      await expect(lstat(planned.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await executor.close();
     }

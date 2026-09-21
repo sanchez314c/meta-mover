@@ -11,6 +11,14 @@ import {
 } from '../../../src/shared/types/processing';
 
 function resolution(overrides: Partial<DateResolutionRecord> = {}): DateResolutionRecord {
+  const selectedValue =
+    overrides.selectedValue ??
+    ({
+      localIso: '2024-03-04T05:06:07.123456',
+      zoneBasis: 'floating-local',
+      precision: 'microsecond',
+      fractionalDigits: '123456',
+    } as const);
   return {
     policyVersion: 'date-resolution/1',
     fileId: 'sha256:file',
@@ -22,16 +30,31 @@ function resolution(overrides: Partial<DateResolutionRecord> = {}): DateResoluti
     selectedCandidateId: 'capture',
     selectedGroupId: 'group:capture',
     selectedGroupScore: 95,
-    selectedValue: {
-      localIso: '2024-03-04T05:06:07.123456',
-      zoneBasis: 'floating-local',
-      precision: 'microsecond',
-      fractionalDigits: '123456',
-    },
+    selectedValue,
     contenderIds: ['capture'],
     rejected: [],
     reasonCodes: ['RESOLVED_HIGH_CONFIDENCE'],
-    candidates: [],
+    candidates: [
+      {
+        id: 'capture',
+        fileId: 'sha256:file',
+        mediaKind: 'image',
+        semantic: 'capture',
+        sourceKind: 'embedded-exif',
+        sourceFamily: 'exif-primary',
+        tag: 'EXIF:DateTimeOriginal',
+        rawValue: '2024:03:04 05:06:07.123456',
+        value: selectedValue,
+        eligibility: 'eligible',
+        score: {
+          base: 95,
+          modifiers: [],
+          semanticCap: 100,
+          final: 95,
+        },
+        resolutionIssues: [],
+      },
+    ],
     ...overrides,
   };
 }
@@ -86,7 +109,13 @@ describe('MediaPlanner', () => {
       expect(preview).toEqual(execution);
       expect(preview).toMatchObject({
         sourcePath,
-        targetPath: path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.123456.JPG'),
+        targetPath: path.join(
+          destinationRoot,
+          'Photos',
+          '2024',
+          '03',
+          '2024-03-04_05-06-07.123456.JPG'
+        ),
         needsReview: false,
         operation: 'copy',
         resolution: input.resolution,
@@ -125,10 +154,203 @@ describe('MediaPlanner', () => {
       const plan = planner.planForPreview(input);
 
       expect(plan.targetPath).toBe(
-        path.join(destinationRoot, '_Needs Review', 'unsafe__name_.jpg')
+        path.join(destinationRoot, 'Photos', '_Needs Review', 'unsafe__name_.jpg')
       );
       expect(plan.needsReview).toBe(true);
       expect(plan.resolution).toBe(input.resolution);
+    }
+  );
+
+  it.each(['high', 'medium'] as const)(
+    'rejects forged %s-confidence filesystem modification time at the planning boundary',
+    (confidence) => {
+      const planner = new MediaPlanner();
+      const input = request(
+        path.join(sourceRoot, 'uuid-name.jpg'),
+        destinationRoot,
+        resolution({
+          confidence,
+          selectedCandidateId: 'filesystem-modified',
+          selectedGroupId: 'group:filesystem-modified',
+          selectedGroupScore: 99,
+          selectedValue: {
+            localIso: '2025-01-02T03:04:05.000',
+            instantUtc: '2025-01-02T03:04:05.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'millisecond',
+            fractionalDigits: '000',
+          },
+          contenderIds: ['filesystem-modified'],
+          candidates: [
+            {
+              id: 'filesystem-modified',
+              fileId: 'sha256:file',
+              mediaKind: 'image',
+              semantic: 'filesystem-modified',
+              sourceKind: 'filesystem',
+              sourceFamily: 'filesystem-modified',
+              tag: 'FileSystem:ModifiedTime',
+              rawValue: '2025-01-02T03:04:05.000Z',
+              value: {
+                localIso: '2025-01-02T03:04:05.000',
+                instantUtc: '2025-01-02T03:04:05.000Z',
+                zoneBasis: 'spec-defined-utc',
+                precision: 'millisecond',
+                fractionalDigits: '000',
+              },
+              eligibility: 'eligible',
+              score: {
+                base: 99,
+                modifiers: [],
+                semanticCap: 100,
+                final: 99,
+              },
+              resolutionIssues: [],
+            },
+          ],
+        })
+      );
+
+      expect(planner.planForPreview(input)).toMatchObject({
+        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'uuid-name.jpg'),
+        needsReview: true,
+      });
+    }
+  );
+
+  it('rejects a forbidden selected candidate even when its record claims resolved/high', () => {
+    const planner = new MediaPlanner();
+    const input = request(
+      path.join(sourceRoot, 'photo.jpg'),
+      destinationRoot,
+      resolution({
+        candidates: [
+          {
+            ...resolution().candidates[0],
+            eligibility: 'forbidden',
+            resolutionIssues: ['FORBIDDEN_EVIDENCE'],
+          },
+        ],
+      })
+    );
+
+    expect(planner.planForExecution(input)).toMatchObject({
+      targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'photo.jpg'),
+      needsReview: true,
+    });
+  });
+
+  it.each([
+    ['high', 'FileSystem:ModifiedTime', 'exif-primary'],
+    ['medium', 'XMP:MetadataDate', 'xmp-primary'],
+    ['high', 'ICC_Profile:ProfileDateTime', 'exif-primary'],
+    ['medium', 'EXIF:DateTimeOriginal', 'filesystem-modified'],
+  ] as const)(
+    'rejects relabeled %s-confidence non-creation provenance %s / %s',
+    (confidence, tag, sourceFamily) => {
+      const planner = new MediaPlanner();
+      const spoofedCandidate = {
+        ...resolution().candidates[0],
+        tag,
+        sourceFamily,
+      };
+      const input = request(
+        path.join(sourceRoot, 'spoofed.jpg'),
+        destinationRoot,
+        resolution({ confidence, candidates: [spoofedCandidate] })
+      );
+
+      expect(planner.planForPreview(input)).toMatchObject({
+        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'spoofed.jpg'),
+        needsReview: true,
+      });
+    }
+  );
+
+  it('accepts a valid filename creation claim at the planning boundary', () => {
+    const planner = new MediaPlanner();
+    const filenameCandidate = {
+      ...resolution().candidates[0],
+      semantic: 'filename-claim' as const,
+      sourceKind: 'filename' as const,
+      sourceFamily: 'screenshot-filename',
+      tag: 'filename:Screenshot_20240304_050607',
+      score: {
+        base: 82,
+        modifiers: [],
+        semanticCap: 85,
+        final: 82,
+      },
+    };
+    const input = request(
+      path.join(sourceRoot, 'Screenshot_20240304_050607.jpg'),
+      destinationRoot,
+      resolution({ confidence: 'medium', candidates: [filenameCandidate] })
+    );
+
+    expect(planner.planForPreview(input)).toMatchObject({
+      targetPath: path.join(
+        destinationRoot,
+        'Photos',
+        '2024',
+        '03',
+        '2024-03-04_05-06-07.123456.jpg'
+      ),
+      needsReview: false,
+    });
+  });
+
+  it.each(['high', 'medium'] as const)(
+    'rejects a %s-confidence selected value that differs from its selected candidate',
+    (confidence) => {
+      const planner = new MediaPlanner();
+      const input = request(
+        path.join(sourceRoot, 'mismatched.jpg'),
+        destinationRoot,
+        resolution({
+          confidence,
+          candidates: [resolution().candidates[0]],
+          selectedValue: {
+            localIso: '2026-03-27T21:38:45',
+            instantUtc: '2026-03-27T21:38:45.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        })
+      );
+
+      expect(planner.planForPreview(input)).toMatchObject({
+        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'mismatched.jpg'),
+        needsReview: true,
+      });
+    }
+  );
+
+  it.each(['high', 'medium'] as const)(
+    'rejects %s-confidence filesystem metadata relabeled as filename evidence',
+    (confidence) => {
+      const planner = new MediaPlanner();
+      const input = request(
+        path.join(sourceRoot, 'spoofed-filename.jpg'),
+        destinationRoot,
+        resolution({
+          confidence,
+          candidates: [
+            {
+              ...resolution().candidates[0],
+              semantic: 'filename-claim',
+              sourceKind: 'filename',
+              sourceFamily: 'filename-timestamp',
+              tag: 'FileSystem:ModifiedTime',
+            },
+          ],
+        })
+      );
+
+      expect(planner.planForPreview(input)).toMatchObject({
+        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'spoofed-filename.jpg'),
+        needsReview: true,
+      });
     }
   );
 
@@ -139,12 +361,24 @@ describe('MediaPlanner', () => {
 
     expect(
       planner.planForExecution({ ...base, folderStructure: FolderStructure.FLAT }).targetPath
-    ).toBe(path.join(destinationRoot, '2024-03-04_05-06-07.123456.mov'));
+    ).toBe(path.join(destinationRoot, 'Videos', '2024-03-04_05-06-07.123456.mov'));
     expect(
       planner.planForExecution({ ...base, folderStructure: FolderStructure.YEAR_MONTH_FLAT })
         .targetPath
-    ).toBe(path.join(destinationRoot, '2024-03', '2024-03-04_05-06-07.123456.mov'));
+    ).toBe(path.join(destinationRoot, 'Videos', '2024-03', '2024-03-04_05-06-07.123456.mov'));
     expect(base.resolution.selectedValue?.localIso).toBe('2024-03-04T05:06:07.123456');
+  });
+
+  it('places resolved media directly in its year folder when month subfolders are disabled', () => {
+    const planner = new MediaPlanner();
+    const input = request(path.join(sourceRoot, 'photo.jpg'), destinationRoot, resolution());
+
+    expect(
+      planner.planForExecution({
+        ...input,
+        folderStructure: 'year' as FolderStructure,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, 'Photos', '2024', '2024-03-04_05-06-07.123456.jpg'));
   });
 
   it('routes malformed selected dates and missing selected values to review', () => {
@@ -168,11 +402,11 @@ describe('MediaPlanner', () => {
     );
 
     expect(planner.planForExecution(malformed)).toMatchObject({
-      targetPath: path.join(destinationRoot, '_Needs Review', 'clip.mov'),
+      targetPath: path.join(destinationRoot, 'Videos', '_Needs Review', 'clip.mov'),
       needsReview: true,
     });
     expect(planner.planForPreview(missing)).toMatchObject({
-      targetPath: path.join(destinationRoot, '_Needs Review', 'photo.jpg'),
+      targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'photo.jpg'),
       needsReview: true,
     });
   });
@@ -182,7 +416,7 @@ describe('MediaPlanner', () => {
     const input = request(path.join(sourceRoot, '...'), destinationRoot, resolution());
 
     expect(planner.planForPreview(input).targetPath).toBe(
-      path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.123456')
+      path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07.123456')
     );
 
     const reviewInput = request(
@@ -191,7 +425,7 @@ describe('MediaPlanner', () => {
       resolution({ status: 'unresolved', confidence: 'none', selectedValue: undefined })
     );
     expect(planner.planForPreview(reviewInput).targetPath).toBe(
-      path.join(destinationRoot, '_Needs Review', 'unnamed_file')
+      path.join(destinationRoot, 'Photos', '_Needs Review', 'unnamed_file')
     );
   });
 
@@ -224,7 +458,7 @@ describe('MediaPlanner', () => {
     );
 
     expect(planner.planForPreview(input).targetPath).toBe(
-      path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.jpg')
+      path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07.jpg')
     );
   });
 
@@ -248,21 +482,23 @@ describe('MediaPlanner', () => {
         appendScreenshotSuffix: true,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG'));
+    ).toBe(
+      path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07-screen-shot.PNG')
+    );
     expect(
       planner.planForPreview({
         ...input,
         appendScreenshotSuffix: false,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.PNG'));
+    ).toBe(path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07.PNG'));
     expect(
       planner.planForPreview({
         ...input,
         appendScreenshotSuffix: true,
         screenshotDetected: false,
       }).targetPath
-    ).toBe(path.join(destinationRoot, '2024', '03', '2024-03-04_05-06-07.PNG'));
+    ).toBe(path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07.PNG'));
   });
 
   it('labels review filenames once and preserves the extension', () => {
@@ -279,13 +515,51 @@ describe('MediaPlanner', () => {
         appendScreenshotSuffix: true,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, '_Needs Review', 'IMG_0042-screen-shot.png'));
+    ).toBe(path.join(destinationRoot, 'Photos', '_Needs Review', 'IMG_0042-screen-shot.png'));
     expect(
       planner.planForPreview({
         ...request(path.join(sourceRoot, 'IMG_0042-screen-shot.png'), destinationRoot, unresolved),
         appendScreenshotSuffix: true,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, '_Needs Review', 'IMG_0042-screen-shot.png'));
+    ).toBe(path.join(destinationRoot, 'Photos', '_Needs Review', 'IMG_0042-screen-shot.png'));
+  });
+
+  it.each([
+    ['image', 'Photos'],
+    ['raw', 'Photos'],
+    ['video', 'Videos'],
+    ['audio', 'Audio'],
+    ['document', 'Documents'],
+    ['art', 'Art'],
+  ] as const)('places %s media under the top-level %s folder', (mediaKind, folder) => {
+    const sourcePath = path.join(sourceRoot, 'file.bin');
+    const base = request(sourcePath, destinationRoot, resolution(), mediaKind as MediaKind);
+
+    expect(new MediaPlanner().planForPreview(base).targetPath).toBe(
+      path.join(destinationRoot, folder, '2024', '03', '2024-03-04_05-06-07.123456.bin')
+    );
+    expect(
+      new MediaPlanner().planForPreview({ ...base, folderStructure: FolderStructure.FLAT })
+        .targetPath
+    ).toBe(path.join(destinationRoot, folder, '2024-03-04_05-06-07.123456.bin'));
+    expect(
+      new MediaPlanner().planForPreview({
+        ...base,
+        folderStructure: FolderStructure.YEAR_MONTH_FLAT,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, folder, '2024-03', '2024-03-04_05-06-07.123456.bin'));
+    expect(
+      new MediaPlanner().planForPreview({
+        ...base,
+        folderStructure: FolderStructure.YEAR,
+      }).targetPath
+    ).toBe(path.join(destinationRoot, folder, '2024', '2024-03-04_05-06-07.123456.bin'));
+    expect(
+      new MediaPlanner().planForPreview({
+        ...base,
+        resolution: resolution({ status: 'unresolved', confidence: 'none' }),
+      }).targetPath
+    ).toBe(path.join(destinationRoot, folder, '_Needs Review', 'file.bin'));
   });
 });
