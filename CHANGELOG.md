@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-21 default window dimensions
+
+- Set the unsaved-window default to the User's manually selected 1280 by 1316 dimensions. Persisted window bounds continue to take precedence.
+- The live application was measured read-only and was not closed, resized, or restarted during this change.
+
 ## 2026-09-21 audit preparation cache and concurrency correction
 
 - Bound durable normalization indexes, cohort summaries, dataset revisions, and approvals to a canonical SHA-256 fingerprint of the active audit and transform policy. A policy change now rebuilds derived data and invalidates prior approvals.

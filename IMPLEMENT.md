@@ -1,3 +1,9 @@
+## 2026-09-21 default window dimensions
+
+- User requested that the live META Mover window's manually adjusted dimensions become the default without closing or restarting the application.
+- Measured the visible X11 window at 1280 by 1316 and changed only the fallback used when no persisted bounds exist. Existing saved bounds remain authoritative.
+- Added a runtime regression that constructs the app without saved bounds and requires a 1280 by 1316 BrowserWindow request.
+
 ## 2026-09-21 normalization audit preparation closure
 
 - Decision: key every durable derived artifact and approval revision to both the sealed evidence revision and a canonical fingerprint of `NormalizationAuditPolicy`.

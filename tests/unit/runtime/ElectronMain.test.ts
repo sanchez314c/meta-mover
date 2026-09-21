@@ -1,7 +1,7 @@
 import { ElectronMain, ElectronMainDependencies } from '../../../src/main/runtime/ElectronMain';
 
 describe('ElectronMain', () => {
-  function harness(options: { lock?: boolean; packaged?: boolean } = {}) {
+  function harness(options: { lock?: boolean; packaged?: boolean; windowBounds?: false } = {}) {
     const appListeners = new Map<string, (...args: unknown[]) => void>();
     const windowListeners = new Map<string, (...args: unknown[]) => void>();
     const webListeners = new Map<string, (...args: unknown[]) => void>();
@@ -36,9 +36,10 @@ describe('ElectronMain', () => {
     const runtime = {
       components: {
         config: {
-          getAll: () => ({
-            windowBounds: { width: 1280, height: 800, x: 10, y: 20 },
-          }),
+          getAll: () =>
+            options.windowBounds === false
+              ? {}
+              : { windowBounds: { width: 1280, height: 800, x: 10, y: 20 } },
         },
       },
       shutdown: jest.fn().mockResolvedValue(undefined),
@@ -123,6 +124,16 @@ describe('ElectronMain', () => {
     expect(test.window.loadFile).toHaveBeenCalledWith('/opt/meta-mover/app/renderer/index.html');
     expect(test.core.register.mock.invocationCallOrder[0]).toBeLessThan(
       test.window.loadFile.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('uses the user-selected 1280 by 1316 dimensions when no bounds are saved', async () => {
+    const test = harness({ windowBounds: false });
+    test.main.start();
+    await test.main.whenStarted();
+
+    expect(test.dependencies.createWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1280, height: 1316 })
     );
   });
 

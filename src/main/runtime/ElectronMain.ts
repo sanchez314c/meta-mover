@@ -271,7 +271,7 @@ export class ElectronMain {
     const bounds = this.runtime.components.config.getAll().windowBounds;
     const window = this.dependencies.createWindow({
       width: bounds?.width ?? 1280,
-      height: bounds?.height ?? 883,
+      height: bounds?.height ?? 1316,
       minWidth: 900,
       minHeight: 600,
       ...(bounds?.x === undefined ? {} : { x: bounds.x }),
