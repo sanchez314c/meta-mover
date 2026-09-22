@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { mkdtemp, readFile, stat, writeFile } from 'fs/promises';
+import { mkdtemp, readFile, realpath, stat, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
@@ -229,7 +229,21 @@ async function fixture(
     ],
   };
   const auditResolution = options.resolution ?? selectable();
+  const reviewRecord = {
+    revision: 'audit-rev-1',
+    input: {
+      recordId: 'record-0',
+      sourcePath,
+      outputPath: currentPath,
+      mediaKind: 'image' as const,
+      resolution: auditResolution,
+    },
+  };
   const audit = {
+    reviewPage: jest.fn(async () => ({
+      revision: reviewRecord.revision,
+      items: [reviewRecord.input],
+    })),
     reviewInput: jest.fn(async ({ outputPath }: { outputPath: string }) =>
       outputPath === currentPath
         ? {
@@ -287,6 +301,121 @@ async function fixture(
 }
 
 describe('ReviewRemediationService', () => {
+  it('pages 7,391 descriptors before binding at most the returned 25 and exact get binds one', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'meta-mover-review-bounded-'));
+    try {
+      const destination = await realpath(root);
+      const resolution = selectable();
+      const rows = Array.from({ length: 7_391 }, (_, index) => ({
+        sourcePath: path.join(destination, 'source', `${index}.jpg`),
+        targetPath: path.join(destination, 'Photos', '_Needs Review', `${index}.jpg`),
+        operation: OperationMode.MOVE,
+        conflictPolicy: ConflictPolicy.RENAME,
+        dateEvidence: { value: null, source: 'none' as const, confidence: 0, warnings: [] },
+        fingerprint: { size: 14, modifiedAt: '2026-09-22T00:00:00.000Z' },
+        warnings: [],
+      }));
+      const inputs = rows.map((row, index) => ({
+        recordId: `row-${String(index).padStart(16, '0')}`,
+        sourcePath: row.sourcePath,
+        outputPath: row.targetPath,
+        mediaKind: 'image' as const,
+        resolution,
+      }));
+      const history = {
+        listJobs: async () => [
+          {
+            jobId: '33333333-3333-4333-8333-333333333333',
+            previewId: 'preview-scale',
+            destinationPath: destination,
+            effectiveOptions: {
+              operation: OperationMode.MOVE,
+              conflictPolicy: ConflictPolicy.RENAME,
+              folderStructure: FolderStructure.YEAR_MONTH,
+              appendScreenshotSuffix: false,
+            },
+            previewRows: rows,
+            events: [
+              {
+                kind: ProcessingEventKind.JOB_COMPLETED,
+                jobId: '33333333-3333-4333-8333-333333333333',
+                sequence: 2,
+                emittedAt: '2026-09-22T00:00:01.000Z',
+                payload: {
+                  statistics: {
+                    totalFiles: rows.length,
+                    processedFiles: rows.length,
+                    skippedFiles: 0,
+                    failedFiles: 0,
+                    totalBytes: rows.length * 14,
+                    processedBytes: rows.length * 14,
+                    durationMs: 1,
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const audit = {
+        reviewPage: jest.fn(async ({ cursor, limit }: { cursor?: string; limit: number }) => {
+          const offset = Number(cursor ?? 0);
+          const items = inputs.slice(offset, offset + limit);
+          const next = offset + items.length;
+          return {
+            revision: 'scale-revision',
+            items,
+            ...(next < inputs.length ? { nextCursor: String(next) } : {}),
+          };
+        }),
+        reviewInput: jest.fn(
+          async ({ sourcePath, outputPath }: { sourcePath: string; outputPath: string }) => {
+            const input = inputs.find(
+              (entry) => entry.sourcePath === sourcePath && entry.outputPath === outputPath
+            );
+            return input ? { revision: 'scale-revision', input } : null;
+          }
+        ),
+      };
+      const outputBinding = jest.fn(async (filePath: string) => ({
+        path: filePath,
+        device: 1,
+        inode: Number(path.basename(filePath, '.jpg')) + 1,
+        size: 14,
+        modifiedTimeMs: 1,
+        mtimeNs: '1000000',
+        sha256: 'a'.repeat(64),
+      }));
+      const make = () =>
+        new ReviewRemediationService({
+          history,
+          audit,
+          overrides: new Overrides(),
+          outputBinding,
+          coreFactory: async () => ({ execute: jest.fn(), close: async () => undefined }),
+          now: () => new Date('2026-09-22T00:00:02.000Z'),
+        });
+      const service = make();
+      const first = await service.list({ limit: 25 });
+      expect(first.items).toHaveLength(25);
+      expect(outputBinding).toHaveBeenCalledTimes(25);
+      const second = await service.list({ limit: 25, cursor: first.nextCursor });
+      expect(second.items).toHaveLength(25);
+      expect(
+        new Set([...first.items, ...second.items].map((item) => item.reviewId))
+      ).toHaveProperty('size', 50);
+      expect(outputBinding).toHaveBeenCalledTimes(50);
+
+      outputBinding.mockClear();
+      const exact = await make().get(first.items[0].reviewId);
+      expect(exact?.reviewId).toBe(first.items[0].reviewId);
+      expect(outputBinding).toHaveBeenCalledTimes(1);
+      expect(audit.reviewInput).toHaveBeenCalledTimes(1);
+    } finally {
+      await import('fs/promises').then((fs) => fs.rm(root, { recursive: true, force: true }));
+    }
+  });
+
   it('queues only proven committed review output paths and never the stale MOVE source', async () => {
     const completed = await fixture();
     const page = await completed.service.list({ limit: 10 });
@@ -296,11 +425,8 @@ describe('ReviewRemediationService', () => {
       originalSourcePath: completed.sourcePath,
       status: 'pending',
     });
-    expect(completed.audit.reviewInput).toHaveBeenCalledWith({
-      previewId: 'preview-1',
-      sourcePath: completed.sourcePath,
-      outputPath: completed.currentPath,
-    });
+    expect(completed.audit.reviewPage).toHaveBeenCalledWith({ previewId: 'preview-1', limit: 100 });
+    expect(completed.audit.reviewInput).not.toHaveBeenCalled();
     await expect(
       completed.service.list({ statuses: ['pending', 'failed'], limit: 10 })
     ).resolves.toMatchObject({ items: [expect.objectContaining({ status: 'pending' })] });

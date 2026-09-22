@@ -471,10 +471,143 @@ describe('EvidenceNormalizationAuditRepository', () => {
     }
   });
 
+  it('pages only unresolved review records from a compact validated catalog', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-page-'));
+    try {
+      await writeSealedPreview(root, 'preview-review-page', 5, (index) => {
+        const resolution = resolvedRecord(`file-${index}`);
+        if (index !== 1 && index !== 3) return resolution;
+        return { ...resolution, status: 'ambiguous' as const, confidence: 'low' as const };
+      });
+      let repository = await EvidenceNormalizationAuditRepository.open(root);
+      const first = await repository.reviewPage({ previewId: 'preview-review-page', limit: 1 });
+      expect(first.items.map((item) => item.recordId)).toEqual(['row-0000000000000001']);
+      expect(first.nextCursor).toBe('1');
+      const second = await repository.reviewPage({
+        previewId: 'preview-review-page',
+        limit: 10,
+        cursor: first.nextCursor,
+      });
+      expect(second.items.map((item) => item.recordId)).toEqual(['row-0000000000000003']);
+      expect(second.nextCursor).toBeUndefined();
+      await repository.close();
+
+      repository = await EvidenceNormalizationAuditRepository.open(root);
+      await expect(
+        repository.reviewInput({
+          previewId: 'preview-review-page',
+          sourcePath: '/source/3.jpg',
+          outputPath: '/output/3.jpg',
+        })
+      ).resolves.toMatchObject({ input: { recordId: 'row-0000000000000003' } });
+      await repository.close();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('parses the review catalog once and pages cached records without prefix rescans', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-linear-'));
+    const parse = jest.spyOn(JSON, 'parse');
+    try {
+      await writeSealedPreview(root, 'preview-review-linear', 250, (index) => ({
+        ...resolvedRecord(`file-${index}`),
+        status: 'ambiguous' as const,
+        confidence: 'low' as const,
+      }));
+      const repository = await EvidenceNormalizationAuditRepository.open(root);
+      let page = await repository.reviewPage({ previewId: 'preview-review-linear', limit: 25 });
+      const parsedAfterOpen = parse.mock.calls.length;
+      let total = page.items.length;
+      while (page.nextCursor) {
+        page = await repository.reviewPage({
+          previewId: 'preview-review-linear',
+          limit: 25,
+          cursor: page.nextCursor,
+        });
+        total += page.items.length;
+      }
+      expect(total).toBe(250);
+      expect(parse.mock.calls.length).toBe(parsedAfterOpen);
+      await repository.close();
+    } finally {
+      parse.mockRestore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['replace', 'truncate', 'mutate'] as const)(
+    'fails closed when an opened review catalog is %s',
+    async (corruption) => {
+      const root = await fs.mkdtemp(
+        path.join(os.tmpdir(), `meta-mover-audit-review-live-${corruption}-`)
+      );
+      try {
+        await writeSealedPreview(root, `preview-review-live-${corruption}`, 1, (index) => ({
+          ...resolvedRecord(`file-${index}`),
+          status: 'ambiguous' as const,
+          confidence: 'low' as const,
+        }));
+        const previewId = `preview-review-live-${corruption}`;
+        const repository = await EvidenceNormalizationAuditRepository.open(root);
+        await repository.reviewPage({ previewId, limit: 1 });
+        const digest = createHash('sha256').update(previewId).digest('hex');
+        const catalog = path.join(root, '.normalization-audit', `${digest}.review.jsonl`);
+        if (corruption === 'replace') {
+          const replacement = `${catalog}.replacement`;
+          await fs.copyFile(catalog, replacement);
+          await fs.rename(replacement, catalog);
+        } else if (corruption === 'truncate') {
+          await fs.truncate(catalog, 0);
+        } else {
+          const bytes = await fs.readFile(catalog);
+          bytes[0] = bytes[0] === 0x7b ? 0x5b : 0x7b;
+          await fs.writeFile(catalog, bytes);
+        }
+        await expect(repository.reviewPage({ previewId, limit: 1 })).rejects.toThrow(
+          /identity changed/i
+        );
+        await repository.close();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('fails closed when the compact review catalog is corrupt on reopen', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-corrupt-'));
+    try {
+      await writeSealedPreview(root, 'preview-review-corrupt', 1, (index) => ({
+        ...resolvedRecord(`file-${index}`),
+        status: 'unresolved' as const,
+        confidence: 'low' as const,
+      }));
+      let repository = await EvidenceNormalizationAuditRepository.open(root);
+      await repository.reviewPage({ previewId: 'preview-review-corrupt', limit: 10 });
+      await repository.close();
+      const digest = createHash('sha256').update('preview-review-corrupt').digest('hex');
+      await fs.appendFile(
+        path.join(root, '.normalization-audit', `${digest}.review.jsonl`),
+        '{}\n'
+      );
+      repository = await EvidenceNormalizationAuditRepository.open(root);
+      await expect(
+        repository.reviewPage({ previewId: 'preview-review-corrupt', limit: 10 })
+      ).rejects.toThrow(/review catalog.*corrupt/i);
+      await repository.close();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns the unique full sealed review input and rejects partial-path matches', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-input-'));
     try {
-      await writeSealedPreview(root, 'preview-review-input', 2);
+      await writeSealedPreview(root, 'preview-review-input', 2, (index) => ({
+        ...resolvedRecord(`file-${index}`),
+        status: 'ambiguous' as const,
+        confidence: 'low' as const,
+      }));
       const repository = await EvidenceNormalizationAuditRepository.open(root);
 
       const found = await repository.reviewInput({
@@ -542,7 +675,11 @@ describe('EvidenceNormalizationAuditRepository', () => {
           previewId: 'preview-review-duplicate',
           rowIndex,
           sourcePath: '/source/shared.jpg',
-          resolution: resolvedRecord(`duplicate-${rowIndex}`),
+          resolution: {
+            ...resolvedRecord(`duplicate-${rowIndex}`),
+            status: 'ambiguous' as const,
+            confidence: 'low' as const,
+          },
         });
       }
       for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {

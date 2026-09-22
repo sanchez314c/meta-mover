@@ -834,3 +834,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added an exact server-side multi-status list contract so pending and failed records are filtered before cursor pagination.
 - Prevented terminal records in an earlier page from causing a false empty Review Queue while actionable records exist later.
+
+## 2026-09-22 Review catalog performance correction
+
+- Added an atomically published, hash- and count-validated per-preview review catalog containing only unresolved audit inputs.
+- Existing validated profiles derive the compact catalog once; subsequent opens validate and reuse it. Corrupt catalogs fail closed.
+- Review discovery now pages the compact catalog and performs no per-row scans of the full normalization index.
+- Review list pagination now joins lightweight history, catalog, and override descriptors before filesystem identity work, so a 25-row page hashes at most 25 files. Exact get and action lookup use one catalog record and one binding.
+- Pinned validated review catalogs in memory with device, inode, size, mtime, and ctime identity checks. Catalog pagination now slices the single parsed snapshot without reparsing earlier pages, and post-open replacement, truncation, or mutation fails closed.
+- Catalog validation now computes ordering, count, and SHA-256 from the same opened byte snapshot, removing the prior validate-then-hash race.

@@ -55,6 +55,17 @@ export interface ReviewHistoryPort {
   listJobs(): Promise<readonly HistorySnapshot[]>;
 }
 export interface ReviewAuditPort {
+  reviewPage?(request: Readonly<{ previewId: string; limit: number; cursor?: string }>): Promise<{
+    revision: string;
+    items: Array<{
+      recordId: string;
+      sourcePath: string;
+      outputPath: string;
+      mediaKind: MediaKind;
+      resolution: DateResolutionRecord;
+    }>;
+    nextCursor?: string;
+  }>;
   reviewInput(
     request: Readonly<{ previewId: string; sourcePath: string; outputPath: string }>
   ): Promise<{
@@ -98,6 +109,7 @@ export interface ReviewRemediationServiceOptions {
   coreFactory: (destinationRoot: string) => Promise<ReviewTransactionCorePort>;
   planner?: MediaPlanner;
   now?: () => Date;
+  outputBinding?: (filePath: string) => Promise<ReviewOutputBinding>;
 }
 
 export class ReviewCommittedPersistenceError extends Error {
@@ -121,6 +133,16 @@ interface LocatedItem {
   item: ReviewItemDTO;
   row: Readonly<PreviewRowDTO>;
   options: HistorySnapshot['effectiveOptions'];
+}
+
+interface ReviewDescriptor {
+  id: string;
+  job: HistorySnapshot;
+  row: Readonly<PreviewRowDTO>;
+  rowIndex: number;
+  audit: NonNullable<Awaited<ReturnType<ReviewAuditPort['reviewInput']>>>;
+  override?: ReviewOverrideRecord;
+  status: ReviewItemDTO['status'];
 }
 
 function stable(value: unknown): string {
@@ -294,9 +316,11 @@ export class ReviewRemediationService {
   private readonly initialBindings = new Map<string, ReviewOutputBinding>();
   private readonly planner: MediaPlanner;
   private readonly now: () => Date;
+  private readonly outputBinding: (filePath: string) => Promise<ReviewOutputBinding>;
   constructor(private readonly options: ReviewRemediationServiceOptions) {
     this.planner = options.planner ?? new MediaPlanner();
     this.now = options.now ?? (() => new Date());
+    this.outputBinding = options.outputBinding ?? binding;
   }
 
   withMetadataCollector(metadataCollector: ReviewMetadataCollectorPort): ReviewRemediationService {
@@ -305,35 +329,41 @@ export class ReviewRemediationService {
       metadataCollector,
       planner: this.planner,
       now: this.now,
+      outputBinding: this.outputBinding,
     });
     for (const [key, value] of this.initialBindings) service.initialBindings.set(key, clone(value));
     return service;
   }
 
   async list(request: ReviewListRequestDTO): Promise<ReviewPageDTO> {
-    const items = await this.discover();
+    const descriptors = await this.descriptors();
     const selectedStatuses = request.statuses ?? (request.status ? [request.status] : undefined);
     const filtered =
       selectedStatuses === undefined
-        ? items
-        : items.filter((entry) => selectedStatuses.includes(entry.item.status));
+        ? descriptors
+        : descriptors.filter((entry) => selectedStatuses.includes(entry.status));
     const offset = request.cursor === undefined ? 0 : Number(request.cursor);
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > filtered.length)
       throw new Error('review cursor is invalid');
-    const page = filtered.slice(offset, offset + request.limit).map((entry) => entry.item);
+    const page = await Promise.all(
+      filtered.slice(offset, offset + request.limit).map((entry) => this.materialize(entry))
+    );
     const next = offset + page.length;
-    return { items: page, ...(next < filtered.length ? { nextCursor: String(next) } : {}) };
+    return {
+      items: page.map((entry) => entry.item),
+      ...(next < filtered.length ? { nextCursor: String(next) } : {}),
+    };
   }
 
   async get(id: string): Promise<ReviewItemDTO | null> {
-    return (await this.discover()).find((entry) => entry.item.reviewId === id)?.item ?? null;
+    const descriptor = (await this.descriptors(id))[0];
+    return descriptor ? (await this.materialize(descriptor)).item : null;
   }
 
   async dryRun(request: ReviewDryRunRequestDTO): Promise<ReviewDryRunDTO> {
     const located = await this.locate(request.reviewId);
     if (located.item.evidence.revision !== request.evidenceRevision)
       throw new Error('review evidence revision is stale');
-    await this.assertCurrentIdentity(located.item);
     return this.buildPlan(located, request.action);
   }
 
@@ -341,7 +371,6 @@ export class ReviewRemediationService {
     const located = await this.locate(request.reviewId);
     if (located.item.evidence.revision !== request.evidenceRevision)
       throw new Error('review evidence revision is stale');
-    await this.assertCurrentIdentity(located.item);
     const plan = await this.buildPlan(located, request.action);
     if (plan.collision) throw new Error('review destination collision detected');
     if (plan.planToken !== request.planToken)
@@ -593,7 +622,8 @@ export class ReviewRemediationService {
   }
 
   private async locate(id: string): Promise<LocatedItem> {
-    const found = (await this.discover()).find((entry) => entry.item.reviewId === id);
+    const descriptor = (await this.descriptors(id))[0];
+    const found = descriptor ? await this.materialize(descriptor) : undefined;
     if (!found) throw new Error('review item does not exist');
     if (found.item.status === 'stale') throw new Error('review output identity is stale');
     if (!['pending', 'failed'].includes(found.item.status))
@@ -601,23 +631,38 @@ export class ReviewRemediationService {
     return found;
   }
 
-  private async assertCurrentIdentity(item: ReviewItemDTO): Promise<void> {
-    let current: ReviewOutputBinding;
-    try {
-      current = await binding(item.currentPath);
-    } catch {
-      throw new Error('review output identity is stale');
-    }
-    if (!sameBinding(current, item.output)) throw new Error('review output identity is stale');
-  }
-
-  private async discover(): Promise<LocatedItem[]> {
+  private async descriptors(exactId?: string): Promise<ReviewDescriptor[]> {
     const [jobs, overrideList] = await Promise.all([
       this.options.history.listJobs(),
       this.options.overrides.list(),
     ]);
     const overrides = new Map(overrideList.map((entry) => [entry.reviewId, entry]));
-    const items: LocatedItem[] = [];
+    const catalogs = new Map<
+      string,
+      Map<string, Awaited<ReturnType<ReviewAuditPort['reviewInput']>>>
+    >();
+    if (this.options.audit.reviewPage && exactId === undefined) {
+      for (const previewId of new Set(jobs.map((job) => job.previewId))) {
+        const catalog = new Map<string, Awaited<ReturnType<ReviewAuditPort['reviewInput']>>>();
+        let cursor: string | undefined;
+        do {
+          const page = await this.options.audit.reviewPage({
+            previewId,
+            limit: 100,
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const input of page.items) {
+            const key = `${input.sourcePath}\0${input.outputPath}`;
+            if (catalog.has(key))
+              throw new Error('audit review input binding is ambiguous or corrupt');
+            catalog.set(key, { revision: page.revision, input });
+          }
+          cursor = page.nextCursor;
+        } while (cursor);
+        catalogs.set(previewId, catalog);
+      }
+    }
+    const items: ReviewDescriptor[] = [];
     for (const job of jobs) {
       if (path.resolve(job.destinationPath) !== job.destinationPath)
         throw new Error('review destination root is not canonical');
@@ -632,13 +677,17 @@ export class ReviewRemediationService {
           !contained(job.destinationPath, row.targetPath)
         )
           throw new Error('committed review output is outside its destination root');
-        const audit = await this.options.audit.reviewInput({
-          previewId: job.previewId,
-          sourcePath: row.sourcePath,
-          outputPath: row.targetPath,
-        });
-        if (!audit || audit.input.resolution.status === 'resolved') continue;
         const id = reviewId(job.jobId, rowIndex);
+        if (exactId !== undefined && id !== exactId) continue;
+        const audit =
+          this.options.audit.reviewPage && exactId === undefined
+            ? (catalogs.get(job.previewId)?.get(`${row.sourcePath}\0${row.targetPath}`) ?? null)
+            : await this.options.audit.reviewInput({
+                previewId: job.previewId,
+                sourcePath: row.sourcePath,
+                outputPath: row.targetPath,
+              });
+        if (!audit || audit.input.resolution.status === 'resolved') continue;
         let override = overrides.get(id);
         if (override) this.validateOverride(override, job, row, rowIndex, audit.input.outputPath);
         if (override?.result.status === 'reconciling') {
@@ -646,74 +695,81 @@ export class ReviewRemediationService {
         }
         if (override?.result.status === 'reconciling')
           throw new Error('review transaction reconciliation did not terminalize');
-        let currentPath = row.targetPath;
         let status: ReviewItemDTO['status'] = 'pending';
-        let evidence: ReviewEvidenceSnapshot = {
-          revision: audit.revision,
-          resolution: clone(audit.input.resolution),
-          collectedAt: this.timestamp(),
-        };
-        let lastError: string | undefined;
-        let resolvedPath: string | undefined;
-        let output: ReviewOutputBinding;
         if (override) {
           this.validateOverride(override, job, row, rowIndex, audit.input.outputPath);
           status = override.result.status;
-          if (override.result.status === 'resolved') {
-            currentPath = override.result.resolvedPath;
-            resolvedPath = override.result.resolvedPath;
-          } else {
-            currentPath = override.result.currentPath;
-          }
-          if (override.result.status === 'pending')
-            evidence = clone(override.result.refreshedEvidence);
-          if (override.result.status === 'failed') lastError = override.result.error;
-          output = clone(override.output);
-        } else {
-          const cached = this.initialBindings.get(id);
-          if (cached) output = clone(cached);
-          else {
-            output = await binding(currentPath);
-            this.initialBindings.set(id, clone(output));
-          }
         }
-        if (status === 'pending' || status === 'failed' || status === 'resolved') {
-          try {
-            const observed = await binding(currentPath);
-            const matches =
-              status === 'resolved'
-                ? sameFileIdentity(observed, output)
-                : sameBinding(observed, output);
-            if (!matches) status = 'stale';
-          } catch {
-            status = 'stale';
-          }
-        }
-        const item: ReviewItemDTO = {
-          reviewId: id,
-          jobId: job.jobId,
-          previewId: job.previewId,
-          rowIndex,
-          originalSourcePath: row.sourcePath,
-          currentPath,
-          destinationRoot: job.destinationPath,
-          mediaKind: audit.input.mediaKind,
-          status,
-          reasonCodes: [...evidence.resolution.reasonCodes],
-          warnings: [...row.warnings],
-          evidence,
-          output,
-          screenshotDetected: evidence.resolution.candidates.some(
-            (candidate) => candidate.sourceFamily === 'screenshot-filename'
-          ),
-          ...(lastError ? { lastError } : {}),
-          ...(resolvedPath ? { resolvedPath } : {}),
-          updatedAt: override?.recordedAt ?? evidence.collectedAt,
-        };
-        items.push({ item, row, options: job.effectiveOptions });
+        items.push({ id, job, row, rowIndex, audit, ...(override ? { override } : {}), status });
       }
     }
-    return items.sort((a, b) => a.item.reviewId.localeCompare(b.item.reviewId));
+    return items.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private async materialize(descriptor: ReviewDescriptor): Promise<LocatedItem> {
+    const { id, job, row, rowIndex, audit, override } = descriptor;
+    let status = descriptor.status;
+    let currentPath = row.targetPath!;
+    let evidence: ReviewEvidenceSnapshot = {
+      revision: audit.revision,
+      resolution: clone(audit.input.resolution),
+      collectedAt: this.timestamp(),
+    };
+    let lastError: string | undefined;
+    let resolvedPath: string | undefined;
+    let output: ReviewOutputBinding;
+    let observed: ReviewOutputBinding | undefined;
+    if (override) {
+      if (override.result.status === 'resolved') {
+        currentPath = override.result.resolvedPath;
+        resolvedPath = override.result.resolvedPath;
+      } else currentPath = override.result.currentPath;
+      if (override.result.status === 'pending') evidence = clone(override.result.refreshedEvidence);
+      if (override.result.status === 'failed') lastError = override.result.error;
+      output = clone(override.output);
+    } else {
+      const cached = this.initialBindings.get(id);
+      if (cached) output = clone(cached);
+      else {
+        observed = await this.outputBinding(currentPath);
+        output = clone(observed);
+        this.initialBindings.set(id, clone(output));
+      }
+    }
+    if (status === 'pending' || status === 'failed' || status === 'resolved') {
+      try {
+        observed ??= await this.outputBinding(currentPath);
+        const matches =
+          status === 'resolved'
+            ? sameFileIdentity(observed, output)
+            : sameBinding(observed, output);
+        if (!matches) status = 'stale';
+      } catch {
+        status = 'stale';
+      }
+    }
+    const item: ReviewItemDTO = {
+      reviewId: id,
+      jobId: job.jobId,
+      previewId: job.previewId,
+      rowIndex,
+      originalSourcePath: row.sourcePath,
+      currentPath,
+      destinationRoot: job.destinationPath,
+      mediaKind: audit.input.mediaKind,
+      status,
+      reasonCodes: [...evidence.resolution.reasonCodes],
+      warnings: [...row.warnings],
+      evidence,
+      output,
+      screenshotDetected: evidence.resolution.candidates.some(
+        (candidate) => candidate.sourceFamily === 'screenshot-filename'
+      ),
+      ...(lastError ? { lastError } : {}),
+      ...(resolvedPath ? { resolvedPath } : {}),
+      updatedAt: override?.recordedAt ?? evidence.collectedAt,
+    };
+    return { item, row, options: job.effectiveOptions };
   }
 
   private validateOverride(
@@ -751,8 +807,8 @@ export class ReviewRemediationService {
   private async reconcileOverride(override: ReviewOverrideRecord): Promise<ReviewOverrideRecord> {
     if (override.result.status !== 'reconciling') return override;
     const [sourceState, targetState] = await Promise.all([
-      binding(override.result.currentPath).catch(() => null),
-      binding(override.result.targetPath).catch(() => null),
+      this.outputBinding(override.result.currentPath).catch(() => null),
+      this.outputBinding(override.result.targetPath).catch(() => null),
     ]);
     const sourceMatches = sourceState !== null && sameBinding(sourceState, override.output);
     const targetMatches = targetState !== null && sameFileIdentity(targetState, override.output);

@@ -103,6 +103,18 @@ interface Dataset {
   revision: string;
   indexPath: string;
   cohortPath: string;
+  reviewPath: string;
+  reviewHash: string;
+  reviewCount: number;
+  reviewRecords: readonly AuditInputRecord[];
+  reviewIdentity: Readonly<{
+    dev: number;
+    ino: number;
+    size: number;
+    mtimeNs: string;
+    ctimeNs: string;
+  }>;
+  reviewLookup: ReadonlyMap<string, AuditInputRecord | null>;
   indexHash: string;
   service: NormalizationAuditService;
 }
@@ -263,20 +275,33 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
     return null;
   }
 
+  async reviewPage(request: PageRequest): Promise<{
+    revision: string;
+    items: AuditInputRecord[];
+    nextCursor?: string;
+  }> {
+    const dataset = await this.dataset(request.previewId);
+    const offset = request.cursor === undefined ? 0 : Number(request.cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > dataset.reviewCount)
+      throw new Error('review catalog cursor is invalid');
+    await this.assertReviewCatalogIdentity(dataset);
+    const items = dataset.reviewRecords.slice(offset, offset + request.limit);
+    const next = offset + items.length;
+    return {
+      revision: dataset.revision,
+      items,
+      ...(next < dataset.reviewCount ? { nextCursor: String(next) } : {}),
+    };
+  }
+
   async reviewInput(
     request: Readonly<DatasetRequest & { sourcePath: string; outputPath: string }>
   ): Promise<{ revision: string; input: AuditInputRecord } | null> {
     const dataset = await this.dataset(request.previewId);
-    let matched: AuditInputRecord | undefined;
-    for await (const input of this.source(dataset.indexPath, dataset.indexHash)()) {
-      if (input.sourcePath !== request.sourcePath || input.outputPath !== request.outputPath) {
-        continue;
-      }
-      if (matched !== undefined) {
-        throw new Error('audit review input binding is ambiguous or corrupt');
-      }
-      matched = input;
-    }
+    await this.assertReviewCatalogIdentity(dataset);
+    const key = `${request.sourcePath}\0${request.outputPath}`;
+    const matched = dataset.reviewLookup.get(key);
+    if (matched === null) throw new Error('audit review input binding is ambiguous or corrupt');
     return matched === undefined ? null : { revision: dataset.revision, input: matched };
   }
 
@@ -581,6 +606,7 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
     const snapshotPath = path.join(this.indexRoot, `${digest}.evidence.snapshot.jsonl`);
     const indexPath = path.join(this.indexRoot, `${digest}.jsonl`);
     const cohortPath = path.join(this.indexRoot, `${digest}.cohorts.jsonl`);
+    const reviewPath = path.join(this.indexRoot, `${digest}.review.jsonl`);
     const metadataPath = path.join(this.indexRoot, `${digest}.json`);
 
     // A previously verified private snapshot is durable input. Verify it before doing any
@@ -620,6 +646,8 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
         count?: number;
         indexHash?: string;
         cohortHash?: string;
+        reviewHash?: string;
+        reviewCount?: number;
       };
       if (
         metadata.previewId === previewId &&
@@ -632,6 +660,20 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
           metadata.indexHash === validatedIndexHash &&
           metadata.cohortHash === (await this.hashFile(cohortPath))
         ) {
+          if (metadata.reviewHash === undefined || metadata.reviewCount === undefined) {
+            const derived = await this.buildReviewCatalog(indexPath, reviewPath);
+            await this.writeMetadata(metadataPath, {
+              ...metadata,
+              reviewHash: derived.hash,
+              reviewCount: derived.count,
+            });
+            metadata.reviewHash = derived.hash;
+            metadata.reviewCount = derived.count;
+          } else {
+            const validated = await this.validateReviewCatalog(reviewPath, metadata.reviewCount);
+            if (validated !== metadata.reviewHash)
+              throw new Error('review catalog hash is corrupt');
+          }
           indexHash = validatedIndexHash;
         }
       }
@@ -655,12 +697,38 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
         revision
       );
     }
+    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as {
+      reviewHash: string;
+      reviewCount: number;
+    };
+    const loadedReview = await this.loadReviewCatalog(
+      reviewPath,
+      metadata.reviewCount,
+      metadata.reviewHash
+    );
+    const reviewLookup = new Map<string, AuditInputRecord | null>();
+    for (const input of loadedReview.records) {
+      const key = `${input.sourcePath}\0${input.outputPath}`;
+      reviewLookup.set(key, reviewLookup.has(key) ? null : input);
+    }
     const service = new NormalizationAuditService({
       policy: POLICY,
       source: this.source(indexPath, indexHash),
       currentRevision: async () => revision,
     });
-    return { revision, indexPath, cohortPath, indexHash, service };
+    return {
+      revision,
+      indexPath,
+      cohortPath,
+      reviewPath,
+      reviewHash: metadata.reviewHash,
+      reviewCount: metadata.reviewCount,
+      reviewRecords: loadedReview.records,
+      reviewIdentity: loadedReview.identity,
+      reviewLookup,
+      indexHash,
+      service,
+    };
   }
 
   private source(
@@ -802,6 +870,10 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
     }
     await fs.rename(temporary, indexPath);
     await this.buildCohortIndex(indexPath, cohortPath);
+    const review = await this.buildReviewCatalog(
+      indexPath,
+      indexPath.replace(/\.jsonl$/, '.review.jsonl')
+    );
     const indexHash = await this.validateIndex(indexPath, count);
     const cohortHash = await this.hashFile(cohortPath);
     const metadataTemporary = `${metadataPath}.${process.pid}.${randomUUID()}.tmp`;
@@ -816,6 +888,8 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
           count,
           indexHash,
           cohortHash,
+          reviewHash: review.hash,
+          reviewCount: review.count,
         }),
         'utf8'
       );
@@ -831,6 +905,138 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
       await directory.close();
     }
     return indexHash;
+  }
+
+  private async buildReviewCatalog(
+    indexPath: string,
+    reviewPath: string
+  ): Promise<{ hash: string; count: number }> {
+    const temporary = `${reviewPath}.${process.pid}.${randomUUID()}.tmp`;
+    const output = await fs.open(temporary, 'wx', 0o600);
+    let count = 0;
+    try {
+      for await (const input of this.source(indexPath)()) {
+        if (input.resolution.status === 'resolved') continue;
+        await output.writeFile(`${JSON.stringify(input)}\n`, 'utf8');
+        count += 1;
+      }
+      await output.sync();
+    } finally {
+      await output.close();
+    }
+    await fs.rename(temporary, reviewPath);
+    return { hash: await this.validateReviewCatalog(reviewPath, count), count };
+  }
+
+  private async validateReviewCatalog(reviewPath: string, expectedCount: number): Promise<string> {
+    return (await this.loadReviewCatalog(reviewPath, expectedCount)).hash;
+  }
+
+  private async loadReviewCatalog(
+    reviewPath: string,
+    expectedCount: number,
+    expectedHash?: string
+  ): Promise<{
+    hash: string;
+    records: AuditInputRecord[];
+    identity: { dev: number; ino: number; size: number; mtimeNs: string; ctimeNs: string };
+  }> {
+    await this.assertIndexRoot();
+    const handle = await fs.open(reviewPath, 'r');
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n)
+        throw new Error('review catalog identity is unsafe');
+      const bytes = await handle.readFile();
+      const after = await handle.stat({ bigint: true });
+      const visible = await fs.lstat(reviewPath, { bigint: true });
+      if (
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs ||
+        before.ctimeNs !== after.ctimeNs ||
+        visible.dev !== after.dev ||
+        visible.ino !== after.ino ||
+        visible.size !== after.size ||
+        visible.mtimeNs !== after.mtimeNs ||
+        visible.ctimeNs !== after.ctimeNs
+      )
+        throw new Error('review catalog changed while it was being read');
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      if (expectedHash !== undefined && hash !== expectedHash)
+        throw new Error('review catalog hash is corrupt');
+      const records: AuditInputRecord[] = [];
+      let previous = '';
+      for (const line of bytes.toString('utf8').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const value = JSON.parse(line) as Record<string, unknown>;
+        if (
+          typeof value.recordId !== 'string' ||
+          value.recordId <= previous ||
+          typeof value.sourcePath !== 'string' ||
+          typeof value.outputPath !== 'string' ||
+          typeof value.resolution !== 'object' ||
+          value.resolution === null ||
+          (value.resolution as { status?: string }).status === 'resolved'
+        )
+          throw new Error('review catalog record is corrupt');
+        previous = value.recordId;
+        records.push(value as unknown as AuditInputRecord);
+      }
+      if (records.length !== expectedCount)
+        throw new Error('review catalog record count is corrupt');
+      return {
+        hash,
+        records,
+        identity: {
+          dev: Number(after.dev),
+          ino: Number(after.ino),
+          size: Number(after.size),
+          mtimeNs: after.mtimeNs.toString(),
+          ctimeNs: after.ctimeNs.toString(),
+        },
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async assertReviewCatalogIdentity(dataset: Dataset): Promise<void> {
+    const value = await fs.lstat(dataset.reviewPath, { bigint: true });
+    const expected = dataset.reviewIdentity;
+    if (
+      !value.isFile() ||
+      value.isSymbolicLink() ||
+      value.nlink !== 1n ||
+      Number(value.dev) !== expected.dev ||
+      Number(value.ino) !== expected.ino ||
+      Number(value.size) !== expected.size ||
+      value.mtimeNs.toString() !== expected.mtimeNs ||
+      value.ctimeNs.toString() !== expected.ctimeNs
+    )
+      throw new Error('review catalog identity changed after validation');
+  }
+
+  private async writeMetadata(
+    metadataPath: string,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    const temporary = `${metadataPath}.${process.pid}.${randomUUID()}.tmp`;
+    const handle = await fs.open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify(metadata), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(temporary, metadataPath);
+    const directory = await fs.open(this.indexRoot, 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 
   private async cleanupPreparationArtifacts(digest: string): Promise<void> {
