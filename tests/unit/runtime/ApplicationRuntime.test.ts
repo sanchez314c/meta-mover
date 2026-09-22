@@ -60,6 +60,7 @@ function factories(
   const history = {
     coordinator: historyAdapter,
     list: historyAdapter,
+    review: historyAdapter,
     close: async () => {
       events.push('history.close');
       if (options.failCleanupAt?.includes('history')) throw new Error('history close failed');
@@ -93,6 +94,7 @@ function factories(
     decision: jest.fn(),
     approve: jest.fn(),
     dryRun: jest.fn(),
+    reviewInput: jest.fn(),
     close: async () => {
       events.push('audit.close');
     },
@@ -129,6 +131,18 @@ function factories(
         throw new Error('transaction close failed');
       }
     },
+  };
+  const overrides = {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue(null),
+    append: jest.fn(),
+    close: async () => events.push('overrides.close'),
+  };
+  const review = {
+    list: jest.fn().mockResolvedValue({ items: [] }),
+    get: jest.fn().mockResolvedValue(null),
+    dryRun: jest.fn(),
+    apply: jest.fn(),
   };
   const coordinator = {
     createPreview: async () => {
@@ -197,6 +211,23 @@ function factories(
       events.push('transaction.open');
       return transaction;
     },
+    openReviewOverrides: async () => {
+      events.push('overrides.open');
+      return overrides;
+    },
+    createReview: ({
+      history: receivedHistory,
+      audit: receivedAudit,
+      overrides: receivedOverrides,
+      metadata: receivedMetadata,
+    }) => {
+      expect(receivedHistory).toBe(history.review);
+      expect(receivedAudit).toBe(audit);
+      expect(receivedOverrides).toBe(overrides);
+      expect(receivedMetadata).toBe(metadata);
+      events.push('review.create');
+      return review;
+    },
     createCoordinator: async ({
       planner: receivedPlanner,
       revalidator: receivedRevalidator,
@@ -223,10 +254,12 @@ function factories(
       coordinator: receivedCoordinator,
       history: receivedHistory,
       audit: receivedAudit,
+      review: receivedReview,
     }) => {
       expect(receivedCoordinator).toBe(coordinator);
       expect(receivedHistory).toBe(historyAdapter);
       expect(receivedAudit).toBe(audit);
+      expect(receivedReview).toBe(review);
       events.push('ipc.create');
       return ipc;
     },
@@ -250,6 +283,8 @@ describe('ApplicationRuntime', () => {
       'planner.create',
       'revalidator.create',
       'transaction.open',
+      'overrides.open',
+      'review.create',
       'coordinator.create',
       'ipc.create',
       'ipc.register',
@@ -365,10 +400,11 @@ describe('ApplicationRuntime', () => {
     await expect(
       ApplicationRuntime.create(factories(events, { failAt: 'ipc-register' }))
     ).rejects.toBeInstanceOf(ApplicationRuntimeStartupError);
-    expect(events.slice(-8)).toEqual([
+    expect(events.slice(-9)).toEqual([
       'ipc.dispose',
       'coordinator.shutdown',
       'transaction.close',
+      'overrides.close',
       'audit.close',
       'evidence.shutdown',
       'metadata.close',
@@ -409,6 +445,7 @@ describe('ApplicationRuntime', () => {
       'ipc.dispose',
       'coordinator.shutdown',
       'transaction.close',
+      'overrides.close',
       'audit.close',
       'evidence.shutdown',
       'metadata.close',

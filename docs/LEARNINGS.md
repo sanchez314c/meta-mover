@@ -23,3 +23,10 @@ Bundling a script that calls Python, package managers, or `PATH` is still host-d
 ## Uncertain files should remain easy to find
 
 Forcing weak evidence into a dated folder produces tidy lies. `_Needs Review` keeps the file safe and makes the uncertainty actionable.
+
+## Wall-clock agreement does not erase instant or subsecond conflicts
+
+A filename can corroborate a local date and time, but it cannot select between explicit offsets or
+discard conflicting fractions. The 99,998-row September 22 replay contained 3,627 strong conflicts;
+all 60 contenders that matched at whole-second wall-clock precision still disagreed below the
+second. None qualified for automatic resolution.

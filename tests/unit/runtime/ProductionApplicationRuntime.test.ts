@@ -43,7 +43,13 @@ describe('ProductionApplicationRuntime', () => {
     });
     const historyCoordinator = {};
     const historyList = { listJobs: jest.fn() };
-    const history = { coordinator: historyCoordinator, list: historyList, close: jest.fn() };
+    const historyReview = { listJobs: jest.fn() };
+    const history = {
+      coordinator: historyCoordinator,
+      list: historyList,
+      review: historyReview,
+      close: jest.fn(),
+    };
     const evidence = { shutdown: jest.fn() };
     const audit = {
       summary: jest.fn(),
@@ -53,6 +59,7 @@ describe('ProductionApplicationRuntime', () => {
       decision: jest.fn(),
       approve: jest.fn(),
       dryRun: jest.fn(),
+      reviewInput: jest.fn(),
       authorizeNormalization: jest.fn(),
       close: jest.fn(),
     };
@@ -61,6 +68,8 @@ describe('ProductionApplicationRuntime', () => {
     const planner = { plan: jest.fn() };
     const revalidator = { revalidate: jest.fn() };
     const transaction = { execute: jest.fn(), close: jest.fn() };
+    const overrides = { list: jest.fn(), get: jest.fn(), append: jest.fn(), close: jest.fn() };
+    const review = { list: jest.fn(), get: jest.fn(), dryRun: jest.fn(), apply: jest.fn() };
     const coordinator = {
       createPreview: jest.fn(),
       startProcessing: jest.fn(),
@@ -79,6 +88,8 @@ describe('ProductionApplicationRuntime', () => {
       createPlanner: jest.fn().mockReturnValue(planner),
       createRevalidator: jest.fn().mockReturnValue(revalidator),
       openTransaction: jest.fn().mockResolvedValue(transaction),
+      openReviewOverrides: jest.fn().mockResolvedValue(overrides),
+      createReview: jest.fn().mockReturnValue(review),
       createCoordinator: jest.fn().mockReturnValue(coordinator),
       createIpc: jest.fn().mockReturnValue(ipc),
     };
@@ -93,6 +104,8 @@ describe('ProductionApplicationRuntime', () => {
       planner,
       revalidator,
       transaction,
+      overrides,
+      review,
       coordinator,
       ipc,
       bindings,
@@ -145,6 +158,15 @@ describe('ProductionApplicationRuntime', () => {
       expect.objectContaining({ launchTrustPolicy: test.policy }),
       test.audit
     );
+    expect(test.bindings.openReviewOverrides).toHaveBeenCalledWith(
+      path.join(root, 'review-overrides.jsonl')
+    );
+    expect(test.bindings.createReview).toHaveBeenCalledWith({
+      history: test.history.review,
+      audit: test.audit,
+      overrides: test.overrides,
+      metadata: test.metadata,
+    });
     expect(test.bindings.createCoordinator).toHaveBeenCalledWith(
       expect.objectContaining({
         config: test.config,
@@ -173,6 +195,7 @@ describe('ProductionApplicationRuntime', () => {
       health: test.runtime,
       coordinator: test.coordinator,
       audit: test.audit,
+      review: test.review,
       publishEvent,
     });
     expect(test.ipc.register).toHaveBeenCalledTimes(1);

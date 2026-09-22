@@ -263,6 +263,23 @@ export class EvidenceNormalizationAuditRepository implements NormalizationAuthor
     return null;
   }
 
+  async reviewInput(
+    request: Readonly<DatasetRequest & { sourcePath: string; outputPath: string }>
+  ): Promise<{ revision: string; input: AuditInputRecord } | null> {
+    const dataset = await this.dataset(request.previewId);
+    let matched: AuditInputRecord | undefined;
+    for await (const input of this.source(dataset.indexPath, dataset.indexHash)()) {
+      if (input.sourcePath !== request.sourcePath || input.outputPath !== request.outputPath) {
+        continue;
+      }
+      if (matched !== undefined) {
+        throw new Error('audit review input binding is ambiguous or corrupt');
+      }
+      matched = input;
+    }
+    return matched === undefined ? null : { revision: dataset.revision, input: matched };
+  }
+
   async approve(
     request: DatasetRequest & { revision: string; cohortKey: string; approved: boolean }
   ): Promise<unknown> {

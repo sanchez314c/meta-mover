@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 
 import {
   ConflictPolicy,
+  CancellationFileState,
   FolderStructure,
   OperationMode,
   ProcessingEvent,
@@ -387,10 +388,29 @@ describe('JobHistoryStore', () => {
         skippedFiles: 0,
         failedFiles: 1,
         totalBytes: 42,
-        processedBytes: 20,
+        processedBytes: 21,
         durationMs: 100,
       },
-      fileFailures: [{ sourcePath: '/media/source/b.jpg', error: 'permission denied' }],
+      fileFailures: [{ sourcePath: '/media/source/other.jpg', error: 'permission denied' }],
+      fileOutcomes: [
+        {
+          sourcePath: '/media/source/photo.jpg',
+          destinationPath: '/media/destination/photo.jpg',
+          state: CancellationFileState.COMPLETED,
+          plannedBytes: 21,
+          committedBytes: 21,
+          sourceRetained: false,
+        },
+        {
+          sourcePath: '/media/source/other.jpg',
+          destinationPath: '/media/destination/other.jpg',
+          state: CancellationFileState.FAILED,
+          plannedBytes: 21,
+          committedBytes: 0,
+          sourceRetained: true,
+          error: 'permission denied',
+        },
+      ],
     });
 
     await expect(store.appendEvent(job.jobId, partial)).resolves.toMatchObject({

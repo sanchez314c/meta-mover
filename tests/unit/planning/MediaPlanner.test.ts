@@ -126,13 +126,14 @@ describe('MediaPlanner', () => {
   );
 
   it.each([
-    ['review-required', 'low'],
-    ['ambiguous', 'none'],
-    ['unresolved', 'none'],
-    ['resolved', 'low'],
+    ['review-required', 'low', ['MIDNIGHT_PLACEHOLDER_REVIEW'], 'Placeholder Dates'],
+    ['ambiguous', 'none', ['STRONG_CONFLICT'], 'Conflicting Dates'],
+    ['unresolved', 'none', ['METADATA_READ_FAILED'], 'Metadata Read Failed'],
+    ['unresolved', 'none', ['NO_ELIGIBLE_CANDIDATES'], 'No Usable Date'],
+    ['resolved', 'low', ['REVIEW_REQUIRED_LOW_CONFIDENCE'], 'No Usable Date'],
   ] as const)(
-    'routes %s/%s evidence to review with the sanitized original basename',
-    (status, confidence) => {
+    'routes %s/%s evidence to the %s review reason with the sanitized original basename',
+    (status, confidence, reasonCodes, reviewFolder) => {
       const planner = new MediaPlanner();
       const input = request(
         path.join(sourceRoot, ' unsafe<>name?.jpg '),
@@ -140,6 +141,7 @@ describe('MediaPlanner', () => {
         resolution({
           status,
           confidence,
+          reasonCodes: [...reasonCodes],
           selectedValue:
             status === 'unresolved'
               ? undefined
@@ -154,7 +156,7 @@ describe('MediaPlanner', () => {
       const plan = planner.planForPreview(input);
 
       expect(plan.targetPath).toBe(
-        path.join(destinationRoot, 'Photos', '_Needs Review', 'unsafe__name_.jpg')
+        path.join(destinationRoot, 'Photos', '_Needs Review', reviewFolder, 'unsafe__name_.jpg')
       );
       expect(plan.needsReview).toBe(true);
       expect(plan.resolution).toBe(input.resolution);
@@ -212,7 +214,13 @@ describe('MediaPlanner', () => {
       );
 
       expect(planner.planForPreview(input)).toMatchObject({
-        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'uuid-name.jpg'),
+        targetPath: path.join(
+          destinationRoot,
+          'Photos',
+          '_Needs Review',
+          'No Usable Date',
+          'uuid-name.jpg'
+        ),
         needsReview: true,
       });
     }
@@ -235,7 +243,13 @@ describe('MediaPlanner', () => {
     );
 
     expect(planner.planForExecution(input)).toMatchObject({
-      targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'photo.jpg'),
+      targetPath: path.join(
+        destinationRoot,
+        'Photos',
+        '_Needs Review',
+        'No Usable Date',
+        'photo.jpg'
+      ),
       needsReview: true,
     });
   });
@@ -261,7 +275,13 @@ describe('MediaPlanner', () => {
       );
 
       expect(planner.planForPreview(input)).toMatchObject({
-        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'spoofed.jpg'),
+        targetPath: path.join(
+          destinationRoot,
+          'Photos',
+          '_Needs Review',
+          'No Usable Date',
+          'spoofed.jpg'
+        ),
         needsReview: true,
       });
     }
@@ -320,7 +340,13 @@ describe('MediaPlanner', () => {
       );
 
       expect(planner.planForPreview(input)).toMatchObject({
-        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'mismatched.jpg'),
+        targetPath: path.join(
+          destinationRoot,
+          'Photos',
+          '_Needs Review',
+          'No Usable Date',
+          'mismatched.jpg'
+        ),
         needsReview: true,
       });
     }
@@ -348,7 +374,13 @@ describe('MediaPlanner', () => {
       );
 
       expect(planner.planForPreview(input)).toMatchObject({
-        targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'spoofed-filename.jpg'),
+        targetPath: path.join(
+          destinationRoot,
+          'Photos',
+          '_Needs Review',
+          'No Usable Date',
+          'spoofed-filename.jpg'
+        ),
         needsReview: true,
       });
     }
@@ -402,11 +434,23 @@ describe('MediaPlanner', () => {
     );
 
     expect(planner.planForExecution(malformed)).toMatchObject({
-      targetPath: path.join(destinationRoot, 'Videos', '_Needs Review', 'clip.mov'),
+      targetPath: path.join(
+        destinationRoot,
+        'Videos',
+        '_Needs Review',
+        'No Usable Date',
+        'clip.mov'
+      ),
       needsReview: true,
     });
     expect(planner.planForPreview(missing)).toMatchObject({
-      targetPath: path.join(destinationRoot, 'Photos', '_Needs Review', 'photo.jpg'),
+      targetPath: path.join(
+        destinationRoot,
+        'Photos',
+        '_Needs Review',
+        'No Usable Date',
+        'photo.jpg'
+      ),
       needsReview: true,
     });
   });
@@ -425,7 +469,7 @@ describe('MediaPlanner', () => {
       resolution({ status: 'unresolved', confidence: 'none', selectedValue: undefined })
     );
     expect(planner.planForPreview(reviewInput).targetPath).toBe(
-      path.join(destinationRoot, 'Photos', '_Needs Review', 'unnamed_file')
+      path.join(destinationRoot, 'Photos', '_Needs Review', 'No Usable Date', 'unnamed_file')
     );
   });
 
@@ -501,7 +545,7 @@ describe('MediaPlanner', () => {
     ).toBe(path.join(destinationRoot, 'Photos', '2024', '03', '2024-03-04_05-06-07.PNG'));
   });
 
-  it('labels review filenames once and preserves the extension', () => {
+  it('preserves the original review basename even when screenshot labeling is enabled', () => {
     const planner = new MediaPlanner();
     const unresolved = resolution({
       status: 'unresolved',
@@ -515,14 +559,22 @@ describe('MediaPlanner', () => {
         appendScreenshotSuffix: true,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, 'Photos', '_Needs Review', 'IMG_0042-screen-shot.png'));
+    ).toBe(path.join(destinationRoot, 'Photos', '_Needs Review', 'No Usable Date', 'IMG_0042.png'));
     expect(
       planner.planForPreview({
         ...request(path.join(sourceRoot, 'IMG_0042-screen-shot.png'), destinationRoot, unresolved),
         appendScreenshotSuffix: true,
         screenshotDetected: true,
       }).targetPath
-    ).toBe(path.join(destinationRoot, 'Photos', '_Needs Review', 'IMG_0042-screen-shot.png'));
+    ).toBe(
+      path.join(
+        destinationRoot,
+        'Photos',
+        '_Needs Review',
+        'No Usable Date',
+        'IMG_0042-screen-shot.png'
+      )
+    );
   });
 
   it.each([
@@ -560,6 +612,6 @@ describe('MediaPlanner', () => {
         ...base,
         resolution: resolution({ status: 'unresolved', confidence: 'none' }),
       }).targetPath
-    ).toBe(path.join(destinationRoot, folder, '_Needs Review', 'file.bin'));
+    ).toBe(path.join(destinationRoot, folder, '_Needs Review', 'No Usable Date', 'file.bin'));
   });
 });

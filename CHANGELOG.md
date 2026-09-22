@@ -1,4 +1,30 @@
+## 2026-09-22 unanimous local capture recovery
+
+- Recovered 2,265 formerly ambiguous images when floating EXIF `DateTimeOriginal`, a different
+  embedded capture source, and every eligible nonfilesystem contender agree on one non-midnight
+  local clock. Filename lineage remains display-only and is never required.
+- Kept the result at medium confidence and retained every contender ID because instant-bearing
+  fields still disagree about zone representation.
+- Excluded nonzero fractions, differing local values, unrelated date-only claims, midnight
+  placeholders, explicit-offset originals, and filenames as independent corroboration.
+- Full 99,998-row replay changed exactly 2,265 `ambiguous/none` records to `resolved/medium` and no
+  other status or confidence. Removing the erroneous filename requirement added no records in the
+  current ledger.
+
+## 2026-09-22 reason-specific review folders
+
+- Split review output beneath each media type into `Placeholder Dates`, `Conflicting Dates`, `Metadata Read Failed`, and `No Usable Date` folders.
+- Preserved the sanitized original basename for every review item; screenshot suffix labeling remains limited to trusted dated output.
+- `Metadata Read Failed` requires the explicit `METADATA_READ_FAILED` resolution reason. Current metadata collector warnings do not yet add that reason to the resolution record, so those rows continue to use `No Usable Date` until retry plumbing supplies it.
+- Added exact-path planner coverage for all four reasons, guarded status/reason combinations, every media type, malformed or untrusted selections, and review basename preservation.
+
 # Changelog
+
+## 2026-09-22 durable review override ledger
+
+- Added a private append-only `ReviewOverrideStore` for Review Queue decisions. It enforces the shared exact record schema, contract-derived review IDs, per-review monotonic sequences, latest-record replay, a live exclusive lock with dead-owner recovery, canonical safe paths, single-link file identity, `0700` parent and `0600` file permissions, and fsynced appends.
+- Startup repairs only an invalid partial trailing record. Complete records without a terminating newline, malformed middle records, sequence gaps, external file drift, lock replacement, and unreconcilable append outcomes poison the store instead of guessing.
+- Ambiguous append failures reconcile exact prefix bytes, truncate partial writes, retry, and sync before publishing in-memory state. Focused storage tests cover replay, permissions, contention, stale locks, tail repair, poison paths, sequence rejection, append reconciliation, symlinks, hard links, close-time draining, and read-time detection of replacement, truncation, or external append.
 
 ## 2026-09-21 default window dimensions
 
@@ -785,3 +811,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prevented audit deadlock caused by requiring terminal job closure before pre-run review.
 - Prevented source deletion or destination publication after unverified metadata mutation.
 - Preserved legitimate GPS, timecode, history, non-date metadata, TrackCreateDate, and MediaCreateDate semantics.
+
+## 2026-09-22 Review Queue runtime absorption
+
+- Connected the Review Queue to the production application runtime with an owned private override store and remediation service.
+- Added fixed `review:list`, `review:get`, `review:dry-run`, and `review:apply` IPC channels with strict shared request validation before service execution.
+- Exposed the four operations through the sandboxed preload bridge and typed renderer API without accepting renderer-supplied filesystem paths.
+- Added lifecycle, rollback, IPC validation, and preload regressions. The focused Review/runtime grid passes 73 tests; TypeScript and ESLint pass.
+
+### Review Queue runtime follow-up
+
+- Kept pending metadata retries and failed review transactions visible, refreshed from main-process truth, and surfaced persisted transaction errors instead of dropping those rows.
+- Validated every Review service response against the shared DTO contracts before IPC returns it to the renderer.
+- Replaced production review-history and audit casts with explicit typed runtime ports. Review discovery now consumes full durable history snapshots rather than renderer-safe history summaries.
+
+### Review Queue failed-item reload correction
+
+- Review Queue reloads durable pending and failed records, excludes terminal kept and resolved records, and surfaces a persisted failure when the row is selected.
+- Added an unmount/remount regression proving a failed transaction remains discoverable after renderer recreation.
+
+### Review Queue actionable pagination correction
+
+- Added an exact server-side multi-status list contract so pending and failed records are filtered before cursor pagination.
+- Prevented terminal records in an earlier page from causing a false empty Review Queue while actionable records exist later.

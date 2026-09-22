@@ -17,6 +17,23 @@ import {
   StartProcessingRequestDTO,
   StartProcessingResultDTO,
 } from '../../shared/types/processing';
+import {
+  isReviewApplyRequestDTO,
+  isReviewDryRunRequestDTO,
+  isReviewGetRequestDTO,
+  isReviewApplyResultDTO,
+  isReviewDryRunDTO,
+  isReviewItemDTO,
+  isReviewListRequestDTO,
+  isReviewPageDTO,
+  type ReviewApplyRequestDTO,
+  type ReviewApplyResultDTO,
+  type ReviewDryRunDTO,
+  type ReviewDryRunRequestDTO,
+  type ReviewItemDTO,
+  type ReviewListRequestDTO,
+  type ReviewPageDTO,
+} from '../../shared/types/review';
 
 export const PROCESSING_IPC_CHANNELS = Object.freeze([
   'processing:preview',
@@ -34,6 +51,10 @@ export const PROCESSING_IPC_CHANNELS = Object.freeze([
   'normalization-audit:decision',
   'normalization-audit:approve',
   'normalization-audit:dry-run',
+  'review:list',
+  'review:get',
+  'review:dry-run',
+  'review:apply',
 ] as const);
 
 type ProcessingIpcChannel = (typeof PROCESSING_IPC_CHANNELS)[number];
@@ -77,6 +98,13 @@ export interface NormalizationAuditIpcPort {
   dryRun(request: unknown): Promise<unknown>;
 }
 
+export interface ReviewIpcPort {
+  list(request: ReviewListRequestDTO): Promise<ReviewPageDTO>;
+  get(reviewId: string): Promise<ReviewItemDTO | null>;
+  dryRun(request: ReviewDryRunRequestDTO): Promise<ReviewDryRunDTO>;
+  apply(request: ReviewApplyRequestDTO): Promise<ReviewApplyResultDTO>;
+}
+
 export interface ProcessingIPCDependencies {
   ipc: IpcRegistrarPort;
   coordinator: ProcessingCoordinatorPort;
@@ -84,6 +112,7 @@ export interface ProcessingIPCDependencies {
   history: HistoryListPort;
   config: ConfigIpcPort;
   audit: NormalizationAuditIpcPort;
+  review: ReviewIpcPort;
   publishEvent(event: Readonly<ProcessingEvent>): void;
 }
 
@@ -369,6 +398,36 @@ export class ProcessingIPCController {
         if (request.cursor !== undefined)
           request.cursor = boundedToken(request.cursor, 'cursor', 128);
         return { success: true, data: await this.dependencies.audit.dryRun(request) };
+      });
+      this.handle('review:list', async (value) => {
+        if (!isReviewListRequestDTO(value))
+          throw new IPCValidationError('Review list request is invalid');
+        const data = await this.dependencies.review.list(value);
+        if (!isReviewPageDTO(data)) throw new Error('Review service returned an invalid page');
+        return { success: true, data };
+      });
+      this.handle('review:get', async (value) => {
+        if (!isReviewGetRequestDTO(value))
+          throw new IPCValidationError('Review get request is invalid');
+        const data = await this.dependencies.review.get(value.reviewId);
+        if (data !== null && !isReviewItemDTO(data))
+          throw new Error('Review service returned an invalid item');
+        return { success: true, data };
+      });
+      this.handle('review:dry-run', async (value) => {
+        if (!isReviewDryRunRequestDTO(value))
+          throw new IPCValidationError('Review dry-run request is invalid');
+        const data = await this.dependencies.review.dryRun(value);
+        if (!isReviewDryRunDTO(data)) throw new Error('Review service returned an invalid plan');
+        return { success: true, data };
+      });
+      this.handle('review:apply', async (value) => {
+        if (!isReviewApplyRequestDTO(value))
+          throw new IPCValidationError('Review apply request is invalid');
+        const data = await this.dependencies.review.apply(value);
+        if (!isReviewApplyResultDTO(data))
+          throw new Error('Review service returned an invalid result');
+        return { success: true, data };
       });
       const unsubscribe = this.dependencies.coordinator.subscribe((event) => {
         if (this.accepting) this.dependencies.publishEvent(event);

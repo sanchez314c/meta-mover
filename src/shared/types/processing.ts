@@ -350,7 +350,11 @@ export type JobCompletedEvent = ProcessingEventBase<
 
 export type JobPartiallyCompletedEvent = ProcessingEventBase<
   typeof ProcessingEventKind.JOB_PARTIALLY_COMPLETED,
-  { statistics: ProcessingStatisticsDTO; fileFailures: ProcessingFileFailureDTO[] }
+  {
+    statistics: ProcessingStatisticsDTO;
+    fileFailures: ProcessingFileFailureDTO[];
+    fileOutcomes: ProcessingCancellationFileOutcomeDTO[];
+  }
 >;
 
 export type JobFailedEvent = ProcessingEventBase<

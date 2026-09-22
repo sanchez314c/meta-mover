@@ -2078,6 +2078,426 @@ describe('resolveDateCandidates', () => {
     expect(result.reasonCodes).toContain('STRONG_CONFLICT');
   });
 
+  it('does not let a matching filename erase conflicting UTC interpretations of one wall clock', () => {
+    const wallClock = '2020-01-01T10:00:00';
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'east',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'EXIF:DateTimeOriginal',
+          value: {
+            localIso: wallClock,
+            instantUtc: '2020-01-01T15:00:00.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'west',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP:DateTimeOriginal',
+          value: {
+            localIso: wallClock,
+            instantUtc: '2020-01-01T18:00:00.000Z',
+            offsetMinutes: -480,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'filename',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-timestamp',
+          tag: 'filename:2020-01-01_10-00-00.jpg',
+          value: {
+            localIso: wallClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('ambiguous');
+    expect(result.reasonCodes).toContain('STRONG_CONFLICT');
+  });
+
+  it('recovers a unanimous embedded local capture clock split only by UTC representation', () => {
+    const localClock = '2005-04-01T01:01:01';
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-original',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-capture',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'iptc-offset',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
+          tag: 'IPTC:DateCreated',
+          value: {
+            localIso: localClock,
+            instantUtc: '2005-04-01T06:01:01.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'gps-utc',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'gps',
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          value: {
+            localIso: localClock,
+            instantUtc: '2005-04-01T01:01:01.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'date-only',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
+          tag: 'IPTC:DateCreated',
+          value: {
+            localIso: '2005-04-01',
+            zoneBasis: 'date-only',
+            precision: 'date',
+          },
+        }),
+        candidate({
+          id: 'filename-lineage',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-timestamp',
+          tag: 'filename:2005-04-01_01-01-01.jpeg',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: 'exif-original',
+      selectedValue: {
+        localIso: localClock,
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+    });
+    expect(result.reasonCodes).toContain('UNANIMOUS_LOCAL_CAPTURE_RECOVERY');
+    expect(result.contenderIds).toEqual([
+      'date-only',
+      'exif-original',
+      'filename-lineage',
+      'gps-utc',
+      'iptc-offset',
+      'xmp-capture',
+    ]);
+  });
+
+  it('does not require prior filename lineage for unanimous embedded recovery', () => {
+    const localClock = '2005-04-01T01:01:01';
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-original',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-capture',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'gps-utc',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'gps',
+          tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
+          value: {
+            localIso: localClock,
+            instantUtc: '2005-04-01T01:01:01.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'iptc-offset-no-lineage',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
+          tag: 'IPTC:DateCreated',
+          value: {
+            localIso: localClock,
+            instantUtc: '2005-04-01T06:01:01.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: 'exif-original',
+    });
+    expect(result.reasonCodes).toContain('UNANIMOUS_LOCAL_CAPTURE_RECOVERY');
+  });
+
+  it.each([
+    {
+      name: 'an exact-midnight original',
+      original: {
+        localIso: '2005-04-01T00:00:00',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+      corroborating: {
+        localIso: '2005-04-01T00:00:00',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+    },
+    {
+      name: 'a nonzero fractional claim',
+      original: {
+        localIso: '2005-04-01T01:01:01.123',
+        fractionalDigits: '123',
+        zoneBasis: 'floating-local',
+        precision: 'millisecond',
+      },
+      corroborating: {
+        localIso: '2005-04-01T01:01:01',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+    },
+    {
+      name: 'a mismatched date-only claim',
+      original: {
+        localIso: '2005-04-01T01:01:01',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+      corroborating: {
+        localIso: '2005-04-01T01:01:01',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+      dateOnly: '2005-04-02',
+    },
+    {
+      name: 'an explicit-offset original',
+      original: {
+        localIso: '2005-04-01T01:01:01',
+        instantUtc: '2005-04-01T06:01:01.000Z',
+        offsetMinutes: -300,
+        zoneBasis: 'explicit-offset',
+        precision: 'second',
+      },
+      corroborating: {
+        localIso: '2005-04-01T01:01:01',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
+    },
+  ] as const)('does not recover $name', ({ original, corroborating, dateOnly }) => {
+    const inputs = [
+      candidate({
+        id: 'exif-original',
+        mediaKind: 'image',
+        semantic: 'capture',
+        sourceKind: 'embedded-exif',
+        sourceFamily: 'exif',
+        tag: 'ExifIFD:DateTimeOriginal',
+        value: original,
+      }),
+      candidate({
+        id: 'xmp-capture',
+        mediaKind: 'image',
+        semantic: 'capture',
+        sourceKind: 'embedded-xmp',
+        sourceFamily: 'xmp',
+        tag: 'XMP-photoshop:DateCreated',
+        value: corroborating,
+      }),
+      ...(dateOnly === undefined
+        ? []
+        : [
+            candidate({
+              id: 'date-only',
+              mediaKind: 'image',
+              semantic: 'capture',
+              sourceKind: 'embedded-iptc',
+              sourceFamily: 'iptc',
+              tag: 'IPTC:DateCreated',
+              value: {
+                localIso: dateOnly,
+                zoneBasis: 'date-only',
+                precision: 'date',
+              },
+            }),
+          ]),
+    ];
+
+    const result = resolveDateCandidates(request(inputs));
+    expect(result.reasonCodes).not.toContain('UNANIMOUS_LOCAL_CAPTURE_RECOVERY');
+  });
+
+  it('does not recover without a different embedded capture source', () => {
+    const localClock = '2005-04-01T01:01:01';
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif-original',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'filename-only',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-timestamp',
+          tag: 'filename:2005-04-01_01-01-01.jpeg',
+          value: {
+            localIso: localClock,
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.reasonCodes).not.toContain('UNANIMOUS_LOCAL_CAPTURE_RECOVERY');
+  });
+
+  it('does not let filename agreement override a different authoritative local capture time', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'original',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'EXIF:DateTimeOriginal',
+          value: {
+            localIso: '2002-01-04T05:35:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'editorial',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP:DateTimeOriginal',
+          value: {
+            localIso: '2002-01-04T17:35:38',
+            instantUtc: '2002-01-04T22:35:38.000Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'filename',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-timestamp',
+          tag: 'filename:2002-01-04_05-35-38.jpg',
+          value: {
+            localIso: '2002-01-04T05:35:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.status).toBe('ambiguous');
+    expect(result.reasonCodes).toContain('STRONG_CONFLICT');
+  });
+
   it('prefers a corroborated original lifecycle date without letting an isolated ancient outlier win', () => {
     const original = {
       localIso: '2019-04-05T06:07:08',

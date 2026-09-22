@@ -41,6 +41,12 @@ interface DateParts {
   fraction?: string;
 }
 
+type ReviewReasonFolder =
+  | 'Placeholder Dates'
+  | 'Conflicting Dates'
+  | 'Metadata Read Failed'
+  | 'No Usable Date';
+
 function sanitizeBasename(sourcePath: string): string {
   let basename = path.basename(sourcePath).trim();
   basename = basename.replace(/[\x00-\x1f<>:"/\\|?*]/g, '_');
@@ -108,6 +114,25 @@ export function mediaKindFolder(mediaKind: MediaKind): string {
   return MEDIA_KIND_FOLDER[mediaKind] ?? 'Other';
 }
 
+function reviewReasonFolder(resolution: DateResolutionRecord): ReviewReasonFolder {
+  if (
+    resolution.status === 'review-required' &&
+    resolution.reasonCodes.includes('MIDNIGHT_PLACEHOLDER_REVIEW')
+  ) {
+    return 'Placeholder Dates';
+  }
+  if (resolution.status === 'ambiguous' && resolution.reasonCodes.includes('STRONG_CONFLICT')) {
+    return 'Conflicting Dates';
+  }
+  if (
+    resolution.status === 'unresolved' &&
+    resolution.reasonCodes.includes('METADATA_READ_FAILED')
+  ) {
+    return 'Metadata Read Failed';
+  }
+  return 'No Usable Date';
+}
+
 function trustedTarget(
   request: MediaPlanRequest,
   basename: string,
@@ -148,12 +173,12 @@ export class MediaPlanner {
 
   private plan(request: MediaPlanRequest): MediaPlan {
     const sourceBasename = sanitizeBasename(request.sourcePath);
-    const basename =
+    const trustedBasename =
       request.appendScreenshotSuffix && request.screenshotDetected
         ? appendScreenshotSuffix(sourceBasename)
         : sourceBasename;
     const trustedPath = trustedResolution(request.resolution)
-      ? trustedTarget(request, basename, request.resolution.selectedValue)
+      ? trustedTarget(request, trustedBasename, request.resolution.selectedValue)
       : null;
     const needsReview = trustedPath === null;
 
@@ -165,7 +190,8 @@ export class MediaPlanner {
           request.destinationRoot,
           mediaKindFolder(request.mediaKind),
           '_Needs Review',
-          basename
+          reviewReasonFolder(request.resolution),
+          sourceBasename
         ),
       mediaKind: request.mediaKind,
       operation: request.operation,

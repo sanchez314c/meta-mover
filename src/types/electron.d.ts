@@ -11,6 +11,16 @@ import type {
   StartProcessingResultDTO,
 } from '../shared/types/processing';
 import type { AuditDecision, AuditPage, AuditSampleResult } from '../shared/types/audit';
+import type {
+  ReviewApplyRequestDTO,
+  ReviewApplyResultDTO,
+  ReviewDryRunDTO,
+  ReviewDryRunRequestDTO,
+  ReviewGetRequestDTO,
+  ReviewItemDTO,
+  ReviewListRequestDTO,
+  ReviewPageDTO,
+} from '../shared/types/review';
 
 export interface ElectronAPI {
   getSystemInfo: () => Promise<Record<string, unknown>>;
@@ -75,6 +85,14 @@ export interface ElectronAPI {
     limit: number;
     cursor?: string;
   }) => Promise<ProcessingResponseDTO<AuditPage>>;
+  reviewList: (request: ReviewListRequestDTO) => Promise<ProcessingResponseDTO<ReviewPageDTO>>;
+  reviewGet: (request: ReviewGetRequestDTO) => Promise<ProcessingResponseDTO<ReviewItemDTO | null>>;
+  reviewDryRun: (
+    request: ReviewDryRunRequestDTO
+  ) => Promise<ProcessingResponseDTO<ReviewDryRunDTO>>;
+  reviewApply: (
+    request: ReviewApplyRequestDTO
+  ) => Promise<ProcessingResponseDTO<ReviewApplyResultDTO>>;
   getConfig: () => Promise<ProcessingResponseDTO<AppConfig>>;
   updateConfig: (update: AppConfigUpdate) => Promise<ProcessingResponseDTO<AppConfig>>;
   resetConfig: () => Promise<ProcessingResponseDTO<AppConfig>>;

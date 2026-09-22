@@ -1,3 +1,39 @@
+## 2026-09-22 unanimous local capture recovery
+
+- Discussion: the first replay inspected only the resolver's top-two `contenderIds` and found 60
+  whole-second matches, all with fractional disagreement. That projection omitted eligible
+  corroborators outside the constructed top groups.
+- Decision: inspect every eligible nonfilesystem candidate. Recover only a floating EXIF
+  `DateTimeOriginal` with a different embedded capture-semantic source, one unanimous non-midnight
+  local second, matching date-only candidates, and no nonzero fraction. Filename lineage is
+  recorded and displayed only; it is neither required nor independent corroboration.
+- Built `UNANIMOUS_LOCAL_CAPTURE_RECOVERY` as a medium-confidence resolver outcome. It selects the
+  EXIF original, normalizes zero-only fractions to whole seconds, and preserves every contender ID.
+- Counterexamples remain ambiguous or review-only: different local clocks, nonzero fractions,
+  midnight placeholders, explicit-offset originals, and weak filename-only agreement.
+- Replay gate: all 99,998 durable resolutions replayed; exactly 2,265 changed from
+- Reviewer correction: removed filename lineage as a predicate requirement and added exact boundary
+  tests for missing lineage, midnight, nonzero fractions, date-only mismatch, missing independent
+  embedded capture corroboration, and explicit-offset originals. The replay count remained 2,265,
+  so the corrected predicate introduced no new ledger signature.
+
+## 2026-09-22 Review Queue override persistence
+
+- Decision: persist each user review result as one exact schema-versioned JSONL event with a caller supplied event ID and a sequence monotonic within its review ID. The store recomputes the contract SHA-256 review ID from job, preview, row, output path, and output hash before accepting any record. Replay exposes only the latest event for each review item.
+- Built `ReviewOverrideStore.open`, `append`, `get`, `list`, and `close` with private path validation, exclusive ownership, fsync, partial-tail recovery, ambiguous-append reconciliation, poison semantics, immutable snapshots, and shared review contract validation.
+- Scope remains persistence only. Runtime composition, IPC, remediation behavior, and renderer work are separate Review Queue tasks.
+- Reviewer correction: close now blocks new admissions while draining accepted appends before releasing storage. Every get/list rechecks lock ownership, held/visible file identity, and exact known file size; replacement, truncation, or external append poisons reads.
+- Validation: 15 focused storage tests pass. Scoped ESLint, Prettier, and diff checks pass. Whole-tree typecheck is presently blocked by the concurrently edited `ReviewRemediationService.ts` assigning `ParsedDateValue` to `JsonValue` at line 141.
+
+## 2026-09-22 reason-specific review folders
+
+- User requested that `_Needs Review` stop flattening every unresolved asset into one folder and retain enough structure to explain the failure class.
+- Decision: preserve the existing type-first layout and route review items to `Type/_Needs Review/Placeholder Dates`, `Conflicting Dates`, `Metadata Read Failed`, or `No Usable Date`.
+- Classification is deterministic from the immutable date resolution: `review-required` plus `MIDNIGHT_PLACEHOLDER_REVIEW`, `ambiguous` plus `STRONG_CONFLICT`, and `unresolved` plus `METADATA_READ_FAILED`; every other untrusted result uses `No Usable Date`.
+- Review output keeps the sanitized original basename. Screenshot suffix labeling applies only when a trusted date produces a renamed output.
+- Known boundary: metadata read failures currently survive as collector warning text and are not encoded as `METADATA_READ_FAILED` in `DateResolutionRecord`. The planner supports the reason code without guessing from an empty candidate set; retry/remediation plumbing must add the explicit reason before existing failures enter `Metadata Read Failed`.
+- TDD: exact destination tests failed against the flat review layout, then all 33 planner tests passed after implementation. TypeScript, ESLint, and scoped Prettier checks pass.
+
 ## 2026-09-21 default window dimensions
 
 - User requested that the live META Mover window's manually adjusted dimensions become the default without closing or restarting the application.
@@ -659,3 +695,40 @@ Node's `fs` API exposes held `FileHandle` objects but no `openat`/`renameat`/`un
 - Validated the found state: TypeScript, ESLint, and 1,077 Jest tests across 55 suites pass. Independent adversarial review of the uncommitted diff confirmed the port, repository, coordinator, renderer, and IPC changes deliver visible preparation progress, honored cancellation, intact hash-chain validation, and indexed authorization with binding checks, and enumerated the unmet portions of the correction contract.
 - Launched the corrected checkout from source under isolated profile `/tmp/meta-mover-source-live-20260917/profile`. The live `dist/main` bundle contains the preparation-progress runtime markers and the runtime log reports canonical startup.
 - Backed up the uncommitted working tree to `/archive/20260917_234500-meta-mover-source.zip` plus a binary-safe `git diff` patch before further edits.
+
+## 2026-09-22 Review Queue runtime absorption
+
+### Discussed
+
+The Review view and remediation engine existed as isolated programs, but the running Electron application had no composition, IPC, or preload path connecting them.
+
+### Decided
+
+The canonical application runtime owns the append-only review override store and creates one ReviewRemediationService from the existing history, audit, metadata, and transaction primitives. Renderer requests carry review IDs, evidence revisions, actions, and plan tokens only. Filesystem paths remain derived from sealed history and audit evidence in the main process.
+
+### Built
+
+- Added Review service and override-store ownership to `ApplicationRuntime`, including rollback and deterministic shutdown.
+- Added production bindings that open `review-overrides.jsonl` beside job history and construct the remediation service.
+- Added strict shared validation and fixed handlers for `review:list`, `review:get`, `review:dry-run`, and `review:apply`.
+- Added preload bridge methods and `ElectronAPI` result types matching `ReviewView`.
+- Added focused TDD coverage for bridge mapping, malformed-request rejection, dependency composition, rollback, and shutdown.
+
+### Validation
+
+- 73 focused Review/runtime tests pass.
+- `npm run typecheck` passes.
+- `npm run lint:check` passes.
+- The live application was not restarted during this scoped change.
+
+### Review Queue runtime correction loop
+
+Independent review found three blockers in the initial runtime absorption. Corrected them with failing tests first: non-terminal apply results now refresh and retain their queue row; malformed service outputs fail closed at IPC; and production composition exposes dedicated typed review-history and review-audit ports with no unknown casts. The focused Review/runtime grid now passes 76 tests, plus TypeScript, ESLint, Prettier, and diff checks.
+
+### Review Queue durable failed-item discovery
+
+The initial renderer query filtered the service to `pending`, so a failed but retryable override survived on disk yet disappeared after reload. The queue now pages the durable review set and admits pending and failed rows into the actionable UI while excluding terminal kept and resolved rows. A remount test proves failed state and `lastError` return from durable service truth.
+
+### Review Queue actionable cursor contract
+
+Client-side filtering after a bounded server page was unsafe because 50 terminal records could hide failed or pending records on later pages. `ReviewListRequestDTO` now accepts one exact, unique `statuses` set mutually exclusive with `status`; the remediation service filters by that set before slicing and calculating the cursor. ReviewView requests `pending` plus `failed`. Contract, service, and renderer regressions cover validation and the terminal-first-page counterexample.

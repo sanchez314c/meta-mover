@@ -471,6 +471,111 @@ describe('EvidenceNormalizationAuditRepository', () => {
     }
   });
 
+  it('returns the unique full sealed review input and rejects partial-path matches', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-input-'));
+    try {
+      await writeSealedPreview(root, 'preview-review-input', 2);
+      const repository = await EvidenceNormalizationAuditRepository.open(root);
+
+      const found = await repository.reviewInput({
+        previewId: 'preview-review-input',
+        sourcePath: '/source/1.jpg',
+        outputPath: '/output/1.jpg',
+      });
+      expect(found).toMatchObject({
+        revision: expect.stringMatching(/^[0-9a-f]{64}$/),
+        input: {
+          recordId: 'row-0000000000000001',
+          operationId: 'operation-1',
+          sourcePath: '/source/1.jpg',
+          outputPath: '/output/1.jpg',
+          resolution: {
+            fileId: 'file-1',
+            candidates: expect.arrayContaining([
+              expect.objectContaining({ id: 'selected' }),
+              expect.objectContaining({ id: 'corroborator' }),
+            ]),
+          },
+        },
+      });
+      await expect(
+        repository.reviewInput({
+          previewId: 'preview-review-input',
+          sourcePath: '/source/missing.jpg',
+          outputPath: '/output/missing.jpg',
+        })
+      ).resolves.toBeNull();
+      await expect(
+        repository.reviewInput({
+          previewId: 'preview-review-input',
+          sourcePath: '/source/1.jpg',
+          outputPath: '/output/0.jpg',
+        })
+      ).resolves.toBeNull();
+      await expect(
+        repository.reviewInput({
+          previewId: 'preview-review-input',
+          sourcePath: '/source/0.jpg',
+          outputPath: '/output/1.jpg',
+        })
+      ).resolves.toBeNull();
+      await repository.close();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an ambiguous exact source and output review-input binding', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-review-duplicate-'));
+    try {
+      const manifest = await EvidenceManifest.create(
+        path.join(root, 'duplicate.evidence.jsonl'),
+        'job-review-duplicate',
+        'date-resolution/1'
+      );
+      await manifest.append('preview-recorded', {
+        preview: { previewId: 'preview-review-duplicate' },
+        rowCount: 2,
+      });
+      for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
+        await manifest.append('resolution-decided', {
+          previewId: 'preview-review-duplicate',
+          rowIndex,
+          sourcePath: '/source/shared.jpg',
+          resolution: resolvedRecord(`duplicate-${rowIndex}`),
+        });
+      }
+      for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
+        await manifest.append('operation-planned', {
+          previewId: 'preview-review-duplicate',
+          operation: {
+            operationId: `operation-duplicate-${rowIndex}`,
+            decisionRowIndex: rowIndex,
+            targetPath: '/output/shared.jpg',
+          },
+        });
+      }
+      await manifest.append('preview-sealed', {
+        previewId: 'preview-review-duplicate',
+        decisionCount: 2,
+        operationCount: 2,
+      });
+      await manifest.close({ status: 'completed' });
+
+      const repository = await EvidenceNormalizationAuditRepository.open(root);
+      await expect(
+        repository.reviewInput({
+          previewId: 'preview-review-duplicate',
+          sourcePath: '/source/shared.jpg',
+          outputPath: '/output/shared.jpg',
+        })
+      ).rejects.toThrow(/ambiguous|corrupt/i);
+      await repository.close();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects stale policy metadata and invalidates approvals from another audit revision', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-audit-stale-policy-'));
     try {

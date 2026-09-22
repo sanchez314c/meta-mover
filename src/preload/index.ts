@@ -7,6 +7,12 @@ import type {
   ProcessingEvent,
   StartProcessingRequestDTO,
 } from '../shared/types/processing';
+import type {
+  ReviewApplyRequestDTO,
+  ReviewDryRunRequestDTO,
+  ReviewGetRequestDTO,
+  ReviewListRequestDTO,
+} from '../shared/types/review';
 
 const electronAPI = {
   getSystemInfo: () => ipcRenderer.invoke('system:info'),
@@ -49,6 +55,10 @@ const electronAPI = {
     ipcRenderer.invoke('normalization-audit:approve', request),
   dryRunNormalizationAudit: (request: unknown) =>
     ipcRenderer.invoke('normalization-audit:dry-run', request),
+  reviewList: (request: ReviewListRequestDTO) => ipcRenderer.invoke('review:list', request),
+  reviewGet: (request: ReviewGetRequestDTO) => ipcRenderer.invoke('review:get', request),
+  reviewDryRun: (request: ReviewDryRunRequestDTO) => ipcRenderer.invoke('review:dry-run', request),
+  reviewApply: (request: ReviewApplyRequestDTO) => ipcRenderer.invoke('review:apply', request),
 
   getConfig: () => ipcRenderer.invoke('config:get'),
   updateConfig: (update: AppConfigUpdate) => ipcRenderer.invoke('config:update', update),

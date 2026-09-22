@@ -861,6 +861,80 @@ function topHoldsAuthoritativeOriginal(top: CandidateGroup, second: CandidateGro
   );
 }
 
+interface UnanimousLocalCaptureRecovery {
+  selected: ScoredDateCandidate;
+  contenderIds: string[];
+}
+
+function wholeSecondLocal(value: ParsedDateValue): string | null {
+  const parts = parseLocalIso(value.localIso);
+  if (
+    !parts ||
+    parts.hour === undefined ||
+    parts.minute === undefined ||
+    parts.second === undefined
+  ) {
+    return null;
+  }
+  if (parts.fraction !== undefined && !/^0+$/.test(parts.fraction)) return null;
+  return (
+    [
+      parts.year.toString().padStart(4, '0'),
+      parts.month.toString().padStart(2, '0'),
+      parts.day.toString().padStart(2, '0'),
+    ].join('-') +
+    `T${parts.hour.toString().padStart(2, '0')}:${parts.minute
+      .toString()
+      .padStart(2, '0')}:${parts.second.toString().padStart(2, '0')}`
+  );
+}
+
+function recoverUnanimousLocalCapture(
+  selectable: readonly ScoredDateCandidate[]
+): UnanimousLocalCaptureRecovery | null {
+  const contenders = selectable.filter((candidate) => candidate.sourceKind !== 'filesystem');
+  const originals = contenders.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.semantic === 'capture' &&
+      candidate.value.zoneBasis === 'floating-local' &&
+      candidate.tag.toLowerCase().includes('datetimeoriginal')
+  );
+
+  for (const original of originals) {
+    const localSecond = wholeSecondLocal(original.value);
+    if (localSecond === null || localSecond.endsWith('T00:00:00')) continue;
+    const calendarDate = localSecond.slice(0, 10);
+    const allAgree = contenders.every((candidate) => {
+      if (
+        candidate.value.fractionalDigits !== undefined &&
+        !/^0+$/.test(candidate.value.fractionalDigits)
+      ) {
+        return false;
+      }
+      if (candidate.value.precision === 'date') {
+        return candidate.value.localIso === calendarDate;
+      }
+      return wholeSecondLocal(candidate.value) === localSecond;
+    });
+    if (!allAgree) continue;
+
+    const embeddedCorroboration = contenders.some(
+      (candidate) =>
+        candidate.sourceKind !== 'embedded-exif' &&
+        candidate.sourceKind.startsWith('embedded-') &&
+        candidate.semantic === 'capture' &&
+        wholeSecondLocal(candidate.value) === localSecond
+    );
+    if (!embeddedCorroboration) continue;
+    return {
+      selected: original,
+      contenderIds: contenders.map((candidate) => candidate.id).sort(),
+    };
+  }
+  return null;
+}
+
 function isJsonSafe(value: unknown, ancestors = new Set<object>()): boolean {
   if (value === null) return true;
   if (typeof value === 'string' || typeof value === 'boolean') return true;
@@ -1004,6 +1078,25 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     topHoldsAuthoritativeOriginal(top, second);
   if (authoritativeOriginal) reasonCodes.push('AUTHORITATIVE_ORIGINAL_PREFERRED');
   const contenderNeutralized = subsecondConsensus || sameInstant || authoritativeOriginal;
+
+  const unanimousLocalCapture = recoverUnanimousLocalCapture(selectable);
+  if (second && second.score >= 75 && lead < 15 && unanimousLocalCapture !== null) {
+    reasonCodes.push('UNANIMOUS_LOCAL_CAPTURE_RECOVERY', 'RESOLVED_MEDIUM_CONFIDENCE');
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === unanimousLocalCapture.selected.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: unanimousLocalCapture.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: omitSubseconds(unanimousLocalCapture.selected.value),
+      contenderIds: unanimousLocalCapture.contenderIds,
+      reasonCodes: uniqueSorted(reasonCodes),
+    };
+  }
 
   if (second && second.score >= 75 && lead < 15 && !contenderNeutralized) {
     reasonCodes.push('STRONG_CONFLICT');

@@ -14,8 +14,11 @@ import {
   OperationMode,
   ProcessingEvent,
   ProcessingEventKind,
+  ProcessingCancellationFileOutcomeDTO,
+  ProcessingFileFailureDTO,
   ProcessingOptionsDTO,
   ProcessingPhase,
+  ProcessingStatisticsDTO,
   PreviewRowDTO,
   PreviewSummaryDTO,
   isSerializableProcessingValue,
@@ -477,6 +480,44 @@ function isCancellationOutcomes(value: unknown): boolean {
   );
 }
 
+function partialOutcomesConserve(
+  statisticsValue: unknown,
+  failuresValue: unknown,
+  outcomesValue: unknown
+): boolean {
+  if (
+    !isPlainObject(statisticsValue) ||
+    !Array.isArray(failuresValue) ||
+    !Array.isArray(outcomesValue)
+  )
+    return false;
+  const statistics = statisticsValue as unknown as ProcessingStatisticsDTO;
+  const outcomes = outcomesValue as ProcessingCancellationFileOutcomeDTO[];
+  const completed = outcomes.filter((outcome) => outcome.state === CancellationFileState.COMPLETED);
+  const skipped = outcomes.filter((outcome) => outcome.state === CancellationFileState.SKIPPED);
+  const failed = outcomes.filter(
+    (outcome) =>
+      outcome.state === CancellationFileState.FAILED ||
+      outcome.state === CancellationFileState.DESTINATION_COMMITTED_SOURCE_RETAINED
+  );
+  const failures = failuresValue as ProcessingFileFailureDTO[];
+  return (
+    outcomes.length === statistics.totalFiles &&
+    completed.length === statistics.processedFiles &&
+    skipped.length === statistics.skippedFiles &&
+    failed.length === statistics.failedFiles &&
+    outcomes.reduce((total, outcome) => total + outcome.plannedBytes, 0) ===
+      statistics.totalBytes &&
+    completed.reduce((total, outcome) => total + outcome.committedBytes, 0) ===
+      statistics.processedBytes &&
+    failures.length === failed.length &&
+    failures.every(
+      (failure, index) =>
+        failure.sourcePath === failed[index].sourcePath && failure.error === failed[index].error
+    )
+  );
+}
+
 function isProcessingError(value: unknown): boolean {
   return (
     isPlainObject(value) &&
@@ -565,9 +606,11 @@ function isValidEventPayload(kind: ProcessingEvent['kind'], payload: unknown): b
       );
     case ProcessingEventKind.JOB_PARTIALLY_COMPLETED:
       return (
-        hasExactKeys(payload, ['statistics', 'fileFailures']) &&
+        hasExactKeys(payload, ['statistics', 'fileFailures', 'fileOutcomes']) &&
         isStatistics(payload.statistics) &&
         isFileFailures(payload.fileFailures) &&
+        isCancellationOutcomes(payload.fileOutcomes) &&
+        partialOutcomesConserve(payload.statistics, payload.fileFailures, payload.fileOutcomes) &&
         (payload.statistics as Record<string, number>).failedFiles ===
           (payload.fileFailures as unknown[]).length &&
         (payload.statistics as Record<string, number>).failedFiles <
@@ -1699,7 +1742,12 @@ export class JobHistoryStore {
       }
       return;
     }
-    if (event.kind !== ProcessingEventKind.JOB_CANCELLED || !entry.creation.previewRows) return;
+    if (
+      (event.kind !== ProcessingEventKind.JOB_CANCELLED &&
+        event.kind !== ProcessingEventKind.JOB_PARTIALLY_COMPLETED) ||
+      !entry.creation.previewRows
+    )
+      return;
     const rows = entry.creation.previewRows;
     const outcomes = event.payload.fileOutcomes;
     const matchesPreview =
@@ -1730,7 +1778,7 @@ export class JobHistoryStore {
     if (!matchesPreview) {
       throw new JobHistoryStoreError(
         'IMMUTABLE_FIELD_MISMATCH',
-        'Cancelled outcomes must match every immutable preview row'
+        'Terminal outcomes must match every immutable preview row'
       );
     }
   }

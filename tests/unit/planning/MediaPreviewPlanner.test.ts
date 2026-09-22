@@ -289,7 +289,13 @@ describe('MediaPreviewPlanner', () => {
 
     expect(plan.summary.unresolvedDates).toBe(1);
     expect(plan.rows?.[0]).toMatchObject({
-      targetPath: path.join('/destination', 'Photos', '_Needs Review', 'photo.jpg'),
+      targetPath: path.join(
+        '/destination',
+        'Photos',
+        '_Needs Review',
+        'No Usable Date',
+        'photo.jpg'
+      ),
       dateEvidence: { value: null, source: 'unresolved', confidence: 0 },
     });
     expect(plan.rows?.[0].warnings).toContain('Creation date requires review');

@@ -13,7 +13,13 @@ import type {
   ProcessingCoordinatorPort,
   RuntimeHealthPort,
   NormalizationAuditIpcPort,
+  ReviewIpcPort,
 } from '../services/ProcessingIPCController';
+import type {
+  ReviewAuditPort,
+  ReviewHistoryPort,
+  ReviewOverridePort,
+} from '../services/ReviewRemediationService';
 import type { NormalizationAuthorizationPort } from '../services/TransactionalOperationExecutor';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -28,6 +34,7 @@ export interface ApplicationConfigPort extends ConfigIpcPort {
 export interface ApplicationHistoryPort {
   coordinator: CoordinatorHistoryPort;
   list: HistoryListPort;
+  review: ReviewHistoryPort;
   close(): Promise<void>;
 }
 
@@ -37,7 +44,8 @@ export interface ApplicationEvidencePort extends CoordinatorHistoryPort {
 }
 export interface ApplicationAuditPort
   extends NormalizationAuditIpcPort,
-    NormalizationAuthorizationPort {
+    NormalizationAuthorizationPort,
+    ReviewAuditPort {
   close(): Promise<void>;
 }
 
@@ -51,6 +59,12 @@ export interface ApplicationRuntimeHealthPort extends RuntimeHealthPort, Runtime
 export interface ApplicationTransactionPort extends OperationExecutorPort {
   close(): Promise<void>;
 }
+
+export interface ApplicationReviewOverridePort extends ReviewOverridePort {
+  close(): Promise<void>;
+}
+
+export interface ApplicationReviewPort extends ReviewIpcPort {}
 
 export interface ApplicationCoordinatorPort extends ProcessingCoordinatorPort {
   /** Stops admission, settles active atomic operations, and drains history/evidence writes. */
@@ -72,6 +86,8 @@ export interface ApplicationRuntimeComponents {
   planner: PreviewPlannerPort;
   revalidator: PreviewRevalidatorPort;
   transaction: ApplicationTransactionPort;
+  reviewOverrides: ApplicationReviewOverridePort;
+  review: ApplicationReviewPort;
   coordinator: ApplicationCoordinatorPort;
   ipc: ApplicationIpcPort;
 }
@@ -90,6 +106,13 @@ export interface ApplicationRuntimeFactories {
     runtime: ApplicationRuntimeHealthPort;
   }): MaybePromise<PreviewRevalidatorPort>;
   openTransaction(context: { audit: ApplicationAuditPort }): Promise<ApplicationTransactionPort>;
+  openReviewOverrides(): Promise<ApplicationReviewOverridePort>;
+  createReview(context: {
+    history: ReviewHistoryPort;
+    audit: ApplicationAuditPort;
+    overrides: ApplicationReviewOverridePort;
+    metadata: ApplicationMetadataPort;
+  }): MaybePromise<ApplicationReviewPort>;
   createCoordinator(context: {
     config: ApplicationConfigPort;
     history: CoordinatorHistoryPort;
@@ -104,6 +127,7 @@ export interface ApplicationRuntimeFactories {
     runtime: ApplicationRuntimeHealthPort;
     coordinator: ApplicationCoordinatorPort;
     audit: ApplicationAuditPort;
+    review: ApplicationReviewPort;
   }): MaybePromise<ApplicationIpcPort>;
 }
 
@@ -262,6 +286,15 @@ export class ApplicationRuntime {
       const transaction = await factories.openTransaction({ audit });
       cleanup.push({ name: 'transaction', order: 30, run: () => transaction.close() });
 
+      const reviewOverrides = await factories.openReviewOverrides();
+      cleanup.push({ name: 'review-overrides', order: 32, run: () => reviewOverrides.close() });
+      const review = await factories.createReview({
+        history: history.review,
+        audit,
+        overrides: reviewOverrides,
+        metadata,
+      });
+
       const coordinatorHistory = composeCoordinatorHistory(history.coordinator, evidence);
       const coordinator = await factories.createCoordinator({
         config,
@@ -279,6 +312,7 @@ export class ApplicationRuntime {
         runtime,
         coordinator,
         audit,
+        review,
       });
       cleanup.push({ name: 'ipc', order: 10, run: () => ipc.dispose() });
 
@@ -294,6 +328,8 @@ export class ApplicationRuntime {
           planner,
           revalidator,
           transaction,
+          reviewOverrides,
+          review,
           coordinator,
           ipc,
         }),

@@ -1,4 +1,5 @@
 import {
+  CancellationFileState,
   OperationMode,
   ProcessingEvent,
   ProcessingEventKind,
@@ -2489,6 +2490,54 @@ describe('ProcessingCoordinator execution contract', () => {
           {
             sourcePath: '/source/雪 image.jpg',
             error: 'Operation failed without an error message',
+          },
+        ],
+      },
+    });
+  });
+
+  it('preserves committed MOVE residue in partial per-row outcomes', async () => {
+    const coordinator = new ProcessingCoordinator({
+      planner: plannerFor(operations(2)),
+      revalidator: matchingRevalidator,
+      executor: {
+        execute: jest.fn(async (operation) =>
+          operation.id === 'operation-0'
+            ? { operationId: operation.id, outcome: 'committed' as const, bytes: operation.bytes }
+            : {
+                operationId: operation.id,
+                outcome: 'failed' as const,
+                bytes: operation.bytes,
+                sourceRetained: true,
+                destinationCommitted: true,
+                error: 'source delete failed after destination commit',
+              }
+        ),
+      },
+      previewTtlMs: 60_000,
+      maxWorkerConcurrency: 1,
+    });
+    const preview = await coordinator.createPreview({
+      sourcePaths: ['/source'],
+      destinationPath: '/destination',
+      options: { operation: OperationMode.MOVE },
+    });
+    const accepted = await coordinator.startProcessing({
+      previewId: preview.previewId,
+      acknowledgeDestructiveOperation: true,
+    });
+
+    expect(await coordinator.waitForTerminal(accepted.jobId)).toMatchObject({
+      kind: ProcessingEventKind.JOB_PARTIALLY_COMPLETED,
+      payload: {
+        fileOutcomes: [
+          { state: CancellationFileState.COMPLETED },
+          {
+            sourcePath: '/source/1.jpg',
+            destinationPath: '/destination/1.jpg',
+            state: CancellationFileState.DESTINATION_COMMITTED_SOURCE_RETAINED,
+            committedBytes: 20,
+            sourceRetained: true,
           },
         ],
       },

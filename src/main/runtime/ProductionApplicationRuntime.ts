@@ -23,6 +23,12 @@ import {
   ProcessingIPCDependencies,
 } from '../services/ProcessingIPCController';
 import { TransactionalOperationExecutor } from '../services/TransactionalOperationExecutor';
+import { ReviewOverrideStore } from '../services/ReviewOverrideStore';
+import {
+  ReviewRemediationService,
+  type ReviewHistoryPort,
+} from '../services/ReviewRemediationService';
+import { TransactionalFileCore } from '../core/transaction/TransactionalFileCore';
 import { BundledExifToolAdapter } from '../tools/BundledExifToolAdapter';
 import { BundledRuntimeHealth } from '../tools/BundledRuntimeHealth';
 import {
@@ -35,6 +41,7 @@ import {
   ApplicationMetadataPort,
   ApplicationRuntime,
   ApplicationRuntimeHealthPort,
+  ApplicationReviewOverridePort,
   ApplicationTransactionPort,
 } from './ApplicationRuntime';
 import type {
@@ -101,6 +108,13 @@ export interface ProductionRuntimeBindings {
     context: ProductionRuntimeContext,
     audit: ApplicationAuditPort
   ): Promise<ApplicationTransactionPort>;
+  openReviewOverrides(filePath: string): Promise<ApplicationReviewOverridePort>;
+  createReview(context: {
+    history: ReviewHistoryPort;
+    audit: ApplicationAuditPort;
+    overrides: ApplicationReviewOverridePort;
+    metadata: ApplicationMetadataPort;
+  }): ReviewRemediationService;
   createCoordinator(context: ProductionCoordinatorContext): ApplicationCoordinatorPort;
   createIpc(dependencies: ProcessingIPCDependencies): ApplicationIpcPort;
 }
@@ -144,7 +158,12 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
     const store = new JobHistoryStore(historyPath);
     await store.initialize();
     const adapter = new CoordinatorJobHistoryAdapter(store);
-    return { coordinator: adapter, list: adapter, close: () => store.close() };
+    return {
+      coordinator: adapter,
+      list: adapter,
+      review: { listJobs: () => store.listJobs() },
+      close: () => store.close(),
+    };
   },
   openEvidence: (options) => CoordinatorEvidenceAdapter.create(options),
   openAudit: (evidenceRoot) => EvidenceNormalizationAuditRepository.open(evidenceRoot),
@@ -210,6 +229,15 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
       },
     });
   },
+  openReviewOverrides: (filePath) => ReviewOverrideStore.open(filePath),
+  createReview: ({ history, audit, overrides, metadata }) =>
+    new ReviewRemediationService({
+      history,
+      audit,
+      overrides,
+      metadataCollector: metadata,
+      coreFactory: (destinationRoot) => TransactionalFileCore.create(destinationRoot),
+    }),
   createCoordinator: (context) =>
     new ProcessingCoordinator({
       planner: context.planner,
@@ -267,6 +295,10 @@ export async function createProductionApplicationRuntime(
     createPlanner: ({ metadata }) => bindings.createPlanner(metadata),
     createRevalidator: ({ runtime }) => bindings.createRevalidator(runtime),
     openTransaction: ({ audit }) => bindings.openTransaction(runtimeContext, audit),
+    openReviewOverrides: () =>
+      bindings.openReviewOverrides(path.join(path.dirname(historyPath), 'review-overrides.jsonl')),
+    createReview: ({ history, audit, overrides, metadata }) =>
+      bindings.createReview({ history, audit, overrides, metadata }),
     createCoordinator: ({ config, history, runtime, planner, revalidator, transaction }) => {
       const current = config.getAll();
       return bindings.createCoordinator({
@@ -289,7 +321,7 @@ export async function createProductionApplicationRuntime(
         },
       });
     },
-    createIpc: ({ config, history, runtime, coordinator, audit }) =>
+    createIpc: ({ config, history, runtime, coordinator, audit, review }) =>
       bindings.createIpc({
         ipc: options.ipc,
         config,
@@ -297,6 +329,7 @@ export async function createProductionApplicationRuntime(
         health: runtime,
         coordinator,
         audit,
+        review,
         publishEvent: options.publishEvent,
       }),
   });

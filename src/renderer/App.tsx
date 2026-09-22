@@ -69,6 +69,7 @@ import { AboutModalComponent } from './components/AboutModal';
 import { SettingsView } from './components/views/SettingsView';
 import { ProcessingView } from './components/views/ProcessingView';
 import { MetadataView } from './components/views/MetadataView';
+import { ReviewView } from './components/views/ReviewView';
 
 function App() {
   const dispatch = useDispatch<AppDispatch>();
@@ -164,6 +165,8 @@ function App() {
         return <ProcessingView />;
       case 'metadata':
         return <MetadataView />;
+      case 'review':
+        return <ReviewView />;
       case 'settings':
         return <SettingsView />;
       case 'organize':

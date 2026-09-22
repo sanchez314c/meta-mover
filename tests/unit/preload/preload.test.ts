@@ -87,6 +87,32 @@ describe('preload processing API', () => {
     );
   });
 
+  it('maps the review queue operations to fixed request-response channels', async () => {
+    const bridge = api();
+    const list = { status: 'pending', limit: 25 };
+    const get = { reviewId: 'review-1' };
+    const dryRun = {
+      reviewId: 'review-1',
+      evidenceRevision: 'revision-1',
+      action: { type: 'keep' },
+    };
+    const apply = { ...dryRun, planToken: 'plan-1' };
+
+    await bridge.reviewList(list);
+    await bridge.reviewGet(get);
+    await bridge.reviewDryRun(dryRun);
+    await bridge.reviewApply(apply);
+
+    expect(invoke.mock.calls).toEqual(
+      expect.arrayContaining([
+        ['review:list', list],
+        ['review:get', get],
+        ['review:dry-run', dryRun],
+        ['review:apply', apply],
+      ])
+    );
+  });
+
   it('does not expose listener-wide removal, pause, resume, or database escape hatches', () => {
     const bridge = api();
     expect(bridge).not.toHaveProperty('removeProcessingListeners');

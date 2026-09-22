@@ -11,6 +11,48 @@ import {
   ProcessingEventKind,
 } from '../../../src/shared/types/processing';
 
+const validReviewItem = {
+  reviewId: 'review-1',
+  jobId: 'job-1',
+  previewId: 'preview-1',
+  rowIndex: 0,
+  originalSourcePath: '/source/photo.jpg',
+  currentPath: '/destination/Photos/_Needs Review/photo.jpg',
+  destinationRoot: '/destination',
+  mediaKind: 'image' as const,
+  status: 'pending' as const,
+  reasonCodes: ['STRONG_CONFLICT'],
+  warnings: [],
+  evidence: {
+    revision: 'revision-1',
+    collectedAt: '2026-09-22T12:00:00.000Z',
+    resolution: {
+      policyVersion: 'date-resolution/1' as const,
+      fileId: 'file-1',
+      mediaKind: 'image' as const,
+      target: 'capture-time' as const,
+      evaluationTimeUtc: '2026-09-22T12:00:00.000Z',
+      status: 'unresolved' as const,
+      confidence: 'none' as const,
+      contenderIds: [],
+      rejected: [],
+      reasonCodes: ['STRONG_CONFLICT'],
+      candidates: [],
+    },
+  },
+  output: {
+    path: '/destination/Photos/_Needs Review/photo.jpg',
+    device: 1,
+    inode: 2,
+    size: 3,
+    modifiedTimeMs: 4,
+    mtimeNs: '4000000',
+    sha256: 'a'.repeat(64),
+  },
+  screenshotDetected: false,
+  updatedAt: '2026-09-22T12:00:00.000Z',
+};
+
 function harness(
   options: {
     autoRegister?: boolean;
@@ -53,6 +95,24 @@ function harness(
       decision: jest.fn().mockResolvedValue({ recordId: 'record-1' }),
       approve: jest.fn().mockResolvedValue({ revision: 'rev-1', approved: true }),
       dryRun: jest.fn().mockResolvedValue({ revision: 'rev-1', items: [] }),
+    },
+    review: {
+      list: jest.fn().mockResolvedValue({ items: [validReviewItem] }),
+      get: jest.fn().mockResolvedValue(validReviewItem),
+      dryRun: jest.fn().mockResolvedValue({
+        planToken: 'plan-1',
+        action: { type: 'keep' },
+        currentPath: validReviewItem.currentPath,
+        targetPath: null,
+        collision: false,
+        warnings: [],
+      }),
+      apply: jest.fn().mockResolvedValue({
+        reviewId: 'review-1',
+        status: 'kept',
+        currentPath: validReviewItem.currentPath,
+        evidenceRevision: 'revision-1',
+      }),
     },
     publishEvent: (event) => published.push(event),
   };
@@ -157,6 +217,64 @@ describe('ProcessingIPCController', () => {
       previewId: 'preview-1',
       limit: 100,
     });
+  });
+
+  it('registers the review surface and rejects malformed requests before service calls', async () => {
+    const test = harness();
+    const list = { status: 'pending', limit: 25 };
+    const get = { reviewId: 'review-1' };
+    const dryRun = {
+      reviewId: 'review-1',
+      evidenceRevision: 'revision-1',
+      action: { type: 'keep' },
+    };
+    const apply = { ...dryRun, planToken: 'plan-1' };
+
+    await expect(test.invoke('review:list', list)).resolves.toMatchObject({ success: true });
+    await expect(test.invoke('review:get', get)).resolves.toMatchObject({ success: true });
+    await expect(test.invoke('review:dry-run', dryRun)).resolves.toMatchObject({ success: true });
+    await expect(test.invoke('review:apply', apply)).resolves.toMatchObject({ success: true });
+    expect(test.dependencies.review.list).toHaveBeenCalledWith(list);
+    expect(test.dependencies.review.get).toHaveBeenCalledWith('review-1');
+    expect(test.dependencies.review.dryRun).toHaveBeenCalledWith(dryRun);
+    expect(test.dependencies.review.apply).toHaveBeenCalledWith(apply);
+
+    await expect(
+      test.invoke('review:apply', { ...apply, sourcePath: '/untrusted' })
+    ).resolves.toMatchObject({ success: false, error: { code: 'INVALID_IPC_REQUEST' } });
+    expect(test.dependencies.review.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed review service responses before returning them to the renderer', async () => {
+    const test = harness();
+    (test.dependencies.review.list as jest.Mock).mockResolvedValueOnce({ items: [{ bad: true }] });
+    (test.dependencies.review.get as jest.Mock).mockResolvedValueOnce({ reviewId: 'partial' });
+    (test.dependencies.review.dryRun as jest.Mock).mockResolvedValueOnce({ planToken: 'partial' });
+    (test.dependencies.review.apply as jest.Mock).mockResolvedValueOnce({ status: 'resolved' });
+
+    await expect(test.invoke('review:list', { limit: 25 })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'APPLICATION_ERROR' },
+    });
+    await expect(test.invoke('review:get', { reviewId: 'review-1' })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'APPLICATION_ERROR' },
+    });
+    await expect(
+      test.invoke('review:dry-run', {
+        reviewId: 'review-1',
+        evidenceRevision: 'revision-1',
+        action: { type: 'keep' },
+      })
+    ).resolves.toMatchObject({ success: false, error: { code: 'APPLICATION_ERROR' } });
+    await expect(
+      test.invoke('review:apply', {
+        reviewId: 'review-1',
+        evidenceRevision: 'revision-1',
+        action: { type: 'keep' },
+        planToken: 'plan-1',
+      })
+    ).resolves.toMatchObject({ success: false, error: { code: 'APPLICATION_ERROR' } });
   });
 
   it('rejects unsafe audit requests and page sizes above 100 before reaching the service', async () => {
@@ -296,7 +414,7 @@ describe('ProcessingIPCController', () => {
     expect(test.handlers.size).toBe(0);
     fail = false;
     expect(() => test.controller.register()).not.toThrow();
-    expect(test.handlers.size).toBe(15);
+    expect(test.handlers.size).toBe(19);
   });
 
   it('gates a wrapper leaked by failed registration rollback', async () => {

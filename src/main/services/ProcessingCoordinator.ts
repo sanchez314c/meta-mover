@@ -1114,9 +1114,10 @@ export class ProcessingCoordinator {
           },
         });
       } else {
+        const fileOutcomes = this.cancellationPayloadFromLedger(job).fileOutcomes;
         await this.emitTerminalOnce(job, {
           kind: ProcessingEventKind.JOB_PARTIALLY_COMPLETED,
-          payload: { statistics, fileFailures },
+          payload: { statistics, fileFailures, fileOutcomes },
         });
       }
     } catch (error) {
@@ -1324,6 +1325,20 @@ export class ProcessingCoordinator {
           ...base,
           state: entry.cancellationState!,
           sourceRetained: entry.sourceRetained!,
+          ...(entry.error === undefined ? {} : { error: entry.error }),
+        };
+      }
+      if (
+        entry.outcome === 'failed' &&
+        isMove &&
+        entry.destinationCommitted === true &&
+        entry.sourceRetained === true &&
+        entry.bytes === plannedBytes
+      ) {
+        return {
+          ...base,
+          state: CancellationFileState.DESTINATION_COMMITTED_SOURCE_RETAINED,
+          sourceRetained: true,
           ...(entry.error === undefined ? {} : { error: entry.error }),
         };
       }
