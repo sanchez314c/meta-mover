@@ -1,3 +1,10 @@
+## 2026-09-22 plain-English Review Queue evidence
+
+- Replaced internal reason codes, candidate IDs, tags, and numeric scores in the Review Queue with direct explanations of why META Mover stopped.
+- Grouped identical date values and labeled their sources as camera EXIF, IPTC/Photoshop, XMP, container, sidecar, filename, or filesystem evidence. Filename and filesystem dates are explicitly marked as weak context.
+- Candidate controls remain bound to the exact evidence candidate IDs. Duplicate reason text is collapsed, and cautious recommendations appear only when one strong embedded date is opposed solely by weak filename or filesystem context.
+- Reviewer correction: candidates now group by full temporal identity, so different offsets, UTC instants, timezones, precision, or fractional seconds remain visible. Displayed dates preserve fractions and zone context; EXIF labels distinguish original, digitized, and modified fields; unknown reason codes receive a safe generic explanation.
+
 ## 2026-09-22 unanimous local capture recovery
 
 - Recovered 2,265 formerly ambiguous images when floating EXIF `DateTimeOriginal`, a different

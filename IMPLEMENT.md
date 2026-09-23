@@ -1,3 +1,12 @@
+## 2026-09-22 Review Queue explanation correction
+
+- User reported that the Review Queue exposed raw reason codes, opaque candidate IDs, field tags, and scores without explaining the actual problem.
+- Decision: explain the conflict from the sealed evidence already available to the renderer. Resolver policy and automatic date selection remain unchanged.
+- Built plain-English reason summaries, familiar metadata source labels, grouping by human-readable date/time value, weak-context warnings for filename and filesystem evidence, deduplicated messages, and a narrowly gated cautious recommendation.
+- Exact underlying candidate IDs remain attached to the radio controls and are sent unchanged through dry run and apply.
+- TDD covers a real two-date conflict shape, duplicate messages, exact candidate selection, midnight placeholders, missing dates, and metadata read failures.
+- Reviewer correction: grouping now uses the complete parsed temporal identity rather than wall-clock text alone. Offset-only and subsecond conflicts stay separate and display their offset/fraction. EXIF labels follow the field semantic, and unrecognized future reason codes fall back to a plain-English safety explanation rather than an empty list.
+
 ## 2026-09-22 unanimous local capture recovery
 
 - Discussion: the first replay inspected only the resolver's top-two `contenderIds` and found 60

@@ -96,8 +96,8 @@ describe('ReviewView', () => {
   it('loads the pending queue, selects a detail, and pages without discarding prior rows', async () => {
     render(<ReviewView />);
     expect(await screen.findAllByText('photo.jpg')).toHaveLength(2);
-    expect(screen.getAllByText('STRONG_CONFLICT')).toHaveLength(2);
-    expect(screen.getByText(/EXIF:DateTimeOriginal/)).toBeInTheDocument();
+    expect(screen.getAllByText(/different credible dates found/i)).toHaveLength(1);
+    expect(screen.getByText(/camera exif date taken/i)).toBeInTheDocument();
     const api = window.electronAPI as unknown as { reviewList: jest.Mock };
     expect(api.reviewList).toHaveBeenCalledWith({
       statuses: ['pending', 'failed'],
@@ -113,12 +113,188 @@ describe('ReviewView', () => {
     );
   });
 
+  it('explains conflicting metadata in plain English and keeps exact candidate selection', async () => {
+    const conflicting = {
+      ...item,
+      reasonCodes: ['STRONG_CONFLICT', 'STRONG_CONFLICT'],
+      warnings: ['Creation date requires review', 'Creation date requires review'],
+      evidence: {
+        ...item.evidence,
+        resolution: {
+          ...resolution,
+          contenderIds: ['camera', 'photoshop'],
+          candidates: [
+            {
+              ...resolution.candidates[0],
+              id: 'camera',
+              value: { ...resolution.candidates[0].value, localIso: '2000-08-11T19:51:59' },
+            },
+            {
+              ...resolution.candidates[0],
+              id: 'photoshop',
+              sourceKind: 'embedded-iptc' as const,
+              sourceFamily: 'IPTC',
+              tag: 'IPTC:DateCreated',
+              rawValue: '2015:10:18 12:00:00',
+              value: { ...resolution.candidates[0].value, localIso: '2015-10-18T12:00:00' },
+              score: { base: 88, modifiers: [], semanticCap: 100, final: 88 },
+            },
+            {
+              ...resolution.candidates[0],
+              id: 'filename',
+              sourceKind: 'filename' as const,
+              sourceFamily: 'Filename',
+              tag: 'Filename:Date',
+              rawValue: '2000-08-11_19-51-59.jpg',
+              value: { ...resolution.candidates[0].value, localIso: '2000-08-11T19:51:59' },
+              score: { base: 30, modifiers: [], semanticCap: 40, final: 30 },
+            },
+          ],
+        },
+      },
+    };
+    const bridge = window.electronAPI as unknown as { reviewList: jest.Mock; reviewGet: jest.Mock };
+    bridge.reviewList.mockResolvedValue({ success: true, data: { items: [conflicting] } });
+    bridge.reviewGet.mockResolvedValue({ success: true, data: conflicting });
+
+    render(<ReviewView />);
+
+    expect(await screen.findByText(/metadata contains two different dates/i)).toBeInTheDocument();
+    expect(screen.getByText(/08\/11\/2000/)).toBeInTheDocument();
+    expect(screen.getByText(/10\/18\/2015/)).toBeInTheDocument();
+    expect(screen.getByText(/iptc\/photoshop/i)).toBeInTheDocument();
+    expect(screen.getByText(/filename.*weak context/i)).toBeInTheDocument();
+    expect(screen.queryByText('STRONG_CONFLICT')).not.toBeInTheDocument();
+    expect(screen.queryByText(/creation date requires review/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('radio', { name: /camera exif date taken.*2000/i }));
+    fireEvent.click(screen.getByRole('button', { name: /preview fix/i }));
+    await waitFor(() => expect(bridge.reviewGet).toHaveBeenCalledWith({ reviewId: item.reviewId }));
+    const dryRun = window.electronAPI as unknown as { reviewDryRun: jest.Mock };
+    await waitFor(() =>
+      expect(dryRun.reviewDryRun).toHaveBeenCalledWith(
+        expect.objectContaining({ action: { type: 'select-candidate', candidateId: 'camera' } })
+      )
+    );
+  });
+
+  it('explains placeholder, missing-date, and metadata-read failures without raw codes', async () => {
+    const special = {
+      ...item,
+      reasonCodes: [
+        'MIDNIGHT_PLACEHOLDER_REVIEW',
+        'INSUFFICIENT_CONFIDENCE',
+        'METADATA_READ_FAILED',
+      ],
+      warnings: [],
+      evidence: {
+        ...item.evidence,
+        resolution: { ...resolution, candidates: [], reasonCodes: ['MIDNIGHT_PLACEHOLDER_REVIEW'] },
+      },
+    };
+    const bridge = window.electronAPI as unknown as { reviewList: jest.Mock; reviewGet: jest.Mock };
+    bridge.reviewList.mockResolvedValue({ success: true, data: { items: [special] } });
+    bridge.reviewGet.mockResolvedValue({ success: true, data: special });
+
+    render(<ReviewView />);
+
+    expect(await screen.findByText(/exactly midnight/i)).toBeInTheDocument();
+    expect(screen.getByText(/could not read all metadata/i)).toBeInTheDocument();
+    expect(screen.getByText(/no trustworthy date/i)).toBeInTheDocument();
+    expect(screen.queryByText(/MIDNIGHT_PLACEHOLDER_REVIEW/)).not.toBeInTheDocument();
+  });
+
+  it('keeps offset-only and subsecond conflicts separate and shows their exact time basis', async () => {
+    const temporal = {
+      ...item,
+      reasonCodes: ['STRONG_CONFLICT', 'SUBSECOND_CONFLICT'],
+      evidence: {
+        ...item.evidence,
+        resolution: {
+          ...resolution,
+          reasonCodes: ['STRONG_CONFLICT', 'SUBSECOND_CONFLICT'],
+          candidates: [
+            {
+              ...resolution.candidates[0],
+              id: 'east',
+              value: {
+                ...resolution.candidates[0].value,
+                localIso: '2020-01-02T03:04:05.123',
+                instantUtc: '2020-01-02T08:04:05.123Z',
+                offsetMinutes: -300,
+                zoneBasis: 'explicit-offset' as const,
+                precision: 'millisecond' as const,
+                fractionalDigits: '123',
+              },
+            },
+            {
+              ...resolution.candidates[0],
+              id: 'utc',
+              sourceKind: 'embedded-xmp' as const,
+              sourceFamily: 'XMP',
+              tag: 'XMP:CreateDate',
+              value: {
+                ...resolution.candidates[0].value,
+                localIso: '2020-01-02T03:04:05.456',
+                instantUtc: '2020-01-02T03:04:05.456Z',
+                offsetMinutes: 0,
+                zoneBasis: 'explicit-offset' as const,
+                precision: 'millisecond' as const,
+                fractionalDigits: '456',
+              },
+            },
+          ],
+        },
+      },
+    };
+    const bridge = window.electronAPI as unknown as { reviewList: jest.Mock; reviewGet: jest.Mock };
+    bridge.reviewList.mockResolvedValue({ success: true, data: { items: [temporal] } });
+    bridge.reviewGet.mockResolvedValue({ success: true, data: temporal });
+
+    render(<ReviewView />);
+
+    expect(await screen.findByText(/03:04:05\.123.*UTC-05:00/i)).toBeInTheDocument();
+    expect(screen.getByText(/03:04:05\.456.*UTC\+00:00/i)).toBeInTheDocument();
+    expect(screen.getByText(/metadata disagrees within the same second/i)).toBeInTheDocument();
+  });
+
+  it('labels EXIF digitized dates by meaning and explains unknown reason codes safely', async () => {
+    const unknown = {
+      ...item,
+      reasonCodes: ['VENDOR_PRIVATE_CONFLICT'],
+      warnings: [],
+      evidence: {
+        ...item.evidence,
+        resolution: {
+          ...resolution,
+          reasonCodes: ['VENDOR_PRIVATE_CONFLICT'],
+          candidates: [
+            {
+              ...resolution.candidates[0],
+              semantic: 'digitized' as const,
+              tag: 'EXIF:CreateDate',
+            },
+          ],
+        },
+      },
+    };
+    const bridge = window.electronAPI as unknown as { reviewList: jest.Mock; reviewGet: jest.Mock };
+    bridge.reviewList.mockResolvedValue({ success: true, data: { items: [unknown] } });
+    bridge.reviewGet.mockResolvedValue({ success: true, data: unknown });
+
+    render(<ReviewView />);
+
+    expect(await screen.findByText(/camera exif date digitized/i)).toBeInTheDocument();
+    expect(screen.getByText(/additional metadata conflict/i)).toBeInTheDocument();
+    expect(screen.queryByText('VENDOR_PRIVATE_CONFLICT')).not.toBeInTheDocument();
+  });
+
   it('requires Preview Fix to issue a plan token before Apply Fix', async () => {
     render(<ReviewView />);
-    await screen.findByText(/EXIF:DateTimeOriginal/);
+    await screen.findByText(/camera exif date taken/i);
     const apply = screen.getByRole('button', { name: /apply fix/i });
     expect(apply).toBeDisabled();
-    fireEvent.click(screen.getByRole('radio', { name: /candidate-1/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /camera exif date taken/i }));
     fireEvent.click(screen.getByRole('button', { name: /preview fix/i }));
     await screen.findByText('/destination/Photos/2020/01/photo.jpg');
     expect(apply).toBeEnabled();
@@ -136,7 +312,7 @@ describe('ReviewView', () => {
 
   it('offers manual date, metadata retry, and keep-here actions', async () => {
     render(<ReviewView />);
-    await screen.findByText(/EXIF:DateTimeOriginal/);
+    await screen.findByText(/camera exif date taken/i);
     expect(screen.getByRole('button', { name: /retry metadata/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /keep here/i })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/manual date/i), {
@@ -197,7 +373,7 @@ describe('ReviewView', () => {
     });
 
     render(<ReviewView />);
-    await screen.findByText(/EXIF:DateTimeOriginal/);
+    await screen.findByText(/camera exif date taken/i);
     fireEvent.click(screen.getByRole('button', { name: /retry metadata/i }));
     fireEvent.click(screen.getByRole('button', { name: /preview fix/i }));
     await screen.findByText(item.currentPath);
@@ -227,8 +403,8 @@ describe('ReviewView', () => {
     });
 
     render(<ReviewView />);
-    await screen.findByText(/EXIF:DateTimeOriginal/);
-    fireEvent.click(screen.getByRole('radio', { name: /candidate-1/i }));
+    await screen.findByText(/camera exif date taken/i);
+    fireEvent.click(screen.getByRole('radio', { name: /camera exif date taken/i }));
     fireEvent.click(screen.getByRole('button', { name: /preview fix/i }));
     await screen.findByText('/destination/Photos/2020/01/photo.jpg');
     fireEvent.click(screen.getByRole('button', { name: /apply fix/i }));

@@ -11,6 +11,7 @@ import type {
   ReviewListRequestDTO,
   ReviewPageDTO,
 } from '../../../shared/types/review';
+import type { ScoredDateCandidate } from '../../../main/core/date/types';
 
 const PAGE_SIZE = 50;
 type Response<T> = { success: boolean; data?: T; error?: { message: string } };
@@ -163,6 +164,129 @@ function unwrap<T>(response: Response<T>): T {
 }
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
+}
+
+function formatDateValue(candidate: ScoredDateCandidate): string {
+  const value = candidate.value;
+  const [date, rawTime = ''] = value.localIso.replace('Z', '').split('T');
+  const [year, month, day] = date.split('-');
+  let time = rawTime;
+  if (value.fractionalDigits && !time.includes('.')) time = `${time}.${value.fractionalDigits}`;
+  let zone = '';
+  if (value.zoneIana) zone = ` ${value.zoneIana}`;
+  else if (value.offsetMinutes !== undefined) {
+    const sign = value.offsetMinutes < 0 ? '-' : '+';
+    const absolute = Math.abs(value.offsetMinutes);
+    zone = ` UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
+  } else if (value.zoneBasis === 'spec-defined-utc') zone = ' UTC';
+  else if (value.zoneBasis === 'floating-local') zone = ' (timezone unknown)';
+  return `${month}/${day}/${year}${time ? ` at ${time}` : ''}${zone}`;
+}
+
+function sourceLabel(candidate: ScoredDateCandidate): string {
+  const tag = candidate.tag.toLowerCase();
+  if (candidate.sourceKind === 'embedded-exif') {
+    if (
+      candidate.semantic === 'digitized' ||
+      tag.includes('digitized') ||
+      tag.includes('createdate')
+    )
+      return 'Camera EXIF date digitized';
+    if (candidate.semantic === 'metadata-modified' || tag.includes('modify'))
+      return 'Camera EXIF metadata modified date';
+    if (candidate.semantic === 'capture' || tag.includes('datetimeoriginal'))
+      return 'Camera EXIF date taken';
+    return 'Camera EXIF embedded date';
+  }
+  if (candidate.sourceKind === 'embedded-iptc') return 'IPTC/Photoshop date created';
+  if (candidate.sourceKind === 'embedded-xmp')
+    return tag.includes('photoshop') || tag.includes('datecreated')
+      ? 'XMP/Photoshop date created'
+      : 'XMP embedded date';
+  if (candidate.sourceKind === 'filename') return 'Filename hint (weak context)';
+  if (candidate.sourceKind === 'filesystem') return 'Filesystem copy date (weak context)';
+  if (candidate.sourceKind === 'container-format' || candidate.sourceKind === 'container-stream')
+    return 'Media container date';
+  if (candidate.sourceKind === 'sidecar') return 'Sidecar metadata date';
+  if (candidate.sourceKind === 'audio-tag') return 'Audio metadata date';
+  if (candidate.sourceKind === 'user-override') return 'Previously confirmed date';
+  return `${candidate.sourceFamily} embedded date`;
+}
+
+const REASON_EXPLANATIONS: Record<string, string> = {
+  STRONG_CONFLICT:
+    'The metadata contains two different dates that both look credible. META Mover will not guess which one is the real capture date.',
+  SUBSECOND_CONFLICT:
+    'The metadata disagrees within the same second. That small difference can still change the exact file identity or order.',
+  MIDNIGHT_PLACEHOLDER_REVIEW:
+    'A metadata date is set to exactly midnight. That pattern often means another program knew the day but filled in an unknown time as 00:00:00.',
+  INSUFFICIENT_CONFIDENCE:
+    'No trustworthy date has enough independent support for META Mover to use automatically.',
+  METADATA_READ_FAILED:
+    'META Mover could not read all metadata from this file. Retry Metadata may recover more evidence.',
+};
+
+function reasonExplanations(item: ReviewItemDTO): string[] {
+  const codes = [...new Set([...item.reasonCodes, ...item.evidence.resolution.reasonCodes])];
+  const reasons = codes.map(
+    (code) =>
+      REASON_EXPLANATIONS[code] ??
+      'An additional metadata conflict prevents META Mover from choosing a date safely.'
+  );
+  const warnings = item.warnings.filter(
+    (warning) =>
+      !/^[A-Z][A-Z0-9_]+$/.test(warning) && !/creation date requires review/i.test(warning)
+  );
+  return [...new Set([...reasons, ...warnings])];
+}
+
+function shortReason(item: ReviewItemDTO): string {
+  const codes = new Set([...item.reasonCodes, ...item.evidence.resolution.reasonCodes]);
+  if (codes.has('STRONG_CONFLICT')) return 'Different credible dates found';
+  if (codes.has('MIDNIGHT_PLACEHOLDER_REVIEW')) return 'Date may contain a placeholder time';
+  if (codes.has('METADATA_READ_FAILED')) return 'Metadata could not be fully read';
+  return 'No date is trustworthy enough yet';
+}
+
+function groupedCandidates(candidates: ScoredDateCandidate[]) {
+  const groups = new Map<string, ScoredDateCandidate[]>();
+  for (const candidate of candidates) {
+    const value = candidate.value;
+    const key = JSON.stringify([
+      value.localIso,
+      value.instantUtc ?? null,
+      value.offsetMinutes ?? null,
+      value.zoneIana ?? null,
+      value.zoneBasis,
+      value.precision,
+      value.fractionalDigits ?? null,
+    ]);
+    groups.set(key, [...(groups.get(key) ?? []), candidate]);
+  }
+  return [...groups.values()];
+}
+
+function cautiousRecommendation(candidates: ScoredDateCandidate[]): string | null {
+  const groups = groupedCandidates(candidates);
+  const embeddedGroups = groups.filter((group) =>
+    group.some(
+      (candidate) =>
+        candidate.eligibility === 'eligible' &&
+        candidate.sourceKind.startsWith('embedded-') &&
+        candidate.score.final >= 80
+    )
+  );
+  if (embeddedGroups.length !== 1) return null;
+  const chosen = embeddedGroups[0];
+  const alternatives = groups.filter((group) => group !== chosen).flat();
+  if (
+    alternatives.length === 0 ||
+    alternatives.some(
+      (candidate) => candidate.sourceKind !== 'filename' && candidate.sourceKind !== 'filesystem'
+    )
+  )
+    return null;
+  return `Likely choice: ${formatDateValue(chosen[0])}. It comes from strong embedded metadata; the other dates come only from filenames or filesystem copy times, which are weak context. This is a recommendation, not a certainty.`;
 }
 
 export function ReviewView() {
@@ -355,7 +479,7 @@ export function ReviewView() {
                   onClick={() => void select(item.reviewId)}
                 >
                   <strong>{basename(item.currentPath)}</strong>
-                  <small>{item.reasonCodes.join(', ')}</small>
+                  <small>{shortReason(item)}</small>
                 </Row>
               ))}
             </List>
@@ -380,43 +504,53 @@ export function ReviewView() {
                   <Notice $error>Evidence is stale. Retry metadata before applying a fix.</Notice>
                 )}
                 <div>
-                  <h5>Reasons</h5>
+                  <h5>Why META Mover stopped</h5>
                   <ul>
-                    {selected.reasonCodes.map((reason) => (
+                    {reasonExplanations(selected).map((reason) => (
                       <li key={reason}>{reason}</li>
-                    ))}
-                    {selected.warnings.map((warning) => (
-                      <li key={warning}>{warning}</li>
                     ))}
                   </ul>
                 </div>
                 <div>
-                  <h5>Date candidates</h5>
+                  <h5>Dates found in this file</h5>
                   {selected.evidence.resolution.candidates.length === 0 ? (
-                    <Notice>No usable candidates were found.</Notice>
+                    <Notice>No usable date was found in the metadata that could be read.</Notice>
                   ) : (
-                    selected.evidence.resolution.candidates.map((candidate) => (
-                      <label key={candidate.id}>
-                        <input
-                          type="radio"
-                          name="review-action"
-                          aria-label={candidate.id}
-                          checked={
-                            action?.type === 'select-candidate' &&
-                            action.candidateId === candidate.id
-                          }
-                          onChange={() => {
-                            setAction({ type: 'select-candidate', candidateId: candidate.id });
-                            setPlan(null);
-                          }}
-                        />
-                        <span>
-                          <strong>{candidate.id}</strong> · {candidate.tag}
-                          <br />
-                          {candidate.value.localIso} · score {candidate.score.final}
-                        </span>
-                      </label>
+                    groupedCandidates(selected.evidence.resolution.candidates).map((group) => (
+                      <div key={group.map((candidate) => candidate.id).join('|')}>
+                        <strong>{formatDateValue(group[0])}</strong>
+                        <ul>
+                          {group.map((candidate) => (
+                            <li key={candidate.id}>
+                              <label>
+                                <input
+                                  type="radio"
+                                  name="review-action"
+                                  aria-label={`${sourceLabel(candidate)} ${formatDateValue(candidate)}`}
+                                  checked={
+                                    action?.type === 'select-candidate' &&
+                                    action.candidateId === candidate.id
+                                  }
+                                  onChange={() => {
+                                    setAction({
+                                      type: 'select-candidate',
+                                      candidateId: candidate.id,
+                                    });
+                                    setPlan(null);
+                                  }}
+                                />
+                                <span>{sourceLabel(candidate)}</span>
+                              </label>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     ))
+                  )}
+                  {cautiousRecommendation(selected.evidence.resolution.candidates) && (
+                    <Notice>
+                      {cautiousRecommendation(selected.evidence.resolution.candidates)}
+                    </Notice>
                   )}
                 </div>
                 <div>
