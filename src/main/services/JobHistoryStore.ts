@@ -573,29 +573,69 @@ function isValidEventPayload(kind: ProcessingEvent['kind'], payload: unknown): b
         hasOptionalString(payload, 'currentFile')
       );
     case ProcessingEventKind.JOB_PROGRESS:
-      return (
-        hasExactKeys(
-          payload,
-          ['phase', 'filesProcessed', 'totalFiles', 'percentage'],
-          ['currentFile', 'bytesProcessed', 'totalBytes', 'throughput', 'eta']
-        ) &&
-        Object.values(ProcessingPhase).includes(payload.phase as ProcessingPhase) &&
-        isNonNegativeInteger(payload.filesProcessed) &&
-        isNonNegativeInteger(payload.totalFiles) &&
-        isFiniteRange(payload.percentage, 0, 100) &&
-        hasOptionalString(payload, 'currentFile') &&
-        (payload.bytesProcessed === undefined || isNonNegativeInteger(payload.bytesProcessed)) &&
-        (payload.totalBytes === undefined || isNonNegativeInteger(payload.totalBytes)) &&
-        (payload.throughput === undefined ||
-          (typeof payload.throughput === 'number' &&
-            Number.isFinite(payload.throughput) &&
-            payload.throughput >= 0)) &&
-        (payload.eta === undefined ||
-          (typeof payload.eta === 'number' && Number.isFinite(payload.eta) && payload.eta >= 0)) &&
-        (payload.bytesProcessed === undefined ||
-          payload.totalBytes === undefined ||
-          payload.bytesProcessed <= payload.totalBytes)
-      );
+      if (
+        !(
+          hasExactKeys(
+            payload,
+            ['phase', 'filesProcessed', 'totalFiles', 'percentage'],
+            [
+              'currentFile',
+              'filesAttempted',
+              'filesSettled',
+              'failedFiles',
+              'bytesProcessed',
+              'totalBytes',
+              'throughput',
+              'eta',
+            ]
+          ) &&
+          Object.values(ProcessingPhase).includes(payload.phase as ProcessingPhase) &&
+          isNonNegativeInteger(payload.filesProcessed) &&
+          isNonNegativeInteger(payload.totalFiles) &&
+          (payload.filesAttempted === undefined || isNonNegativeInteger(payload.filesAttempted)) &&
+          (payload.filesSettled === undefined || isNonNegativeInteger(payload.filesSettled)) &&
+          (payload.failedFiles === undefined || isNonNegativeInteger(payload.failedFiles)) &&
+          isFiniteRange(payload.percentage, 0, 100) &&
+          hasOptionalString(payload, 'currentFile') &&
+          (payload.bytesProcessed === undefined || isNonNegativeInteger(payload.bytesProcessed)) &&
+          (payload.totalBytes === undefined || isNonNegativeInteger(payload.totalBytes)) &&
+          (payload.throughput === undefined ||
+            (typeof payload.throughput === 'number' &&
+              Number.isFinite(payload.throughput) &&
+              payload.throughput >= 0)) &&
+          (payload.eta === undefined ||
+            (typeof payload.eta === 'number' &&
+              Number.isFinite(payload.eta) &&
+              payload.eta >= 0)) &&
+          (payload.bytesProcessed === undefined ||
+            payload.totalBytes === undefined ||
+            payload.bytesProcessed <= payload.totalBytes)
+        )
+      ) {
+        return false;
+      }
+      {
+        const totalFiles = payload.totalFiles as number;
+        const filesProcessed = payload.filesProcessed as number;
+        const filesAttempted = payload.filesAttempted as number | undefined;
+        const filesSettled = payload.filesSettled as number | undefined;
+        const failedFiles = payload.failedFiles as number | undefined;
+        const enrichedCounterCount = [filesAttempted, filesSettled, failedFiles].filter(
+          (value) => value !== undefined
+        ).length;
+        return (
+          (enrichedCounterCount === 0 || enrichedCounterCount === 3) &&
+          filesProcessed <= totalFiles &&
+          (filesAttempted === undefined || filesAttempted <= totalFiles) &&
+          (filesSettled === undefined || filesSettled <= (filesAttempted ?? totalFiles)) &&
+          (filesAttempted === undefined || filesProcessed <= filesAttempted) &&
+          (filesSettled === undefined || filesProcessed <= filesSettled) &&
+          (failedFiles === undefined ||
+            failedFiles <= (filesSettled ?? filesAttempted ?? totalFiles)) &&
+          (failedFiles === undefined ||
+            filesProcessed + failedFiles <= (filesSettled ?? filesAttempted ?? totalFiles))
+        );
+      }
     case ProcessingEventKind.JOB_CANCELLING:
       return hasExactKeys(payload, [], ['reason']) && hasOptionalString(payload, 'reason');
     case ProcessingEventKind.JOB_COMPLETED:

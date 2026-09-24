@@ -1678,6 +1678,20 @@ describe('TransactionalFileCore', () => {
     await core.close();
   });
 
+  it('streams startup recovery without materializing the complete journal record array', async () => {
+    const readRecords = jest
+      .spyOn(TransactionJournal.prototype, 'readRecords')
+      .mockRejectedValue(new Error('must not materialize journal records'));
+
+    try {
+      const recovered = await createCore(destinationRoot);
+      expect(readRecords).not.toHaveBeenCalled();
+      await recovered.close();
+    } finally {
+      readRecords.mockRestore();
+    }
+  });
+
   it('recovers a transformed output crash after publication without deleting the retained source', async () => {
     const sourcePath = await source('normalization-crash.jpg', 'source-survives-crash');
     const destinationPath = path.join(destinationRoot, 'crash-output.jpg');

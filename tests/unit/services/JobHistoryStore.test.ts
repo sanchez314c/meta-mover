@@ -366,6 +366,124 @@ describe('JobHistoryStore', () => {
     expect((await store.getJob(job.jobId))?.status).toBe('completed');
   });
 
+  it('round-trips truthful attempt, settlement, and failure progress counters', async () => {
+    const store = trackedStore(historyPath);
+    await store.initialize();
+    const job = await store.createJob(creation());
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_QUEUED, 3, {
+        previewId: job.previewId,
+        effectiveOptions: options(),
+      })
+    );
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_STARTED, 4, { phase: 'organization' })
+    );
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 5, {
+        phase: 'organization',
+        filesProcessed: 0,
+        filesAttempted: 1,
+        filesSettled: 1,
+        failedFiles: 1,
+        totalFiles: 2,
+        percentage: 0,
+        currentFile: '/media/source/photo.jpg',
+      })
+    );
+    await store.close();
+
+    const reopened = trackedStore(historyPath);
+    await reopened.initialize();
+    const progress = (await reopened.getJob(job.jobId))?.events.find(
+      (candidate) => candidate.kind === ProcessingEventKind.JOB_PROGRESS
+    );
+    expect(progress?.payload).toMatchObject({
+      filesProcessed: 0,
+      filesAttempted: 1,
+      filesSettled: 1,
+      failedFiles: 1,
+    });
+  });
+
+  it.each([
+    { filesAttempted: -1, filesSettled: 0, failedFiles: 0 },
+    { filesAttempted: 3, filesSettled: 1, failedFiles: 0 },
+    { filesAttempted: 1, filesSettled: 2, failedFiles: 0 },
+    { filesAttempted: 1, filesSettled: 1, failedFiles: 2 },
+    { filesAttempted: 1, filesSettled: 1, failedFiles: 1, filesProcessed: 1 },
+  ])('rejects inconsistent durable progress counters %#', async (counters) => {
+    const store = trackedStore(historyPath);
+    await store.initialize();
+    const job = await store.createJob(creation());
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_QUEUED, 3, {
+        previewId: job.previewId,
+        effectiveOptions: options(),
+      })
+    );
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_STARTED, 4, { phase: 'organization' })
+    );
+
+    await expect(
+      store.appendEvent(
+        job.jobId,
+        event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 5, {
+          phase: 'organization',
+          filesProcessed: counters.filesProcessed ?? 0,
+          filesAttempted: counters.filesAttempted,
+          filesSettled: counters.filesSettled,
+          failedFiles: counters.failedFiles,
+          totalFiles: 2,
+          percentage: 0,
+        })
+      )
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
+  it.each([
+    { filesAttempted: 1 },
+    { filesSettled: 1 },
+    { failedFiles: 1 },
+    { filesAttempted: 1, filesSettled: 1 },
+    { filesAttempted: 1, failedFiles: 0 },
+    { filesSettled: 1, failedFiles: 0 },
+  ])('rejects a partial enriched progress tuple %#', async (partialCounters) => {
+    const store = trackedStore(historyPath);
+    await store.initialize();
+    const job = await store.createJob(creation());
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_QUEUED, 3, {
+        previewId: job.previewId,
+        effectiveOptions: options(),
+      })
+    );
+    await store.appendEvent(
+      job.jobId,
+      event(job.jobId, ProcessingEventKind.JOB_STARTED, 4, { phase: 'organization' })
+    );
+
+    await expect(
+      store.appendEvent(
+        job.jobId,
+        event(job.jobId, ProcessingEventKind.JOB_PROGRESS, 5, {
+          phase: 'organization',
+          filesProcessed: 0,
+          totalFiles: 2,
+          percentage: 0,
+          ...partialCounters,
+        })
+      )
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
   it('round-trips a partial terminal with conserved success counts and failed paths', async () => {
     const store = trackedStore(historyPath);
     await store.initialize();

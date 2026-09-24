@@ -323,7 +323,14 @@ export type JobProgressEvent = ProcessingEventBase<
   typeof ProcessingEventKind.JOB_PROGRESS,
   {
     phase: ProcessingPhase;
+    /** Successfully committed file operations. */
     filesProcessed: number;
+    /** File operations admitted to an executor worker. */
+    filesAttempted?: number;
+    /** File operations with a durable committed, skipped, failed, or cancelled outcome. */
+    filesSettled?: number;
+    /** Settled file operations whose durable outcome is failed. */
+    failedFiles?: number;
     totalFiles: number;
     percentage: number;
     currentFile?: string;

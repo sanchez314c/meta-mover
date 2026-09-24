@@ -106,6 +106,22 @@ export interface TransactionJournalOptions {
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 5;
 const LOCK_TIMEOUT_MS = 30_000;
+const JOURNAL_READ_CHUNK_BYTES = 64 * 1024;
+const MAX_JOURNAL_RECORD_BYTES = 16 * 1024 * 1024;
+const TRANSACTION_STATES = new Set<TransactionState>([
+  'planned',
+  'reserved',
+  'staged',
+  'verified',
+  'transformed',
+  'committed',
+  'source-delete-pending',
+  'source-deleted',
+  'completed',
+  'duplicate',
+  'cancelled',
+  'failed',
+]);
 
 async function valueOrUndefined<T>(work: Promise<T>): Promise<T | undefined> {
   try {
@@ -239,10 +255,26 @@ export class TransactionJournal {
     });
   }
 
+  async foldRecords<T>(
+    initial: T,
+    reducer: (accumulator: T, record: JournalRecord, lineNumber: number) => T | Promise<T>
+  ): Promise<T> {
+    await this.appendTail;
+    return this.withFileLock(async () => {
+      await this.repairTornTailLocked();
+      let accumulator = initial;
+      await this.forEachJournalRecord(async (record, lineNumber) => {
+        accumulator = await reducer(accumulator, record, lineNumber);
+      });
+      return accumulator;
+    });
+  }
+
   async deriveOutcomes(): Promise<JournalOutcomes> {
-    const records = await this.readRecords();
-    const latest = new Map<string, JournalRecord>();
-    for (const record of records) latest.set(record.operationId, record);
+    const latest = await this.foldRecords(new Map<string, JournalRecord>(), (records, record) => {
+      records.set(record.operationId, record);
+      return records;
+    });
 
     const outcomes: JournalOutcomes = {
       completed: 0,
@@ -298,61 +330,49 @@ export class TransactionJournal {
   }
 
   private async readRecordsFromDisk(): Promise<JournalRecord[]> {
-    const content = await this.readJournalContent();
-
     const records: JournalRecord[] = [];
-    for (const line of content.split('\n')) {
-      if (line.trim().length === 0) continue;
-      records.push(JSON.parse(line) as JournalRecord);
-    }
+    await this.forEachJournalRecord((record) => {
+      records.push(record);
+    });
     return records;
   }
 
   private async repairTornTailLocked(): Promise<void> {
-    const content = await this.readJournalContent();
+    let pendingMalformed:
+      | { line: string; lineNumber: number; startByte: number; error: unknown }
+      | undefined;
+    let sawNonempty = false;
+    const scan = await this.scanJournalLines(({ line, lineNumber, startByte }) => {
+      if (line.trim().length === 0) return;
+      sawNonempty = true;
+      if (pendingMalformed) {
+        throw this.interiorCorruptionError(pendingMalformed.lineNumber, pendingMalformed.error);
+      }
+      try {
+        JSON.parse(line);
+      } catch (error) {
+        pendingMalformed = { line, lineNumber, startByte, error };
+      }
+    });
 
-    const lines = content.split('\n');
-    const nonemptyIndexes = lines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) => line.trim().length > 0)
-      .map(({ index }) => index);
-    const lastNonempty = nonemptyIndexes[nonemptyIndexes.length - 1];
-    if (lastNonempty === undefined) {
-      this.knownJournalSize = Buffer.byteLength(content, 'utf8');
+    if (pendingMalformed) {
+      await this.revalidateControlDirectory();
+      await writeFile(`${this.journalPath}.torn.${Date.now()}`, pendingMalformed.line, {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+      await this.handle.truncate(pendingMalformed.startByte);
+      this.knownJournalSize = pendingMalformed.startByte;
+      if (this.durable) await this.handle.sync();
       return;
     }
 
-    for (const index of nonemptyIndexes) {
-      try {
-        JSON.parse(lines[index]);
-      } catch (error) {
-        if (index !== lastNonempty) {
-          throw new Error(
-            `Interior transaction journal corruption at line ${index + 1}: ${
-              error instanceof Error ? error.message : 'Unknown parse error'
-            }`
-          );
-        }
-        const torn = lines[index];
-        const validContent = index === 0 ? '' : `${lines.slice(0, index).join('\n')}\n`;
-        await this.revalidateControlDirectory();
-        await writeFile(`${this.journalPath}.torn.${Date.now()}`, torn, {
-          encoding: 'utf8',
-          flag: 'wx',
-        });
-        await this.handle.truncate(Buffer.byteLength(validContent, 'utf8'));
-        this.knownJournalSize = Buffer.byteLength(validContent, 'utf8');
-        if (this.durable) await this.handle.sync();
-        return;
-      }
-    }
-
-    if (!content.endsWith('\n')) {
+    if (sawNonempty && !scan.endsWithNewline) {
       await this.handle.appendFile('\n', 'utf8');
-      this.knownJournalSize = Buffer.byteLength(content, 'utf8') + 1;
+      this.knownJournalSize = scan.bytesRead + 1;
       if (this.durable) await this.handle.sync();
     } else {
-      this.knownJournalSize = Buffer.byteLength(content, 'utf8');
+      this.knownJournalSize = scan.bytesRead;
     }
   }
 
@@ -430,11 +450,10 @@ export class TransactionJournal {
   }
 
   private async initializeSequenceLocked(): Promise<void> {
-    const records = await this.readRecordsFromDisk();
-    const journalMaximum = records.reduce(
-      (highest, entry) => Math.max(highest, entry.sequence ?? 0),
-      0
-    );
+    let journalMaximum = 0;
+    await this.forEachJournalRecord((entry) => {
+      journalMaximum = Math.max(journalMaximum, entry.sequence ?? 0);
+    });
     const stored = await this.readStoredSequence();
     this.sequenceFloor = Math.max(stored, journalMaximum);
     if (!this.durable) {
@@ -688,24 +707,119 @@ export class TransactionJournal {
     }
   }
 
-  private async readJournalContent(): Promise<string> {
+  private async forEachJournalRecord(
+    visitor: (record: JournalRecord, lineNumber: number) => void | Promise<void>
+  ): Promise<void> {
+    await this.scanJournalLines(async ({ line, lineNumber }) => {
+      if (line.trim().length === 0) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        throw this.interiorCorruptionError(lineNumber, error);
+      }
+      if (!this.isJournalRecord(parsed)) {
+        throw new Error(`Transaction journal schema corruption at line ${lineNumber}`);
+      }
+      await visitor(parsed, lineNumber);
+    });
+  }
+
+  private async scanJournalLines(
+    visitor: (entry: {
+      line: string;
+      lineNumber: number;
+      startByte: number;
+      terminated: boolean;
+    }) => void | Promise<void>
+  ): Promise<{ bytesRead: number; endsWithNewline: boolean }> {
     const stats = await this.handle.stat();
     if (!Number.isSafeInteger(stats.size)) {
       throw new Error('Transaction journal exceeds the safe readable size');
     }
-    const content = Buffer.alloc(stats.size);
-    let offset = 0;
-    while (offset < content.length) {
-      const { bytesRead } = await this.handle.read(
-        content,
-        offset,
-        content.length - offset,
-        offset
-      );
+    let position = 0;
+    let lineNumber = 1;
+    let lineStartByte = 0;
+    let pendingBytes = 0;
+    let pending: Buffer[] = [];
+    let endsWithNewline = stats.size === 0;
+
+    const emit = async (segment: Buffer, terminated: boolean): Promise<void> => {
+      const lineBytes = pendingBytes + segment.length;
+      if (lineBytes > MAX_JOURNAL_RECORD_BYTES) {
+        throw new Error(
+          `Transaction journal record at line ${lineNumber} exceeds ${MAX_JOURNAL_RECORD_BYTES} bytes`
+        );
+      }
+      const parts = segment.length > 0 ? [...pending, segment] : pending;
+      const lineBuffer =
+        parts.length === 0
+          ? Buffer.alloc(0)
+          : parts.length === 1
+            ? parts[0]
+            : Buffer.concat(parts, lineBytes);
+      await visitor({
+        line: lineBuffer.toString('utf8'),
+        lineNumber,
+        startByte: lineStartByte,
+        terminated,
+      });
+      pending = [];
+      pendingBytes = 0;
+      lineNumber += 1;
+    };
+
+    while (position < stats.size) {
+      const chunk = Buffer.allocUnsafe(Math.min(JOURNAL_READ_CHUNK_BYTES, stats.size - position));
+      const { bytesRead } = await this.handle.read(chunk, 0, chunk.length, position);
       if (bytesRead === 0) break;
-      offset += bytesRead;
+      const readChunk = chunk.subarray(0, bytesRead);
+      let cursor = 0;
+      while (cursor < readChunk.length) {
+        const newline = readChunk.indexOf(0x0a, cursor);
+        if (newline === -1) {
+          const remainder = readChunk.subarray(cursor);
+          pendingBytes += remainder.length;
+          if (pendingBytes > MAX_JOURNAL_RECORD_BYTES) {
+            throw new Error(
+              `Transaction journal record at line ${lineNumber} exceeds ${MAX_JOURNAL_RECORD_BYTES} bytes`
+            );
+          }
+          pending.push(remainder);
+          break;
+        }
+        await emit(readChunk.subarray(cursor, newline), true);
+        cursor = newline + 1;
+        lineStartByte = position + cursor;
+      }
+      position += bytesRead;
+      endsWithNewline = readChunk[readChunk.length - 1] === 0x0a;
     }
-    return content.subarray(0, offset).toString('utf8');
+
+    if (pendingBytes > 0) await emit(Buffer.alloc(0), false);
+    return { bytesRead: position, endsWithNewline };
+  }
+
+  private interiorCorruptionError(lineNumber: number, error: unknown): Error {
+    return new Error(
+      `Interior transaction journal corruption at line ${lineNumber}: ${
+        error instanceof Error ? error.message : 'Unknown parse error'
+      }`
+    );
+  }
+
+  private isJournalRecord(value: unknown): value is JournalRecord {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as Partial<JournalRecord>;
+    return (
+      typeof candidate.operationId === 'string' &&
+      candidate.operationId.length > 0 &&
+      (candidate.mode === 'copy' || candidate.mode === 'move') &&
+      typeof candidate.state === 'string' &&
+      TRANSACTION_STATES.has(candidate.state as TransactionState) &&
+      (candidate.sequence === undefined ||
+        (Number.isSafeInteger(candidate.sequence) && (candidate.sequence as number) >= 0))
+    );
   }
 
   private async rejectSymlinkIfPresent(filePath: string): Promise<void> {

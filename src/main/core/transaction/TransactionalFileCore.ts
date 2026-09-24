@@ -1708,11 +1708,13 @@ export class TransactionalFileCore {
   }
 
   private async recoverInterruptedOperations(): Promise<void> {
-    const records = await this.journal.readRecords();
-    const aggregate = new Map<string, JournalRecord>();
-    for (const record of records) {
-      aggregate.set(record.operationId, { ...aggregate.get(record.operationId), ...record });
-    }
+    const aggregate = await this.journal.foldRecords(
+      new Map<string, JournalRecord>(),
+      (records, record) => {
+        records.set(record.operationId, { ...records.get(record.operationId), ...record });
+        return records;
+      }
+    );
 
     for (const record of aggregate.values()) {
       if (record.stagingPath && record.stagingNativeIdentity) {

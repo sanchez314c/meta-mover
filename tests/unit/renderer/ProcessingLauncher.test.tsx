@@ -765,12 +765,45 @@ describe('ProcessingLauncher', () => {
       );
     });
 
-    expect(await screen.findByText('9 / 20 files (45%)')).toBeInTheDocument();
+    expect(await screen.findByText('9 attempted / 20 total')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel Processing' }));
     expect(api.cancelProcessing).toHaveBeenCalledWith({
       jobId: 'job-1',
       reason: 'Cancelled by user',
     });
+  });
+
+  it('shows settled failures while successful progress remains truthful', async () => {
+    installAPI();
+    const { store, renderLauncher } = createHarness();
+    store.dispatch(
+      addJob({
+        id: 'job-failing',
+        type: 'copy',
+        status: 'processing',
+        progress: 0,
+        filesProcessed: 0,
+        filesAttempted: 3,
+        filesSettled: 3,
+        failedFiles: 3,
+        totalFiles: 20,
+        currentFile: '/media/source/broken-3.jpg',
+        startTime: '2026-08-29T20:00:01.000Z',
+      })
+    );
+    store.dispatch(setActiveJob('job-failing'));
+
+    renderLauncher();
+
+    expect(await screen.findByText('3 attempted / 20 total')).toBeInTheDocument();
+    expect(screen.getByText('3 settled')).toBeInTheDocument();
+    expect(screen.getByText('0 succeeded')).toBeInTheDocument();
+    expect(screen.getByText('3 failed')).toBeInTheDocument();
+    expect(screen.getByText('/media/source/broken-3.jpg')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Processing progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '0'
+    );
   });
 
   it('shows the audit preparation stage between file settlements while cancellation stays available', async () => {
@@ -797,7 +830,7 @@ describe('ProcessingLauncher', () => {
 
     renderLauncher();
 
-    expect(await screen.findByText('2 / 100000 files (0%)')).toBeInTheDocument();
+    expect(await screen.findByText('2 attempted / 100000 total')).toBeInTheDocument();
     expect(screen.getByText('Preparing metadata audit')).toBeInTheDocument();
     expect(screen.getByText('Verifying preview evidence')).toBeInTheDocument();
     expect(screen.getByText('600 / 1,000 records (60%)')).toBeInTheDocument();
@@ -823,7 +856,7 @@ describe('ProcessingLauncher', () => {
 
     renderLauncher();
 
-    expect(await screen.findByText('2 / 10 files (20%)')).toBeInTheDocument();
+    expect(await screen.findByText('2 attempted / 10 total')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel Processing' }));
     expect(api.cancelProcessing).toHaveBeenCalledWith({
       jobId: 'job-live',

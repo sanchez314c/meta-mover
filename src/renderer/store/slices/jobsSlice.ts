@@ -19,7 +19,11 @@ export interface Job {
     | 'cancelled';
   progress: number;
   filesProcessed: number;
+  filesAttempted?: number;
+  filesSettled?: number;
   totalFiles: number;
+  phase?: string;
+  currentFile?: string;
   /** Authorization-evidence preparation reported between file settlements. */
   preparation?: AuditPreparationProgressDTO;
   skippedFiles?: number;
@@ -228,7 +232,25 @@ const jobsSlice = createSlice({
           if (job.status !== 'cancelling') job.status = 'processing';
           job.progress = event.payload.percentage;
           job.filesProcessed = event.payload.filesProcessed;
+          if (
+            event.payload.filesAttempted !== undefined &&
+            event.payload.filesSettled !== undefined &&
+            event.payload.failedFiles !== undefined
+          ) {
+            job.filesAttempted = event.payload.filesAttempted;
+            job.filesSettled = event.payload.filesSettled;
+            job.failedFiles = event.payload.failedFiles;
+          } else {
+            job.failedFiles ??= 0;
+            job.filesSettled = Math.max(
+              job.filesSettled ?? 0,
+              event.payload.filesProcessed + job.failedFiles
+            );
+            job.filesAttempted = Math.max(job.filesAttempted ?? 0, job.filesSettled);
+          }
           job.totalFiles = event.payload.totalFiles;
+          job.phase = event.payload.phase;
+          job.currentFile = event.payload.currentFile;
           if (event.payload.preparation === undefined) job.preparation = undefined;
           else job.preparation = { ...event.payload.preparation };
           break;
@@ -238,6 +260,8 @@ const jobsSlice = createSlice({
         case 'job-completed':
           job.status = 'completed';
           job.filesProcessed = event.payload.statistics.processedFiles;
+          job.filesAttempted = event.payload.statistics.totalFiles;
+          job.filesSettled = event.payload.statistics.totalFiles;
           job.totalFiles = event.payload.statistics.totalFiles;
           job.failedFiles = 0;
           job.skippedFiles = event.payload.statistics.skippedFiles;
@@ -249,6 +273,11 @@ const jobsSlice = createSlice({
         case 'job-partially-completed':
           job.status = 'partial';
           job.filesProcessed = event.payload.statistics.processedFiles;
+          job.filesAttempted = event.payload.statistics.totalFiles;
+          job.filesSettled =
+            event.payload.statistics.processedFiles +
+            event.payload.statistics.skippedFiles +
+            event.payload.statistics.failedFiles;
           job.totalFiles = event.payload.statistics.totalFiles;
           job.failedFiles = event.payload.statistics.failedFiles;
           job.skippedFiles = event.payload.statistics.skippedFiles;
@@ -261,9 +290,18 @@ const jobsSlice = createSlice({
           job.status = 'failed';
           job.error = event.payload.error.message;
           if (event.payload.statistics) {
+            const failedFiles = job.failedFiles ?? 0;
+            const minimumSettledFiles =
+              event.payload.statistics.processedFiles +
+              event.payload.statistics.skippedFiles +
+              failedFiles;
+            const filesSettled = Math.max(job.filesSettled ?? 0, minimumSettledFiles);
+            const filesAttempted = Math.max(job.filesAttempted ?? 0, filesSettled);
             job.filesProcessed = event.payload.statistics.processedFiles;
+            job.filesAttempted = filesAttempted;
+            job.filesSettled = filesSettled;
             job.totalFiles = event.payload.statistics.totalFiles;
-            job.failedFiles = event.payload.statistics.failedFiles;
+            job.failedFiles = failedFiles;
             job.skippedFiles = event.payload.statistics.skippedFiles;
             job.progress = job.totalFiles === 0 ? 100 : (job.filesProcessed / job.totalFiles) * 100;
           }
@@ -276,6 +314,10 @@ const jobsSlice = createSlice({
         case 'job-cancelled':
           job.status = 'cancelled';
           job.filesProcessed = event.payload.statistics.processedFiles;
+          job.filesAttempted =
+            event.payload.statistics.totalFiles - event.payload.statistics.unattemptedFiles;
+          job.filesSettled =
+            event.payload.statistics.totalFiles - event.payload.statistics.unattemptedFiles;
           job.totalFiles = event.payload.statistics.totalFiles;
           job.skippedFiles = event.payload.statistics.skippedFiles;
           job.failedFiles = event.payload.statistics.failedFiles;

@@ -896,3 +896,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed generic date resolution selecting a lower-authority date-only candidate merely because it lacked fractional digits.
 - Unsupported subseconds are now removed from the strongest candidate's value while its identity, timestamp, and audit reasons remain intact.
 - Added collector-to-resolver regressions for the crashing EXIF/IPTC/filename combination, a legitimate whole-second timestamp, and date-only-only metadata.
+
+## 2026-09-24
+
+- Made live processing status distinguish attempted, settled, successful, and failed files.
+- Added the current processing phase and file before executor work begins.
+- Kept the progress percentage tied to successful commits so failures cannot falsely advance completion.
+- Persisted the new progress counters with strict conservation checks and preserved the last observed attempt totals when a coordinator-wide fatal event marks remaining files as failed.
+- Required attempted, settled, and failed progress counters as one atomic tuple. Legacy progress preserves known counters, and fatal or cancelled terminals conserve only observed or outcome-proven work.
+
+## 2026-09-24 bounded transaction journal replay
+
+- Replaced whole-file transaction journal reads with 64 KiB streaming replay from the already identity-bound file handle, removing the V8 string-length crash on the 577,797,708-byte journal.
+- Preserved exact line reporting, final torn-record quarantine and truncation, valid unterminated-tail normalization, file locking, and inode protections.
+- Added replay envelope validation for operation ID, transaction state, mode, and sequence. Startup sequence recovery now streams the journal without retaining every historical record.
+- Added regressions for chunk, newline, and UTF-8 splits; malformed interior JSON; invalid record schema; incomplete tails; and a simulated 600 MiB journal that proves read buffers remain at or below 64 KiB.
+
+## 2026-09-24 bounded transaction journal aggregation
+
+- Startup recovery and outcome derivation now fold journal records directly from the bounded stream instead of first retaining every historical record in an array.
+- Preserved one merged record per operation for recovery and one latest record per operation for outcome reporting while removing the duplicate full-history allocation.
+- Added regressions proving both paths avoid the materializing `readRecords` API.

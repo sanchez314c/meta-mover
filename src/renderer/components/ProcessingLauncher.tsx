@@ -1075,14 +1075,33 @@ export function ProcessingLauncher() {
           <ProgressCopy>
             <span>
               {activeJob
-                ? `${activeJob.filesProcessed} / ${activeJob.totalFiles} files (${Math.round(activeJob.progress)}%)`
+                ? `${activeJob.filesAttempted ?? activeJob.filesSettled ?? activeJob.filesProcessed} attempted / ${activeJob.totalFiles} total`
                 : 'Waiting for processing event'}
             </span>
             <span>{activeJob?.status ?? 'queued'}</span>
           </ProgressCopy>
-          <ProgressTrack>
+          {activeJob && (
+            <ProgressCopy role="status">
+              <span>{activeJob.filesProcessed} succeeded</span>
+              <span>{activeJob.filesSettled ?? activeJob.filesProcessed} settled</span>
+              <span>{activeJob.failedFiles ?? 0} failed</span>
+            </ProgressCopy>
+          )}
+          <ProgressTrack
+            role="progressbar"
+            aria-label="Processing progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={activeJob?.progress ?? 0}
+          >
             <ProgressFill $percentage={activeJob?.progress ?? 0} />
           </ProgressTrack>
+          {activeJob?.currentFile && (
+            <CurrentFile role="status">
+              <strong>{activeJob.phase ?? 'processing'}</strong>
+              <span>{activeJob.currentFile}</span>
+            </CurrentFile>
+          )}
           {activeJob?.preparation && (
             <CurrentFile role="status">
               <strong>{activeJob.preparation.stage}</strong>

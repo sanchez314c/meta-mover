@@ -259,6 +259,7 @@ interface ActiveJob extends EventContext {
   skippedFiles: number;
   failedFiles: number;
   processedBytes: number;
+  attemptedFiles: number;
   settledFiles: number;
   lastProgressPersistedAtMs?: number;
   readonly terminalPromise: Promise<TerminalProcessingEvent>;
@@ -788,6 +789,7 @@ export class ProcessingCoordinator {
       skippedFiles: 0,
       failedFiles: 0,
       processedBytes: 0,
+      attemptedFiles: 0,
       settledFiles: 0,
       terminalPromise,
       resolveTerminal,
@@ -958,6 +960,9 @@ export class ProcessingCoordinator {
           {
             phase: ProcessingPhase.ORGANIZATION,
             filesProcessed: job.processedFiles,
+            filesAttempted: job.attemptedFiles,
+            filesSettled: job.settledFiles,
+            failedFiles: job.failedFiles,
             totalFiles: operationCount,
             percentage: operationCount === 0 ? 100 : (job.processedFiles / operationCount) * 100,
             preparation,
@@ -973,6 +978,25 @@ export class ProcessingCoordinator {
             if (nextOperationIndex >= operationCount) return;
             const operation = job.prepared.operations[nextOperationIndex];
             nextOperationIndex += 1;
+            job.attemptedFiles += 1;
+
+            await this.publish(
+              job,
+              ProcessingEventKind.JOB_PROGRESS,
+              {
+                phase: ProcessingPhase.ORGANIZATION,
+                filesProcessed: job.processedFiles,
+                filesAttempted: job.attemptedFiles,
+                filesSettled: job.settledFiles,
+                failedFiles: job.failedFiles,
+                totalFiles: operationCount,
+                percentage:
+                  operationCount === 0 ? 100 : (job.processedFiles / operationCount) * 100,
+                currentFile: operation.sourcePath,
+              },
+              this.now(),
+              false
+            );
 
             let ledgerEntry: OperationLedgerEntry;
             try {
@@ -1055,6 +1079,9 @@ export class ProcessingCoordinator {
                 {
                   phase: ProcessingPhase.ORGANIZATION,
                   filesProcessed: job.processedFiles,
+                  filesAttempted: job.attemptedFiles,
+                  filesSettled: job.settledFiles,
+                  failedFiles: job.failedFiles,
                   totalFiles: operationCount,
                   percentage:
                     operationCount === 0 ? 100 : (job.processedFiles / operationCount) * 100,

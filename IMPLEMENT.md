@@ -845,3 +845,74 @@ Candidate identity and subsecond precision are separate decisions. Keep the stro
 
 - Collector and resolver focused suites: 195 tests passed.
 - TypeScript, ESLint, and Prettier validation passed.
+
+## 2026-09-24 truthful live execution progress
+
+### Discussed
+
+A processing run could remain visibly at `0 / total` after file attempts failed because the UI counter represented successful commits only. This made active failure look like a frozen application.
+
+### Decided
+
+Keep success percentage tied strictly to successful commits. Report executor admissions, durable settlements, failures, the active phase, and current file separately so visible activity never inflates completion.
+
+### Built
+
+- Extended job progress events with attempted, settled, and failed counters.
+- Published the current file before executor work begins and retained the durable outcome counters after settlement.
+- Stored the additional counters, phase, and current file in renderer state.
+- Replaced the ambiguous running summary with attempted, settled, succeeded, and failed counts while leaving the progress bar success based.
+- Extended durable job-history validation and replay to accept the counters only when integer bounds and processed/failed/settled/attempted ordering remain consistent.
+- Kept terminal coordinator failures from replacing one observed attempt with a fabricated all-files-attempted count.
+- Required the three enriched counters together, retained them across later legacy progress, and derived conservative initial legacy counters from successful commits only.
+- When later legacy progress reports more successful files, advanced settled and attempted counts to cover those successes plus preserved failure evidence.
+- Reconciled fatal terminal counters with committed and skipped outcomes while preserving `processed <= settled <= attempted`; cancellation uses its explicit attempted and unattempted outcome totals.
+
+### Validation
+
+- Focused coordinator, reducer, and launcher suites: 101 tests passed.
+- TypeScript, ESLint, and Prettier passed.
+- Job-history and reducer persistence regressions cover round-trip, invalid counter order, and a fatal stop after one real attempt.
+- Additional regressions cover partial enriched tuples, zero attempts, partial settlement, legacy progress before and after enrichment, and cancellation after enriched progress.
+
+## 2026-09-24 bounded transaction journal replay
+
+### Discussed
+
+A fresh normal run remained at zero because every operation reopened a 577,797,708-byte `transactions.jsonl` and converted the complete file into one JavaScript string. That exceeds V8's maximum string length before processing can begin.
+
+### Decided
+
+Replay the existing identity-bound file handle in bounded byte chunks. Parse complete newline-delimited records only, retain exact byte offsets for tail repair, validate the persisted record envelope, and preserve the existing lock, symlink, hard-link, and concurrent-writer protections.
+
+### Built
+
+- Added a 64 KiB streaming line scanner with a 16 MiB per-record safety bound.
+- Reworked torn-tail repair, record replay, and startup sequence recovery to consume the stream without a whole-file buffer or string.
+- Preserved final incomplete-record quarantine, byte-exact truncation to the valid prefix, valid tail newline normalization, and exact corruption line reporting.
+- Added boundary, corruption, schema, tail, and simulated 600 MiB regression coverage.
+
+### Validation
+
+- Transaction journal focused suite: 41 tests passed.
+- ESLint and TypeScript passed.
+
+## 2026-09-24 bounded transaction journal aggregation
+
+### Discussed
+
+The chunked reader removed the V8 string limit, but startup recovery and outcome derivation still converted the stream into a complete record array before building their per-operation maps. A long-lived journal could therefore consume memory twice for the same history.
+
+### Decided
+
+Expose a lock-protected journal fold over the existing validated streaming reader. Recovery keeps only the merged state required for each operation. Outcome reporting keeps only the latest record required for each operation. The public record-list API remains available for diagnostics and existing callers.
+
+### Built
+
+- Added `TransactionJournal.foldRecords` with append ordering, file locking, torn-tail repair, schema validation, and the existing 16 MiB per-record bound.
+- Reworked `deriveOutcomes` and startup recovery to aggregate directly from that fold.
+- Added tests that make `readRecords` fail if either production path tries to materialize the full history.
+
+### Validation
+
+- Unit and integration transaction suites: 168 tests passed.

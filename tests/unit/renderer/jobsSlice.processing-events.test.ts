@@ -342,4 +342,244 @@ describe('jobsSlice processing event reduction', () => {
     });
     expect(state.isProcessing).toBe(false);
   });
+
+  it('tracks settled and failed attempts without inflating successful progress', () => {
+    let state = reducer(undefined, applyProcessingEvent(queued('job-progress')));
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-progress',
+        jobId: 'job-progress',
+        sequence: 2,
+        emittedAt: '2026-08-29T20:00:02.000Z',
+        payload: {
+          phase: 'organization',
+          filesProcessed: 0,
+          filesAttempted: 1,
+          filesSettled: 1,
+          failedFiles: 1,
+          totalFiles: 10,
+          percentage: 0,
+          currentFile: '/source/broken.jpg',
+        },
+      })
+    );
+
+    expect(state.jobs[0]).toMatchObject({
+      progress: 0,
+      filesProcessed: 0,
+      filesAttempted: 1,
+      filesSettled: 1,
+      failedFiles: 1,
+      currentFile: '/source/broken.jpg',
+    });
+
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-failed',
+        jobId: 'job-progress',
+        sequence: 3,
+        emittedAt: '2026-08-29T20:00:03.000Z',
+        payload: {
+          error: {
+            code: 'COORDINATOR_FAILURE',
+            message: 'history persistence stopped',
+            recoverable: false,
+          },
+          statistics: {
+            totalFiles: 10,
+            processedFiles: 0,
+            skippedFiles: 0,
+            failedFiles: 10,
+            totalBytes: 100,
+            processedBytes: 0,
+            durationMs: 10,
+          },
+          fileFailures: Array.from({ length: 10 }, (_, index) => ({
+            sourcePath: `/source/${index}.jpg`,
+            error: 'not processed after coordinator failure',
+          })),
+        },
+      })
+    );
+
+    expect(state.jobs[0]).toMatchObject({
+      status: 'failed',
+      filesProcessed: 0,
+      filesAttempted: 1,
+      filesSettled: 1,
+      failedFiles: 1,
+      totalFiles: 10,
+    });
+  });
+
+  it('preserves enriched counters when a later legacy progress event arrives', () => {
+    let state = reducer(undefined, applyProcessingEvent(queued('legacy-after-enriched')));
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-progress',
+        jobId: 'legacy-after-enriched',
+        sequence: 2,
+        emittedAt: '2026-08-29T20:00:02.000Z',
+        payload: {
+          phase: 'organization',
+          filesProcessed: 1,
+          filesAttempted: 3,
+          filesSettled: 2,
+          failedFiles: 1,
+          totalFiles: 10,
+          percentage: 10,
+        },
+      })
+    );
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-progress',
+        jobId: 'legacy-after-enriched',
+        sequence: 3,
+        emittedAt: '2026-08-29T20:00:03.000Z',
+        payload: {
+          phase: 'cleanup',
+          filesProcessed: 3,
+          totalFiles: 10,
+          percentage: 30,
+        },
+      })
+    );
+
+    expect(state.jobs[0]).toMatchObject({
+      filesProcessed: 3,
+      filesAttempted: 4,
+      filesSettled: 4,
+      failedFiles: 1,
+    });
+  });
+
+  it.each([
+    {
+      name: 'zero attempts',
+      progress: null,
+      terminal: { processedFiles: 0, skippedFiles: 0 },
+      expected: { filesAttempted: 0, filesSettled: 0, failedFiles: 0 },
+    },
+    {
+      name: 'multiple attempts with partial settlement',
+      progress: { filesProcessed: 0, filesAttempted: 3, filesSettled: 1, failedFiles: 1 },
+      terminal: { processedFiles: 1, skippedFiles: 0 },
+      expected: { filesAttempted: 3, filesSettled: 2, failedFiles: 1 },
+    },
+    {
+      name: 'legacy progress before failure',
+      progress: { filesProcessed: 1 },
+      terminal: { processedFiles: 1, skippedFiles: 0 },
+      expected: { filesAttempted: 1, filesSettled: 1, failedFiles: 0 },
+    },
+  ])('keeps fatal progress truthful for $name', ({ progress, terminal, expected }) => {
+    const jobId = `fatal-${name.replaceAll(' ', '-')}`;
+    let state = reducer(undefined, applyProcessingEvent(queued(jobId)));
+    if (progress) {
+      state = reducer(
+        state,
+        applyProcessingEvent({
+          kind: 'job-progress',
+          jobId,
+          sequence: 2,
+          emittedAt: '2026-08-29T20:00:02.000Z',
+          payload: {
+            phase: 'organization',
+            totalFiles: 10,
+            percentage: 0,
+            ...progress,
+          },
+        })
+      );
+    }
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-failed',
+        jobId,
+        sequence: progress ? 3 : 2,
+        emittedAt: '2026-08-29T20:00:03.000Z',
+        payload: {
+          error: { code: 'COORDINATOR_FAILURE', message: 'stopped', recoverable: false },
+          statistics: {
+            totalFiles: 10,
+            processedFiles: terminal.processedFiles,
+            skippedFiles: terminal.skippedFiles,
+            failedFiles: 10 - terminal.processedFiles - terminal.skippedFiles,
+            totalBytes: 100,
+            processedBytes: terminal.processedFiles * 10,
+            durationMs: 10,
+          },
+          fileFailures: Array.from(
+            { length: 10 - terminal.processedFiles - terminal.skippedFiles },
+            (_, index) => ({ sourcePath: `/source/${index}.jpg`, error: 'not processed' })
+          ),
+        },
+      })
+    );
+
+    expect(state.jobs[0]).toMatchObject({ status: 'failed', ...expected });
+    expect(state.jobs[0].filesProcessed).toBeLessThanOrEqual(state.jobs[0].filesSettled ?? -1);
+    expect(state.jobs[0].filesSettled).toBeLessThanOrEqual(state.jobs[0].filesAttempted ?? -1);
+  });
+
+  it('uses cancellation outcomes after enriched progress without losing admitted work', () => {
+    let state = reducer(undefined, applyProcessingEvent(queued('cancel-enriched')));
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-progress',
+        jobId: 'cancel-enriched',
+        sequence: 2,
+        emittedAt: '2026-08-29T20:00:02.000Z',
+        payload: {
+          phase: 'organization',
+          filesProcessed: 1,
+          filesAttempted: 3,
+          filesSettled: 2,
+          failedFiles: 1,
+          totalFiles: 10,
+          percentage: 10,
+        },
+      })
+    );
+    state = reducer(
+      state,
+      applyProcessingEvent({
+        kind: 'job-cancelled',
+        jobId: 'cancel-enriched',
+        sequence: 3,
+        emittedAt: '2026-08-29T20:00:03.000Z',
+        payload: {
+          filesProcessed: 1,
+          statistics: {
+            totalFiles: 10,
+            processedFiles: 1,
+            skippedFiles: 0,
+            failedFiles: 1,
+            cancelledFiles: 1,
+            unattemptedFiles: 7,
+            totalBytes: 100,
+            processedBytes: 10,
+            committedResidueBytes: 0,
+            durationMs: 10,
+          },
+          fileFailures: [{ sourcePath: '/source/failed.jpg', error: 'failed' }],
+          fileOutcomes: [],
+        },
+      })
+    );
+
+    expect(state.jobs[0]).toMatchObject({
+      status: 'cancelled',
+      filesAttempted: 3,
+      filesSettled: 3,
+      failedFiles: 1,
+    });
+  });
 });

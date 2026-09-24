@@ -1586,8 +1586,12 @@ describe('ProcessingCoordinator execution contract', () => {
       .at(-1);
     expect(finalProgress?.payload).toMatchObject({
       filesProcessed: 3,
+      filesAttempted: 5,
+      filesSettled: 5,
+      failedFiles: 1,
       totalFiles: 5,
       percentage: 60,
+      currentFile: '/source/4.jpg',
     });
     expect(history.recordLedgerEntry).toHaveBeenCalledTimes(5);
     expect(history.recordTerminal).toHaveBeenCalledTimes(1);
@@ -1626,7 +1630,7 @@ describe('ProcessingCoordinator execution contract', () => {
       .map(([event]) => event as ProcessingEvent)
       .filter((event) => event.kind === ProcessingEventKind.JOB_PROGRESS);
 
-    expect(liveProgress).toHaveLength(12);
+    expect(liveProgress).toHaveLength(24);
     expect(persistedProgress.length).toBeLessThan(liveProgress.length);
     expect(persistedProgress.at(-1)?.sequence).toBe(liveProgress.at(-1)?.sequence);
     expect(liveProgress.at(-1)?.payload).toMatchObject({

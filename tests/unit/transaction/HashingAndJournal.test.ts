@@ -687,8 +687,8 @@ describe('transaction hashing and journal primitives', () => {
   it('does not reread an unchanged journal tail before every durable append', async () => {
     const journal = await TransactionJournal.open(path.join(root, 'linear-append.jsonl'));
     const readSpy = jest.spyOn(
-      journal as unknown as { readJournalContent: () => Promise<string> },
-      'readJournalContent'
+      journal as unknown as { scanJournalLines: () => Promise<unknown> },
+      'scanJournalLines'
     );
 
     for (let index = 0; index < 10; index++) {
@@ -917,6 +917,144 @@ describe('transaction hashing and journal primitives', () => {
       'second',
     ]);
     expect(await readFile(journalPath, 'utf8')).toMatch(/\}\n\{/);
+    await journal.close();
+  });
+
+  it('streams records across chunk, newline, and UTF-8 code point boundaries', async () => {
+    const journalPath = path.join(root, 'stream-boundaries.jsonl');
+    const base = {
+      operationId: 'unicode-boundary',
+      state: 'planned',
+      mode: 'copy',
+      error: '',
+    };
+    const prefixBytes = Buffer.byteLength(JSON.stringify(base).replace('""}', '"'), 'utf8');
+    const padding = 'x'.repeat(65_534 - prefixBytes);
+    const first = JSON.stringify({ ...base, error: `${padding}📷` });
+    const newlineBoundary = JSON.stringify({
+      operationId: 'newline-boundary',
+      state: 'completed',
+      mode: 'copy',
+      error: '',
+    });
+    const firstRecordBytes = Buffer.byteLength(`${first}\n`, 'utf8');
+    const bytesToNextChunk = 65_536 - (firstRecordBytes % 65_536);
+    const secondTargetBytes =
+      bytesToNextChunk >= Buffer.byteLength(newlineBoundary, 'utf8')
+        ? bytesToNextChunk
+        : bytesToNextChunk + 65_536;
+    const newlinePadding = 'y'.repeat(
+      secondTargetBytes - Buffer.byteLength(newlineBoundary, 'utf8')
+    );
+    const second = JSON.stringify({
+      operationId: 'newline-boundary',
+      state: 'completed',
+      mode: 'copy',
+      error: newlinePadding,
+    });
+    await writeFile(journalPath, `${first}\n${second}\n`, 'utf8');
+
+    const journal = await TransactionJournal.open(journalPath, false);
+
+    expect((await journal.readRecords()).map((record) => record.operationId)).toEqual([
+      'unicode-boundary',
+      'newline-boundary',
+    ]);
+    await journal.close();
+  });
+
+  it('reports the exact line for malformed interior streamed records', async () => {
+    const journalPath = path.join(root, 'streamed-interior-corruption.jsonl');
+    await writeFile(
+      journalPath,
+      '{"operationId":"first","state":"planned","mode":"copy"}\n' +
+        '{not-json}\n' +
+        '{"operationId":"last","state":"completed","mode":"copy"}\n'
+    );
+
+    await expect(TransactionJournal.open(journalPath)).rejects.toThrow(
+      /Interior transaction journal corruption at line 2:/
+    );
+  });
+
+  it('rejects a complete interior record that does not match the journal schema', async () => {
+    const journalPath = path.join(root, 'streamed-schema-corruption.jsonl');
+    await writeFile(
+      journalPath,
+      '{"operationId":"first","state":"planned","mode":"copy"}\n' +
+        '{"operationId":"wrong","state":"invented","mode":"copy"}\n' +
+        '{"operationId":"last","state":"completed","mode":"copy"}\n'
+    );
+
+    await expect(TransactionJournal.open(journalPath, false)).rejects.toThrow(/schema.*line 2/i);
+  });
+
+  it('reads a simulated journal larger than the V8 string limit with bounded buffers', async () => {
+    const journal = await TransactionJournal.open(path.join(root, 'simulated-huge.jsonl'), false);
+    const internals = journal as unknown as {
+      handle: {
+        stat: () => Promise<{ size: number }>;
+        read: (
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number
+        ) => Promise<{ bytesRead: number; buffer: Buffer }>;
+      };
+      readRecordsFromDisk: () => Promise<Array<{ operationId: string }>>;
+    };
+    const originalStat = internals.handle.stat.bind(internals.handle);
+    const originalRead = internals.handle.read.bind(internals.handle);
+    const line = Buffer.from(
+      '{"operationId":"simulated-huge","state":"planned","mode":"copy"}\n',
+      'utf8'
+    );
+    let delivered = false;
+    const statSpy = jest
+      .spyOn(internals.handle, 'stat')
+      .mockResolvedValue({ size: 600 * 1024 * 1024 });
+    const readSpy = jest.spyOn(internals.handle, 'read').mockImplementation(async (buffer) => {
+      expect(buffer.length).toBeLessThanOrEqual(64 * 1024);
+      if (delivered) return { bytesRead: 0, buffer };
+      line.copy(buffer);
+      delivered = true;
+      return { bytesRead: line.length, buffer };
+    });
+
+    await expect(internals.readRecordsFromDisk()).resolves.toMatchObject([
+      { operationId: 'simulated-huge' },
+    ]);
+    expect(readSpy).toHaveBeenCalledTimes(2);
+    statSpy.mockRestore();
+    readSpy.mockRestore();
+    internals.handle.stat = originalStat;
+    internals.handle.read = originalRead;
+    await journal.close();
+  });
+
+  it('derives outcomes by folding the stream without materializing readRecords', async () => {
+    const journalPath = path.join(root, 'streamed-outcomes.jsonl');
+    await writeFile(
+      journalPath,
+      [
+        '{"operationId":"copy","state":"planned","mode":"copy"}',
+        '{"operationId":"move","state":"planned","mode":"move"}',
+        '{"operationId":"copy","state":"completed","mode":"copy"}',
+        '{"operationId":"move","state":"completed","mode":"move"}',
+      ].join('\n') + '\n'
+    );
+    const journal = await TransactionJournal.open(journalPath, false);
+    const readRecords = jest
+      .spyOn(journal, 'readRecords')
+      .mockRejectedValue(new Error('must not materialize journal records'));
+
+    await expect(journal.deriveOutcomes()).resolves.toMatchObject({
+      completed: 1,
+      moved: 1,
+      total: 2,
+      nonterminal: 0,
+    });
+    expect(readRecords).not.toHaveBeenCalled();
     await journal.close();
   });
 });
