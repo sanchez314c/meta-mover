@@ -100,7 +100,7 @@ export type ResolutionStatus = 'resolved' | 'review-required' | 'ambiguous' | 'u
 export type ResolutionConfidence = 'high' | 'medium' | 'low' | 'none';
 
 export interface DateResolutionRecord {
-  policyVersion: 'date-resolution/1';
+  policyVersion: 'date-resolution/1' | 'date-resolution/2';
   fileId: string;
   mediaKind: MediaKind;
   target: ResolutionTarget;

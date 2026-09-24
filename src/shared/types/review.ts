@@ -1,4 +1,11 @@
-import type { DateResolutionRecord, MediaKind, ParsedDateValue } from '../../main/core/date/types';
+import { isResolvedCreationProvenance, isSelectedValueSupported } from '../../main/core/date';
+import { isValidDateEvidenceValue } from './processing';
+import type {
+  DateResolutionRecord,
+  MediaKind,
+  ParsedDateValue,
+  ScoredDateCandidate,
+} from '../../main/core/date/types';
 
 export type ReviewStatus = 'pending' | 'kept' | 'resolved' | 'stale' | 'failed';
 
@@ -177,7 +184,7 @@ function isParsedDateValue(value: unknown): value is ParsedDateValue {
     )
   )
     return false;
-  return (
+  const structurallyValid =
     text(value.localIso) &&
     ZONE_BASES.includes(value.zoneBasis as string) &&
     PRECISIONS.includes(value.precision as string) &&
@@ -186,8 +193,21 @@ function isParsedDateValue(value: unknown): value is ParsedDateValue {
       (Number.isInteger(value.offsetMinutes) && Math.abs(value.offsetMinutes as number) <= 840)) &&
     (value.zoneIana === undefined || text(value.zoneIana)) &&
     (value.fractionalDigits === undefined ||
-      (typeof value.fractionalDigits === 'string' && /^\d{1,9}$/.test(value.fractionalDigits)))
-  );
+      (typeof value.fractionalDigits === 'string' && /^\d{1,9}$/.test(value.fractionalDigits)));
+  if (!structurallyValid) return false;
+  if (value.precision === 'date' || value.zoneBasis === 'date-only') {
+    return (
+      value.precision === 'date' &&
+      value.zoneBasis === 'date-only' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(value.localIso as string) &&
+      isValidDateEvidenceValue(value.localIso) &&
+      value.instantUtc === undefined &&
+      value.offsetMinutes === undefined &&
+      value.zoneIana === undefined &&
+      value.fractionalDigits === undefined
+    );
+  }
+  return true;
 }
 
 function isScoredDateCandidate(value: unknown): boolean {
@@ -293,8 +313,8 @@ function isDateResolutionRecord(value: unknown): value is DateResolutionRecord {
     )
   )
     return false;
-  return (
-    value.policyVersion === 'date-resolution/1' &&
+  const valid =
+    ['date-resolution/1', 'date-resolution/2'].includes(value.policyVersion as string) &&
     text(value.fileId) &&
     MEDIA_KINDS.includes(value.mediaKind as MediaKind) &&
     ['capture-time', 'recording-time', 'content-created-time'].includes(value.target as string) &&
@@ -318,8 +338,43 @@ function isDateResolutionRecord(value: unknown): value is DateResolutionRecord {
     (value.selectedGroupScore === undefined ||
       (typeof value.selectedGroupScore === 'number' &&
         Number.isFinite(value.selectedGroupScore))) &&
-    (value.selectedValue === undefined || isParsedDateValue(value.selectedValue))
-  );
+    (value.selectedValue === undefined || isParsedDateValue(value.selectedValue));
+  if (!valid) return false;
+  if (
+    value.policyVersion === 'date-resolution/2' &&
+    value.status === 'resolved' &&
+    object(value.selectedValue) &&
+    value.selectedValue.precision === 'date'
+  ) {
+    const reasons = value.reasonCodes as string[];
+    const automatic = ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'].every(
+      (reason) => reasons.includes(reason)
+    );
+    const selected = (value.candidates as Record<string, unknown>[]).find(
+      (candidate) => candidate.id === value.selectedCandidateId
+    );
+    if (
+      selected === undefined ||
+      selected.eligibility !== 'eligible' ||
+      !object(selected.score) ||
+      typeof selected.score.final !== 'number' ||
+      selected.score.final <= 0 ||
+      !object(selected.value) ||
+      !isResolvedCreationProvenance(selected as unknown as ScoredDateCandidate) ||
+      !isSelectedValueSupported(
+        value.selectedValue as unknown as ParsedDateValue,
+        selected.value as unknown as ParsedDateValue
+      )
+    ) {
+      return false;
+    }
+    const manual =
+      selected?.sourceKind === 'user-override' &&
+      reasons.includes('NON_AUTHORITATIVE_SELECTION') &&
+      reasons.includes('RESOLVED_MEDIUM_CONFIDENCE');
+    return automatic || manual;
+  }
+  return true;
 }
 
 export function isReviewOutputBinding(value: unknown): value is ReviewOutputBinding {

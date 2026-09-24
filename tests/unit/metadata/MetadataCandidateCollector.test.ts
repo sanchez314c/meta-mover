@@ -5,7 +5,7 @@ import {
   MetadataCandidateCollector,
   RawExifTags,
 } from '../../../src/main/core/metadata/MetadataCandidateCollector';
-import { MediaKind } from '../../../src/main/core/date';
+import { MediaKind, resolveDateCandidates } from '../../../src/main/core/date';
 
 class FakeExifToolAdapter implements ExifToolReadAdapter {
   public readonly reads: string[] = [];
@@ -36,6 +36,139 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  async function resolveImage(filename: string, tags: RawExifTags) {
+    const collector = new MetadataCandidateCollector(new FakeExifToolAdapter(tags), async () => ({
+      birthtime: new Date(Number.NaN),
+    }));
+    const candidates = await collector.collect({
+      fileId: 'sha256:narrow-recovery',
+      filePath: `/media/${filename}`,
+      filesystemBirthTimeUtc: null,
+      mediaKind: 'image',
+    });
+    await collector.close();
+    return resolveDateCandidates({
+      fileId: 'sha256:narrow-recovery',
+      mediaKind: 'image',
+      evaluationTimeUtc: '2026-09-23T12:00:00.000Z',
+      candidates,
+    });
+  }
+
+  describe('audited narrow metadata recoveries', () => {
+    const pngTags = {
+      'PNG:CreateDate': '2024:03:23 12:36:30',
+      'PNG:ModifyDate': '2023:01:05 19:53:38',
+      'System:FileModifyDate': '2024:03:23 08:36:30-04:00',
+      'XMP-photoshop:DateCreated': '2023:01:05 19:53:38',
+    } satisfies RawExifTags;
+
+    it('selects native PNG CreateDate when the screenshot, file instant, and older edit pair agree', async () => {
+      const result = await resolveImage('2024-03-23_12-36-30-screen-shot.png', pngTags);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: { localIso: '2024-03-23T12:36:30' },
+      });
+      expect(result.reasonCodes).toContain('PNG_SCREENSHOT_NATIVE_DATE_RECOVERY');
+      expect(result.candidates.find((item) => item.id === result.selectedCandidateId)?.tag).toBe(
+        'PNG:CreateDate'
+      );
+    });
+
+    it('accepts the exact Apple Display P3 screenshot signature over a 2022 PNG placeholder', async () => {
+      const result = await resolveImage('2024-03-23_12-36-30-screen-shot.png', {
+        ...pngTags,
+        'PNG:ModifyDate': '2022:01:01 00:00:00',
+        'XMP-photoshop:DateCreated': '2023:01:05 19:53:38',
+        'ICC-header:ProfileCreator': 'Apple Computer Inc.',
+        'PNG:ProfileName': 'kCGColorSpaceDisplayP3',
+        'PNG:ImageWidth': 1170,
+        'PNG:ImageHeight': 2532,
+      });
+      expect(result.reasonCodes).toContain('PNG_SCREENSHOT_NATIVE_DATE_RECOVERY');
+    });
+
+    it.each([
+      ['altered profile creator', { 'ICC-header:ProfileCreator': 'Other Inc.' }],
+      ['altered profile name', { 'PNG:ProfileName': 'Display P3' }],
+      ['altered dimensions', { 'PNG:ImageWidth': 1169 }],
+      ['newer embedded content date', { 'XMP-photoshop:DateCreated': '2025:01:05 19:53:38' }],
+    ] as const)('rejects the 2022 PNG placeholder with %s', async (_name, changed) => {
+      const result = await resolveImage('2024-03-23_12-36-30-screen-shot.png', {
+        ...pngTags,
+        'PNG:ModifyDate': '2022:01:01 00:00:00',
+        'XMP-photoshop:DateCreated': '2023:01:05 19:53:38',
+        'ICC-header:ProfileCreator': 'Apple Computer Inc.',
+        'PNG:ProfileName': 'kCGColorSpaceDisplayP3',
+        'PNG:ImageWidth': 1170,
+        'PNG:ImageHeight': 2532,
+        ...changed,
+      });
+      expect(result.reasonCodes).not.toContain('PNG_SCREENSHOT_NATIVE_DATE_RECOVERY');
+    });
+
+    const appleTags = {
+      'IFD0:Make': 'Apple',
+      'IFD0:Model': 'iPhone 7',
+      'ExifIFD:DateTimeOriginal': '2017:02:07 08:18:42',
+      'XMP-xmp:CreateDate': '2017:02:07 08:18:42',
+      'XMP-photoshop:DateCreated': '2017:02:07 20:18:42',
+      'IPTC:DateCreated': '2017:02:07',
+      'IPTC:TimeCreated': '20:18:42-05:00',
+      'GPS:GPSDateStamp': '2017:02:08',
+      'GPS:GPSTimeStamp': '01:18:40',
+      'GPS:GPSLatitude': '28 deg 34\' 39.79"',
+      'GPS:GPSLatitudeRef': 'North',
+      'GPS:GPSLongitude': '81 deg 24\' 44.47"',
+      'GPS:GPSLongitudeRef': 'West',
+    } satisfies RawExifTags;
+
+    it('corrects an audited Apple AM/PM inversion from IPTC, XMP, GPS, and coordinates', async () => {
+      const result = await resolveImage('IMG_0001.jpeg', appleTags);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: {
+          localIso: '2017-02-07T20:18:42',
+          instantUtc: '2017-02-08T01:18:42.000Z',
+          offsetMinutes: -300,
+          zoneBasis: 'explicit-offset',
+        },
+      });
+      expect(result.reasonCodes).toContain('APPLE_AM_PM_CORRUPTION_RECOVERY');
+    });
+
+    it('rejects an LA GPS relationship when IPTC is incorrectly anchored at -05:00', async () => {
+      const result = await resolveImage('IMG_0002.jpeg', {
+        ...appleTags,
+        'ExifIFD:DateTimeOriginal': '2017:05:05 07:39:37',
+        'XMP-xmp:CreateDate': '2017:05:05 07:39:37',
+        'XMP-photoshop:DateCreated': '2017:05:05 19:39:37',
+        'IPTC:DateCreated': '2017:05:05',
+        'IPTC:TimeCreated': '19:39:37-05:00',
+        'GPS:GPSDateStamp': '2017:05:06',
+        'GPS:GPSTimeStamp': '02:39:36',
+        'GPS:GPSLatitude': '34 deg 2\' 36.88"',
+        'GPS:GPSLongitude': '118 deg 14\' 12.40"',
+        'GPS:GPSLongitudeRef': 'West',
+      });
+      expect(result.reasonCodes).not.toContain('APPLE_AM_PM_CORRUPTION_RECOVERY');
+      expect(result.status).toBe('ambiguous');
+    });
+
+    it.each([
+      ['altered model', { 'IFD0:Model': 'iPhone 8' }],
+      ['missing coordinates', { 'GPS:GPSLatitude': undefined }],
+      ['incompatible offset', { 'IPTC:TimeCreated': '20:18:42-06:00' }],
+      ['GPS differs by 50 seconds', { 'GPS:GPSTimeStamp': '01:17:52' }],
+      ['IPTC disagrees with Photoshop', { 'IPTC:TimeCreated': '20:18:41-05:00' }],
+    ] as const)('does not apply Apple AM/PM recovery with %s', async (_name, changed) => {
+      const result = await resolveImage('IMG_0001.jpeg', { ...appleTags, ...changed });
+      expect(result.reasonCodes).not.toContain('APPLE_AM_PM_CORRUPTION_RECOVERY');
+    });
+  });
+
   it('does not convert filesystem modified time into creation evidence', async () => {
     const collector = new MetadataCandidateCollector(
       new FakeExifToolAdapter({
@@ -228,7 +361,7 @@ describe('MetadataCandidateCollector', () => {
           tag: 'GPS:GPSDateStamp+GPS:GPSTimeStamp',
           semantic: 'capture',
           value: expect.objectContaining({
-            instantUtc: '2019-03-29T19:34:15.090Z',
+            instantUtc: '2019-03-29T19:34:15.09Z',
             zoneBasis: 'spec-defined-utc',
           }),
         }),
@@ -420,7 +553,7 @@ describe('MetadataCandidateCollector', () => {
       },
       value: {
         localIso: '2024-03-04T05:06:07.123456',
-        instantUtc: '2024-03-04T10:36:07.123Z',
+        instantUtc: '2024-03-04T10:36:07.123456Z',
         offsetMinutes: -330,
         zoneBasis: 'explicit-offset',
         precision: 'microsecond',
@@ -441,6 +574,59 @@ describe('MetadataCandidateCollector', () => {
     expect(adapter.reads).toEqual(['/media/IMG_20240304_050607.jpg']);
     expect(adapter.closeCalls).toBe(1);
   });
+
+  it.each([
+    ['1 digit', '2024:03:04 05:06:07', '1', '-05:30', '2024-03-04T10:36:07.1Z'],
+    ['2 digits', '2024:03:04 05:06:07', '12', '+02:00', '2024-03-04T03:06:07.12Z'],
+    ['3 digits', '2024:03:04 05:06:07', '123', '+00:00', '2024-03-04T05:06:07.123Z'],
+    ['4 digits', '2024:03:04 05:06:07', '1234', '+00:00', '2024-03-04T05:06:07.1234Z'],
+    ['5 digits', '2024:03:04 05:06:07', '12345', '+00:00', '2024-03-04T05:06:07.12345Z'],
+    ['6 digits', '2024:03:04 05:06:07', '123456', '+00:00', '2024-03-04T05:06:07.123456Z'],
+    ['7 digits', '2024:03:04 05:06:07', '1234567', '+00:00', '2024-03-04T05:06:07.1234567Z'],
+    ['8 digits', '2024:03:04 05:06:07', '12345678', '+00:00', '2024-03-04T05:06:07.12345678Z'],
+    ['9 digits', '2024:03:04 05:06:07', '123456789', '+00:00', '2024-03-04T05:06:07.123456789Z'],
+    [
+      'positive offset rollover',
+      '2024:01:01 00:15:00',
+      '000001',
+      '+01:00',
+      '2023-12-31T23:15:00.000001Z',
+    ],
+    [
+      'negative offset rollover',
+      '2024:12:31 23:45:00',
+      '999999999',
+      '-01:00',
+      '2025-01-01T00:45:00.999999999Z',
+    ],
+  ])(
+    'preserves exact explicit-offset precision for %s',
+    async (_name, local, fraction, offset, expectedInstant) => {
+      const collector = new MetadataCandidateCollector(
+        new FakeExifToolAdapter({
+          'EXIF:DateTimeOriginal': local,
+          'EXIF:OffsetTimeOriginal': offset,
+          'EXIF:SubSecTimeOriginal': fraction,
+        }),
+        statWithBirthtime
+      );
+
+      const candidates = await collector.collect({
+        fileId: `sha256:${fraction}`,
+        filePath: '/media/photo.jpg',
+        mediaKind: 'image',
+      });
+
+      expect(
+        candidates.find((candidate) => candidate.tag === 'EXIF:DateTimeOriginal')?.value
+      ).toMatchObject({
+        instantUtc: expectedInstant,
+        fractionalDigits: fraction,
+        zoneBasis: 'explicit-offset',
+      });
+      await collector.close();
+    }
+  );
 
   it.each([
     ['Screenshot 2021-06-15 at 12.30.45.png', '2021-06-15T12:30:45', 'second'],
@@ -797,6 +983,95 @@ describe('MetadataCandidateCollector', () => {
     });
 
     expect(result.candidates[0]?.value.instantUtc).toBe('0099-01-02T03:04:05.000Z');
+    await collector.close();
+  });
+
+  it('collects the audited Canon EOS 5D TimeStamp only when it matches IFD0 ModifyDate and replaces repeated midnight EXIF placeholders', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'IFD0:Make': 'Canon',
+        'IFD0:Model': 'Canon EOS 5D',
+        'IFD0:ModifyDate': '2007:02:07 05:25:42',
+        'ExifIFD:DateTimeOriginal': '2003:07:01 00:00:00',
+        'ExifIFD:CreateDate': '2003:07:01 00:00:00',
+        'Canon:TimeStamp': '2007:02:07 05:25:42',
+      }),
+      statWithBirthtime
+    );
+
+    const candidates = await collector.collect({
+      fileId: 'canon-valid',
+      filePath: '/media/canon.jpg',
+      mediaKind: 'image',
+    });
+
+    expect(candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tag: 'Canon:TimeStamp',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'canon-makernote',
+          value: expect.objectContaining({ localIso: '2007-02-07T05:25:42' }),
+        }),
+      ])
+    );
+    expect(candidates.some((candidate) => candidate.tag === 'IFD0:ModifyDate')).toBe(false);
+    await collector.close();
+  });
+
+  it.each([
+    ['wrong model', { 'IFD0:Model': 'Canon EOS 5D Mark II' }],
+    ['mismatched modify date', { 'IFD0:ModifyDate': '2007:02:07 05:25:43' }],
+    ['non-repeated EXIF placeholders', { 'ExifIFD:CreateDate': '2003:07:02 00:00:00' }],
+    [
+      'midnight Canon timestamp',
+      { 'Canon:TimeStamp': '2007:02:07 00:00:00', 'IFD0:ModifyDate': '2007:02:07 00:00:00' },
+    ],
+  ])('does not collect Canon TimeStamp for %s', async (_name, overrides) => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'IFD0:Make': 'Canon',
+        'IFD0:Model': 'Canon EOS 5D',
+        'IFD0:ModifyDate': '2007:02:07 05:25:42',
+        'ExifIFD:DateTimeOriginal': '2003:07:01 00:00:00',
+        'ExifIFD:CreateDate': '2003:07:01 00:00:00',
+        'Canon:TimeStamp': '2007:02:07 05:25:42',
+        ...overrides,
+      }),
+      statWithBirthtime
+    );
+    const candidates = await collector.collect({
+      fileId: 'canon-denied',
+      filePath: '/media/canon.jpg',
+      mediaKind: 'image',
+    });
+    expect(candidates.some((candidate) => candidate.tag === 'Canon:TimeStamp')).toBe(false);
+    await collector.close();
+  });
+
+  it('ignores unrelated MakerNote runtime, firmware, date-mode, timer, and exposure-setting tags', async () => {
+    const collector = new MetadataCandidateCollector(
+      new FakeExifToolAdapter({
+        'Apple:RunTimeSincePowerUp': '2024:01:02 03:04:05',
+        'Apple:RunTimeScale': 1000000000,
+        'Casio:FirmwareDate': '2024:01:02 03:04:05',
+        'Canon:DateStampMode': 'Date & Time',
+        'Canon:SelfTimer': 10,
+        'Canon:ExposureTime': '1/100',
+      }),
+      statWithBirthtime
+    );
+    const candidates = await collector.collect({
+      fileId: 'ignored-makers',
+      filePath: '/media/ignored.jpg',
+      mediaKind: 'image',
+    });
+    expect(
+      candidates.filter((candidate) =>
+        /runtime|firmware|datestamp|timer|exposure/i.test(candidate.tag)
+      )
+    ).toEqual([]);
     await collector.close();
   });
 });

@@ -1130,6 +1130,45 @@ describe('CoordinatorEvidenceAdapter', () => {
     await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
   });
 
+  it.each(['2022-99-99', '2023-02-30'])(
+    'rejects impossible v2 calendar-only value %s before immutable evidence admission',
+    async (impossibleDate) => {
+      const adapter = await CoordinatorEvidenceAdapter.create({
+        evidenceRoot,
+        policyVersion: 'date-policy/1',
+      });
+      const prepared = preview();
+      const privateAudit = audit(prepared);
+      const resolution = privateAudit.decisionRecords[0].resolution;
+      prepared.summary.unresolvedDates = 1;
+      prepared.rows![0].dateEvidence = {
+        value: null,
+        source: DateEvidenceSource.UNRESOLVED,
+        confidence: 0,
+        warnings: ['Creation date requires review'],
+      };
+      prepared.rows![0].warnings = ['Creation date requires review'];
+      resolution.policyVersion = 'date-resolution/2';
+      resolution.status = 'unresolved';
+      resolution.confidence = 'none';
+      resolution.reasonCodes = ['NO_ELIGIBLE_CANDIDATES'];
+      delete resolution.selectedCandidateId;
+      delete resolution.selectedGroupId;
+      delete resolution.selectedGroupScore;
+      delete resolution.selectedValue;
+      resolution.candidates[0].eligibility = 'corroboration-only';
+      resolution.candidates[0].score.final = 0;
+      resolution.candidates[0].value = {
+        localIso: impossibleDate,
+        zoneBasis: 'date-only',
+        precision: 'date',
+      };
+
+      await expect(adapter.recordPreview(prepared, privateAudit)).rejects.toThrow(/calendar|date/i);
+      await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+    }
+  );
+
   it('rejects FILE_OPERATIONS_FAILED evidence that omits its required all-file details', async () => {
     const adapter = await CoordinatorEvidenceAdapter.create({
       evidenceRoot,

@@ -95,6 +95,33 @@ describe('MediaPlanner', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('names a resolved calendar date without inventing a midnight time', () => {
+    const selectedValue = {
+      localIso: '2022-12-12',
+      zoneBasis: 'date-only' as const,
+      precision: 'date' as const,
+    };
+    const plan = new MediaPlanner().planForPreview(
+      request(
+        path.join(sourceRoot, 'original.jpeg'),
+        destinationRoot,
+        resolution({
+          policyVersion: 'date-resolution/2',
+          confidence: 'medium',
+          selectedValue,
+          reasonCodes: ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'],
+          candidates: [{ ...resolution().candidates[0], value: selectedValue }],
+        })
+      )
+    );
+
+    expect(plan.needsReview).toBe(false);
+    expect(plan.targetPath).toBe(
+      path.join(destinationRoot, 'Photos', '2022', '12', '2022-12-12.jpeg')
+    );
+    expect(plan.targetPath).not.toContain('00-00-00');
+  });
+
   it.each(['high', 'medium'] as const)(
     'uses a resolved %s-confidence date for both folder and filename',
     async (confidence) => {

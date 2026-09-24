@@ -146,6 +146,20 @@ function validateParsedDate(value: CanonicalJsonValue | undefined, label: string
     invalidSchema(`${label}.instantUtc is invalid for floating or date-only evidence`);
   if (!floating && parsed.instantUtc === undefined)
     invalidSchema(`${label}.instantUtc is required for anchored evidence`);
+  if (parsed.precision === 'date' || parsed.zoneBasis === 'date-only') {
+    if (
+      parsed.precision !== 'date' ||
+      parsed.zoneBasis !== 'date-only' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.localIso as string) ||
+      !isValidDateEvidenceValue(parsed.localIso) ||
+      parsed.instantUtc !== undefined ||
+      parsed.offsetMinutes !== undefined ||
+      parsed.zoneIana !== undefined ||
+      parsed.fractionalDigits !== undefined
+    ) {
+      invalidSchema(`${label} has an invalid calendar-date-only value`);
+    }
+  }
 }
 
 function validateCandidate(
@@ -262,7 +276,7 @@ function validateResolution(value: CanonicalJsonValue | undefined, label: string
     ],
     label
   );
-  if (resolution.policyVersion !== 'date-resolution/1')
+  if (!['date-resolution/1', 'date-resolution/2'].includes(resolution.policyVersion as string))
     invalidSchema(`${label}.policyVersion is invalid`);
   const fileId = requireString(resolution, 'fileId', label);
   if (!MEDIA_KINDS.includes(resolution.mediaKind as never))
@@ -323,6 +337,24 @@ function validateResolution(value: CanonicalJsonValue | undefined, label: string
     resolution.selectedCandidateId === undefined
       ? undefined
       : candidatesById.get(resolution.selectedCandidateId as string);
+  if (
+    resolution.policyVersion === 'date-resolution/2' &&
+    resolution.status === 'resolved' &&
+    (resolution.selectedValue as Record<string, CanonicalJsonValue> | undefined)?.precision ===
+      'date'
+  ) {
+    const reasons = resolution.reasonCodes as CanonicalJsonValue[];
+    const automatic = ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'].every(
+      (reason) => reasons.includes(reason)
+    );
+    const manual =
+      selected?.sourceKind === 'user-override' &&
+      reasons.includes('NON_AUTHORITATIVE_SELECTION') &&
+      reasons.includes('RESOLVED_MEDIUM_CONFIDENCE');
+    if (!automatic && !manual) {
+      invalidSchema(`${label} date-only resolution is missing its audit reasons`);
+    }
+  }
   const selectionFields = [
     selected,
     resolution.selectedGroupId,

@@ -252,6 +252,8 @@ export class TransactionalOperationExecutor implements OperationExecutorPort {
     const normalizeMetadata =
       context.writeMetadataDates &&
       payload.selectedDate !== undefined &&
+      payload.selectedDate.precision !== 'date' &&
+      payload.selectedDate.zoneBasis !== 'date-only' &&
       payload.dateResolution !== undefined &&
       this.metadataWriter !== undefined &&
       this.normalizationAuthorization !== undefined &&

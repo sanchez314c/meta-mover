@@ -8,6 +8,7 @@ import {
   isReviewApplyResultDTO,
   isReviewDryRunDTO,
   isReviewDryRunRequestDTO,
+  isReviewEvidenceSnapshot,
   isReviewItemDTO,
   isReviewListRequestDTO,
   isReviewOverrideRecord,
@@ -65,6 +66,167 @@ const item: ReviewItemDTO = {
 };
 
 describe('review queue shared contract', () => {
+  it('accepts v1 history and validates the exact v2 calendar-date invariant', () => {
+    expect(isReviewEvidenceSnapshot(evidence)).toBe(true);
+    const dateOnly = {
+      ...evidence,
+      resolution: {
+        ...evidence.resolution,
+        policyVersion: 'date-resolution/2',
+        status: 'resolved',
+        confidence: 'medium',
+        selectedCandidateId: 'embedded-day',
+        selectedGroupId: 'group:embedded-day',
+        selectedGroupScore: 70,
+        selectedValue: { localIso: '2022-12-12', zoneBasis: 'date-only', precision: 'date' },
+        contenderIds: ['embedded-day'],
+        reasonCodes: ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'],
+        candidates: [
+          {
+            id: 'embedded-day',
+            fileId: 'file-1',
+            mediaKind: 'image',
+            semantic: 'capture',
+            sourceKind: 'embedded-exif',
+            sourceFamily: 'exif',
+            tag: 'ExifIFD:DateTimeOriginal',
+            rawValue: '2022:12:12 00:00:00',
+            value: {
+              localIso: '2022-12-12T00:00:00',
+              zoneBasis: 'floating-local',
+              precision: 'second',
+            },
+            eligibility: 'eligible',
+            score: { base: 95, modifiers: [], semanticCap: 100, final: 70 },
+            resolutionIssues: [],
+          },
+        ],
+      },
+    };
+    expect(isReviewEvidenceSnapshot(dateOnly)).toBe(true);
+    for (const impossibleDate of ['2022-99-99', '2023-02-30']) {
+      expect(
+        isReviewEvidenceSnapshot({
+          ...dateOnly,
+          resolution: {
+            ...dateOnly.resolution,
+            selectedValue: {
+              localIso: impossibleDate,
+              zoneBasis: 'date-only',
+              precision: 'date',
+            },
+            candidates: [
+              {
+                ...dateOnly.resolution.candidates[0],
+                value: {
+                  localIso: impossibleDate,
+                  zoneBasis: 'date-only',
+                  precision: 'date',
+                },
+              },
+            ],
+          },
+        })
+      ).toBe(false);
+      expect(
+        isReviewDryRunRequestDTO({
+          reviewId: 'review-1',
+          evidenceRevision: 'rev-1',
+          action: {
+            type: 'manual-date',
+            value: { localIso: impossibleDate, zoneBasis: 'date-only', precision: 'date' },
+          },
+        })
+      ).toBe(false);
+    }
+    expect(
+      isReviewEvidenceSnapshot({
+        ...dateOnly,
+        resolution: { ...dateOnly.resolution, reasonCodes: [] },
+      })
+    ).toBe(false);
+    const manual = {
+      ...dateOnly,
+      resolution: {
+        ...dateOnly.resolution,
+        selectedCandidateId: 'manual-day',
+        contenderIds: ['manual-day'],
+        reasonCodes: ['NON_AUTHORITATIVE_SELECTION', 'RESOLVED_MEDIUM_CONFIDENCE'],
+        candidates: [
+          {
+            ...dateOnly.resolution.candidates[0],
+            id: 'manual-day',
+            sourceKind: 'user-override',
+            sourceFamily: 'user-override',
+            tag: 'UserOverride:CreationDate',
+            rawValue: { localIso: '2022-12-12', zoneBasis: 'date-only', precision: 'date' },
+            value: { localIso: '2022-12-12', zoneBasis: 'date-only', precision: 'date' },
+          },
+        ],
+      },
+    };
+    expect(isReviewEvidenceSnapshot(manual)).toBe(true);
+    expect(
+      isReviewEvidenceSnapshot({
+        ...manual,
+        resolution: {
+          ...manual.resolution,
+          candidates: [
+            {
+              ...manual.resolution.candidates[0],
+              sourceKind: 'filename',
+              sourceFamily: 'filename-date-only',
+              tag: 'filename:2022-12-12.jpg',
+            },
+          ],
+        },
+      })
+    ).toBe(false);
+    for (const selectedCandidateId of ['missing', '']) {
+      expect(
+        isReviewEvidenceSnapshot({
+          ...dateOnly,
+          resolution: { ...dateOnly.resolution, selectedCandidateId },
+        })
+      ).toBe(false);
+    }
+    expect(
+      isReviewEvidenceSnapshot({
+        ...dateOnly,
+        resolution: {
+          ...dateOnly.resolution,
+          candidates: [{ ...dateOnly.resolution.candidates[0], eligibility: 'invalid' }],
+        },
+      })
+    ).toBe(false);
+    expect(
+      isReviewEvidenceSnapshot({
+        ...dateOnly,
+        resolution: {
+          ...dateOnly.resolution,
+          candidates: [
+            {
+              ...dateOnly.resolution.candidates[0],
+              score: { ...dateOnly.resolution.candidates[0].score, final: 0 },
+            },
+          ],
+        },
+      })
+    ).toBe(false);
+    expect(
+      isReviewEvidenceSnapshot({
+        ...dateOnly,
+        resolution: {
+          ...dateOnly.resolution,
+          selectedValue: {
+            localIso: '2022-12-12T00:00:00',
+            zoneBasis: 'date-only',
+            precision: 'date',
+          },
+        },
+      })
+    ).toBe(false);
+  });
   it('accepts exact list, dry-run, and apply request shapes', () => {
     expect(isReviewListRequestDTO({ status: 'pending', limit: 100, cursor: 'next' })).toBe(true);
     expect(
@@ -133,7 +295,7 @@ describe('review queue shared contract', () => {
         ...item,
         evidence: {
           ...evidence,
-          resolution: { ...resolution, policyVersion: 'date-resolution/2' },
+          resolution: { ...resolution, policyVersion: 'date-resolution/3' },
         },
       })
     ).toBe(false);

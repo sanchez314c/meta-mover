@@ -75,6 +75,9 @@ export function buildMetadataNormalizationPlan(
   filePath: string,
   selectedDate: ParsedDateValue
 ): MetadataNormalizationPlan {
+  if (selectedDate.precision === 'date' || selectedDate.zoneBasis === 'date-only') {
+    throw new Error('A calendar date with unknown time must not be written into timed metadata');
+  }
   const extension = path.extname(filePath).toLowerCase();
   const local = localTimestamp(selectedDate);
   const offset = offsetTimestamp(selectedDate);

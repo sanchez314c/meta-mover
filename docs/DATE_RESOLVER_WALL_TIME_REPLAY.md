@@ -112,3 +112,43 @@ Independent review found that the first implementation accidentally made filenam
 mandatory. Removing that requirement did not change this ledger's result: the same 2,265 records
 recover, with the same sole status transition. This is expected because every current qualifying
 record happens to retain a normalized filename, but future unrenamed files are no longer excluded.
+
+## Calendar-day recovery after wall-time rules
+
+Policy `date-resolution/2` adds a later, deliberately lower-precision outcome. It runs after the
+exact-instant, audited MakerNote, and unanimous wall-clock rules. It requires at least one eligible
+embedded creation candidate and requires every eligible or corroboration-only embedded EXIF, XMP,
+and IPTC creation candidate to name the same local calendar day. Filename and filesystem evidence
+cannot establish the result. Any credible embedded different day vetoes it.
+
+The selected value is exactly `YYYY-MM-DD`, `precision: date`, and `zoneBasis: date-only`. It has no
+instant, offset, zone, fraction, or invented midnight. Planning uses `YYYY-MM-DD.ext`, with the
+existing deterministic suffix policy handling collisions. Metadata normalization skips the result.
+
+The corrected combined 7,391-row replay resolves 6,262 records and leaves 1,129. Calendar precision
+is selected for 3,652 results. Compared with the earlier replay, 287 records retain a trustworthy
+known time instead of being reduced to date precision, while 64 records with conflicting
+trustworthy times return to review. This accounts for all 351 removed date-only selections and the
+64-record residue increase. On the 99,998-file run, the projected residue is 1.129 percent, so this
+correction alone does not satisfy the less-than-one-percent gate.
+
+## Narrow screenshot and AM/PM cohorts
+
+A fresh metadata read validated two additional semantic rules without filenames or hashes as an
+allowlist. Native PNG CreateDate may win when it matches a structured screenshot filename and the
+filesystem modified timestamp represents the same UTC instant while PNG ModifyDate equals the
+older Photoshop DateCreated value. A second exact branch admits Apple Display P3 1170x2532
+screenshots where native nonmidnight CreateDate follows the older Photoshop content date and PNG
+ModifyDate carries the known `2022-01-01 00:00:00` profile placeholder. Filename and filesystem
+timestamps are optional corroboration in that Apple branch and cannot establish its result.
+
+Apple AM/PM recovery is limited to iPhone 6, 6s, and 7 records. Photoshop and explicit-offset IPTC
+local time must agree, GPS UTC must be within 49 seconds under a `-05:00` or `-07:00` relationship,
+coordinates must support that offset, the IPTC offset must match it exactly, and EXIF
+DateTimeOriginal plus XMP CreateDate must agree exactly 12 hours earlier.
+
+The proposed set contained 19 PNG and nine Apple photo files. The strict fresh replay produced all
+19 PNG and eight Apple AM/PM transitions, 27 total, with zero overlap. One LA record remains
+ambiguous because IPTC anchors its local time at `-05:00` while coordinates and GPS prove
+`-07:00`. No corrected instant is synthesized. Combined with the other audited rules, projected
+residue is 996 of 99,998.

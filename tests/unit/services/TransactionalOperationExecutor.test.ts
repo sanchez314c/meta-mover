@@ -424,6 +424,40 @@ describe('TransactionalOperationExecutor', () => {
     await executor.close();
   });
 
+  it('skips metadata authorization and writes when the calendar day is known but time is unknown', async () => {
+    const execute = jest.fn(async (request: TransactionRequest) =>
+      result({ operationId: request.operationId, destinationPath: request.expectedDestinationPath })
+    );
+    const metadataWriter: MetadataDateWriterPort = {
+      normalizeDateMetadata: jest.fn(async () => normalizationReceipt()),
+      close: async () => undefined,
+    };
+    const authorizeNormalization = jest.fn(async () => true);
+    const executor = new TransactionalOperationExecutor({
+      coreFactory: async () => ({ execute, close: async () => undefined }),
+      metadataWriter,
+      normalizationAuthorization: { authorizeNormalization },
+    });
+    const planned = operation();
+    planned.payload = {
+      ...(planned.payload as Record<string, unknown>),
+      dateResolution: {
+        ...(resolvedDatePayload().dateResolution as Record<string, unknown>),
+        policyVersion: 'date-resolution/2',
+        confidence: 'medium',
+        selectedValue: { localIso: '2022-12-12', zoneBasis: 'date-only', precision: 'date' },
+        reasonCodes: ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'],
+      },
+    };
+
+    await executor.execute(planned, { ...context(), writeMetadataDates: true });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(authorizeNormalization).not.toHaveBeenCalled();
+    expect(metadataWriter.normalizeDateMetadata).not.toHaveBeenCalled();
+    await executor.close();
+  });
+
   it('lets the transaction fail closed before publication when staging normalization fails', async () => {
     const core: TransactionCorePort = {
       execute: async (request) => {

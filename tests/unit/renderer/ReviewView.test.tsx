@@ -336,6 +336,30 @@ describe('ReviewView', () => {
     );
   });
 
+  it('offers a manual calendar date without inventing a time', async () => {
+    render(<ReviewView />);
+    await screen.findByText(/camera exif date taken/i);
+    fireEvent.change(screen.getByLabelText(/manual calendar date/i), {
+      target: { value: '2021-04-05' },
+    });
+    expect(screen.getByLabelText(/^manual date$/i)).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: /preview fix/i }));
+    const api = window.electronAPI as unknown as { reviewDryRun: jest.Mock };
+    await waitFor(() =>
+      expect(api.reviewDryRun).toHaveBeenCalledWith({
+        reviewId: 'review-1',
+        evidenceRevision: 'evidence-1',
+        action: {
+          type: 'manual-date',
+          value: { localIso: '2021-04-05', zoneBasis: 'date-only', precision: 'date' },
+        },
+      })
+    );
+    expect(screen.getByText(/date is known; time remains unknown/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /camera exif date taken/i }));
+    expect(screen.getByLabelText(/manual calendar date/i)).toHaveValue('');
+  });
+
   it('shows empty, request errors, and stale-plan errors without leaving Apply enabled', async () => {
     const api = window.electronAPI as unknown as { reviewList: jest.Mock };
     api.reviewList.mockResolvedValueOnce({ success: true, data: { items: [] } });

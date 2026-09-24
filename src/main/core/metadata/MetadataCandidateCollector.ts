@@ -472,6 +472,12 @@ function utcMilliseconds(
   return date.getTime();
 }
 
+function exactUtcInstant(wholeSecondMilliseconds: number, fraction?: string): string {
+  const wholeSecondIso = new Date(wholeSecondMilliseconds).toISOString();
+  if (!fraction) return wholeSecondIso;
+  return wholeSecondIso.replace(/\.000Z$/, `.${fraction}Z`);
+}
+
 function parseDateValue(
   raw: RawExifValue | undefined,
   explicitOffset?: RawExifValue,
@@ -524,7 +530,6 @@ function parseDateValue(
   if (offset) {
     const minutes = inlineOffsetMinutes ?? companionOffsetMinutes;
     if (minutes !== undefined && hour !== undefined && minute !== undefined) {
-      const milliseconds = Number(`0.${fraction ?? '0'}`) * 1000;
       const instant =
         utcMilliseconds(
           Number(year),
@@ -533,12 +538,12 @@ function parseDateValue(
           Number(hour),
           Number(minute),
           Number(second ?? '0'),
-          milliseconds
+          0
         ) -
         minutes * 60 * 1000;
       return {
         localIso,
-        instantUtc: new Date(instant).toISOString(),
+        instantUtc: exactUtcInstant(instant, fraction),
         offsetMinutes: minutes,
         zoneBasis: 'explicit-offset',
         precision,
@@ -548,10 +553,9 @@ function parseDateValue(
   }
 
   if (specDefinedUtc && hour !== undefined && minute !== undefined) {
-    const milliseconds = Number(`0.${fraction ?? '0'}`) * 1000;
     return {
       localIso,
-      instantUtc: new Date(
+      instantUtc: exactUtcInstant(
         utcMilliseconds(
           Number(year),
           Number(month),
@@ -559,9 +563,10 @@ function parseDateValue(
           Number(hour),
           Number(minute),
           Number(second ?? '0'),
-          milliseconds
-        )
-      ).toISOString(),
+          0
+        ),
+        fraction
+      ),
       zoneBasis: 'spec-defined-utc',
       precision,
       ...(fraction ? { fractionalDigits: fraction } : {}),
@@ -671,6 +676,157 @@ function filenameDate(filename: string): { raw: string; value: ParsedDateValue }
   }
 
   return null;
+}
+
+function wholeSecond(value: ParsedDateValue | null): string | null {
+  return value?.localIso.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)?.[0] ?? null;
+}
+
+function pngScreenshotRecoveryEvidence(filePath: string, tags: RawExifTags): JsonValue | null {
+  if (!screenshotFilename(path.basename(filePath))) return null;
+  const created = parseDateValue(tags['PNG:CreateDate']);
+  const modified = parseDateValue(tags['PNG:ModifyDate']);
+  const xmpCreated = parseDateValue(tags['XMP-photoshop:DateCreated']);
+  const fileModifiedRaw = tags['System:FileModifyDate'] ?? tags['File:System:FileModifyDate'];
+  const fileModified = parseDateValue(fileModifiedRaw);
+  const filename = filenameDate(path.basename(filePath));
+  const createdSecond = wholeSecond(created);
+  const modifiedSecond = wholeSecond(modified);
+  const xmpSecond = wholeSecond(xmpCreated);
+  const applePlaceholderScreenshot =
+    createdSecond !== null &&
+    !createdSecond.endsWith('T00:00:00') &&
+    modifiedSecond === '2022-01-01T00:00:00' &&
+    xmpSecond !== null &&
+    Date.parse(`${createdSecond}Z`) > Date.parse(`${xmpSecond}Z`) &&
+    tags['ICC-header:ProfileCreator'] === 'Apple Computer Inc.' &&
+    tags['PNG:ProfileName'] === 'kCGColorSpaceDisplayP3' &&
+    tags['PNG:ImageWidth'] === 1170 &&
+    tags['PNG:ImageHeight'] === 2532;
+  if (applePlaceholderScreenshot) {
+    return {
+      kind: 'apple-png-screenshot-native-date',
+      pngModifyDate: tags['PNG:ModifyDate'] as JsonValue,
+      xmpDateCreated: tags['XMP-photoshop:DateCreated'] as JsonValue,
+      profileCreator: tags['ICC-header:ProfileCreator'] as JsonValue,
+      profileName: tags['PNG:ProfileName'] as JsonValue,
+      width: 1170,
+      height: 2532,
+    };
+  }
+  if (
+    createdSecond === null ||
+    modifiedSecond === null ||
+    xmpSecond !== modifiedSecond ||
+    modifiedSecond === '2022-01-01T00:00:00' ||
+    wholeSecond(filename?.value ?? null) !== createdSecond ||
+    fileModified?.instantUtc === undefined
+  ) {
+    return null;
+  }
+  // PNG CreateDate is UTC by specification in this audited screenshot producer. The filesystem
+  // timestamp must independently identify the same instant; filename evidence alone is rejected.
+  const createdUtc = parseDateValue(`${createdSecond}+00:00`);
+  if (createdUtc?.instantUtc !== fileModified.instantUtc) return null;
+  return {
+    kind: 'png-screenshot-native-date',
+    fileModifyDate: fileModifiedRaw as JsonValue,
+    pngModifyDate: tags['PNG:ModifyDate'] as JsonValue,
+    xmpDateCreated: tags['XMP-photoshop:DateCreated'] as JsonValue,
+  };
+}
+
+function appleAmPmRecoveryEvidence(tags: RawExifTags): JsonValue | null {
+  const make = stringValue(tags['IFD0:Make']);
+  const model = stringValue(tags['IFD0:Model']);
+  if (
+    make?.toLowerCase() !== 'apple' ||
+    !['iPhone 6', 'iPhone 6s', 'iPhone 7'].includes(model ?? '')
+  ) {
+    return null;
+  }
+  const latitude = tags['GPS:GPSLatitude'] ?? tags['Composite:GPSLatitude'];
+  const longitude = tags['GPS:GPSLongitude'] ?? tags['Composite:GPSLongitude'];
+  if (latitude === undefined || longitude === undefined) return null;
+
+  const coordinate = (raw: RawExifValue, ref: RawExifValue | undefined): number | null => {
+    if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+    if (typeof raw !== 'string') return null;
+    const decimal = Number(raw);
+    let value: number;
+    if (Number.isFinite(decimal)) {
+      value = decimal;
+    } else {
+      const dms = raw.match(/(-?\d+(?:\.\d+)?)\s*deg\s*(\d+(?:\.\d+)?)'\s*(\d+(?:\.\d+)?)"/i);
+      if (!dms) return null;
+      value = Number(dms[1]) + Number(dms[2]) / 60 + Number(dms[3]) / 3600;
+    }
+    const direction = `${typeof ref === 'string' ? ref : ''} ${raw}`.toLowerCase();
+    if (/\b(?:west|south|w|s)\b/.test(direction)) value = -Math.abs(value);
+    return value;
+  };
+  const latitudeDegrees = coordinate(latitude, tags['GPS:GPSLatitudeRef']);
+  const longitudeDegrees = coordinate(longitude, tags['GPS:GPSLongitudeRef']);
+  if (
+    latitudeDegrees === null ||
+    longitudeDegrees === null ||
+    Math.abs(latitudeDegrees) > 90 ||
+    Math.abs(longitudeDegrees) > 180
+  ) {
+    return null;
+  }
+
+  const dto = parseDateValue(
+    tags['ExifIFD:DateTimeOriginal'],
+    undefined,
+    tags['ExifIFD:SubSecTimeOriginal']
+  );
+  const xmpCreate = parseDateValue(tags['XMP-xmp:CreateDate']);
+  const photoshop = parseDateValue(tags['XMP-photoshop:DateCreated']);
+  const iptcDate = stringValue(tags['IPTC:DateCreated']);
+  const iptcTime = stringValue(tags['IPTC:TimeCreated']);
+  const iptc = iptcDate && iptcTime ? parseDateValue(`${iptcDate}T${iptcTime}`) : null;
+  const gpsDate = stringValue(tags['GPS:GPSDateStamp']);
+  const gpsTime = stringValue(tags['GPS:GPSTimeStamp']);
+  const gps =
+    gpsDate && gpsTime ? parseDateValue(`${gpsDate}T${gpsTime}`, undefined, undefined, true) : null;
+  const dtoSecond = wholeSecond(dto);
+  const xmpCreateSecond = wholeSecond(xmpCreate);
+  const photoshopSecond = wholeSecond(photoshop);
+  const iptcSecond = wholeSecond(iptc);
+  if (
+    dtoSecond === null ||
+    xmpCreateSecond !== dtoSecond ||
+    photoshopSecond === null ||
+    iptcSecond !== photoshopSecond ||
+    !iptc ||
+    ![-300, -420].includes(iptc.offsetMinutes ?? 0) ||
+    gps?.instantUtc === undefined
+  ) {
+    return null;
+  }
+  const dtoMs = Date.parse(`${dtoSecond}Z`);
+  const correctedMs = Date.parse(`${photoshopSecond}Z`);
+  if (correctedMs - dtoMs !== 12 * 60 * 60 * 1000) return null;
+
+  const gpsMs = Date.parse(gps.instantUtc);
+  const compatibleOffsets = [-300, -420].filter((offset) => {
+    const expectedUtc = correctedMs - offset * 60 * 1000;
+    return Math.abs(gpsMs - expectedUtc) <= 49 * 1000;
+  });
+  if (compatibleOffsets.length !== 1) return null;
+  const inferredOffset = compatibleOffsets[0];
+  const coordinateSupportsOffset =
+    (inferredOffset === -300 && longitudeDegrees >= -100 && longitudeDegrees <= -67) ||
+    (inferredOffset === -420 && longitudeDegrees >= -125 && longitudeDegrees <= -110);
+  if (!coordinateSupportsOffset || iptc.offsetMinutes !== inferredOffset) return null;
+  return {
+    kind: 'apple-am-pm-corruption',
+    model: model as string,
+    latitude: latitudeDegrees,
+    longitude: longitudeDegrees,
+    gpsCompatibleOffsetMinutes: inferredOffset,
+  };
 }
 
 function rulesFor(mediaKind: MediaKind): TagRule[] {
@@ -797,6 +953,19 @@ export class MetadataCandidateCollector {
       addCandidate(rule.tag, rule.semantic, rule.sourceKind, rule.sourceFamily, rawValue, value);
     }
 
+    const pngRecovery =
+      request.mediaKind === 'image' ? pngScreenshotRecoveryEvidence(request.filePath, tags) : null;
+    if (pngRecovery !== null) {
+      const pngCreate = candidates.find((candidate) => candidate.tag === 'PNG:CreateDate');
+      if (pngCreate) {
+        pngCreate.sourceFamily = 'png-screenshot-native';
+        pngCreate.rawValue = {
+          value: pngCreate.rawValue,
+          recoveryEvidence: pngRecovery,
+        };
+      }
+    }
+
     if (request.mediaKind === 'video') {
       for (const [tag, raw] of Object.entries(tags)) {
         const match = tag.match(/^Track\d+:(MediaCreateDate|TrackCreateDate)$/i);
@@ -820,16 +989,18 @@ export class MetadataCandidateCollector {
       if (createdDate && createdTime) {
         const value = parseDateValue(`${createdDate}T${createdTime}`);
         if (value) {
+          const appleRecovery = appleAmPmRecoveryEvidence(tags);
           addCandidate(
             'IPTC:DateCreated',
             'capture',
             'embedded-iptc',
-            'iptc',
+            appleRecovery === null ? 'iptc' : 'iptc-apple-ampm-corrected',
             {
               date: createdDate,
               dateTag: 'IPTC:DateCreated',
               time: createdTime,
               timeTag: 'IPTC:TimeCreated',
+              ...(appleRecovery === null ? {} : { recoveryEvidence: appleRecovery }),
             },
             value
           );
@@ -876,6 +1047,40 @@ export class MetadataCandidateCollector {
             value
           );
         }
+      }
+
+      // Canon's generic MakerNote namespace contains many settings and runtime values that
+      // are not capture dates. The original EOS 5D cohort is admitted only under the exact
+      // audited signature: its non-midnight TimeStamp matches IFD0 ModifyDate while both EXIF
+      // creation fields repeat the same midnight placeholder.
+      const canonMake = stringValue(tags['IFD0:Make']);
+      const canonModel = stringValue(tags['IFD0:Model']);
+      const canonTimestampRaw = tags['Canon:TimeStamp'];
+      const canonTimestamp = parseDateValue(canonTimestampRaw);
+      const ifd0ModifyDate = parseDateValue(tags['IFD0:ModifyDate']);
+      const exifOriginal = parseDateValue(tags['ExifIFD:DateTimeOriginal']);
+      const exifCreated = parseDateValue(tags['ExifIFD:CreateDate']);
+      if (
+        canonMake?.toLowerCase() === 'canon' &&
+        canonModel === 'Canon EOS 5D' &&
+        canonTimestampRaw !== undefined &&
+        canonTimestamp !== null &&
+        ifd0ModifyDate !== null &&
+        exifOriginal !== null &&
+        exifCreated !== null &&
+        canonTimestamp.localIso === ifd0ModifyDate.localIso &&
+        !canonTimestamp.localIso.endsWith('T00:00:00') &&
+        exifOriginal.localIso === exifCreated.localIso &&
+        exifOriginal.localIso.endsWith('T00:00:00')
+      ) {
+        addCandidate(
+          'Canon:TimeStamp',
+          'capture',
+          'embedded-exif',
+          'canon-makernote',
+          canonTimestampRaw as JsonValue,
+          canonTimestamp
+        );
       }
 
       const pngCreationTime = tags['PNG:CreationTime'];

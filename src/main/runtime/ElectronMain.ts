@@ -242,7 +242,7 @@ export class ElectronMain {
         configPath: path.join(userDataRoot, 'config.json'),
         historyPath: path.join(userDataRoot, 'job-history.jsonl'),
         evidenceRoot: path.join(userDataRoot, 'evidence'),
-        evidencePolicyVersion: 'date-resolution/1',
+        evidencePolicyVersion: 'date-resolution/2',
         platform: this.dependencies.platform,
         architecture: this.dependencies.architecture,
         isPackaged: this.dependencies.app.isPackaged,

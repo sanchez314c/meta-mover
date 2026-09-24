@@ -1,3 +1,30 @@
+## 2026-09-23 calendar-date-only resolution
+
+- Closed a fail-open evidence boundary: coordinator evidence admission and shared Review contracts now apply real Gregorian validation to `YYYY-MM-DD` values. Impossible dates such as `2022-99-99`, `2023-02-30`, and year zero are rejected before persistence or review actions.
+- Corrected calendar-date recovery so a same-day date-only IPTC field no longer discards a trustworthy non-midnight EXIF capture time. Date precision is now used only when embedded evidence actually leaves the time unavailable or conflicting.
+- Added resolver regressions for trusted timed EXIF plus date-only IPTC, conflicting same-day embedded times with a date-only claim, and the existing midnight-placeholder path.
+- Added `date-resolution/2`, which resolves a calendar day when every eligible or corroborating embedded EXIF, XMP, and IPTC creation claim names that same day but the time is missing, conflicting, or a midnight placeholder.
+- Date-only results retain `YYYY-MM-DD` with `date-only` precision and the audit reasons `CALENDAR_DATE_CONSENSUS`, `TIME_UNKNOWN`, and `RESOLVED_DATE_ONLY`. Filenames, filesystem dates, and modification fields cannot establish the consensus.
+- Planned names are `YYYY-MM-DD.ext`; ordinary collision suffixing remains responsible for same-day duplicates. Date-only results never become `00-00-00` filenames.
+- Destination metadata normalization skips date-only results, preventing an unknown time from being written as midnight. The Review Queue also accepts a manual calendar date and states that the time remains unknown.
+- The v2 evidence readers retain v1 compatibility and validate the exact date-only shape. The live application was not restarted.
+- Shared Review validation now applies the coordinator's selected-candidate checks to v2 date-only evidence: the selected ID must exist, remain eligible with a positive score, carry valid creation provenance, and support the reduced calendar value. Forged or missing automatic and user-override selections fail closed.
+- Credible sidecar, container, and other nonfilesystem creation evidence now vetoes calendar consensus when it names another day. Filename and filesystem evidence remain unable to establish or veto the day.
+- The corrected fresh 7,391-row replay resolves 6,262, selects date-only precision for 3,652, and leaves 1,129. Relative to the earlier replay, 287 trustworthy timed results keep their time and 64 conflicting timed records return to review, accounting for all 351 removed date-only selections. `docs/CALENDAR_DATE_REPLAY.md` records the evidence; the result remains above the under-one-percent gate.
+
+## 2026-09-23 audited Canon and Samsung MakerNote recovery
+
+- Added one narrow Canon MakerNote capture rule: `Canon:TimeStamp` is eligible only for `Canon EOS 5D`, only when it is non-midnight, exactly matches `IFD0:ModifyDate`, and replaces matching midnight `DateTimeOriginal` and `CreateDate` placeholders. Generic MakerNote dates remain excluded.
+- Preserved `Samsung:TimeStamp` as zone-bearing capture evidence. When Samsung and standard EXIF agree to the whole second but encode fractional digits differently, META Mover selects only the agreed whole second and retains `SUBSECOND_CONFLICT` in the audit record.
+- Explicitly left Apple runtime, Casio firmware, date-stamp mode, self-timer, and exposure-setting tags outside the collector allowlist.
+- Real 7,391-row review replay identifies exactly 147 Canon recoveries and 58 safe Samsung recoveries after the nanosecond collector correction. Two Samsung rows retain conflicting GPS instants and remain ambiguous. No unrelated MakerNote rows transition.
+
+## 2026-09-23 exact offset and subsecond instants
+
+- Preserved all 1 to 9 source fractional digits when converting explicit-offset and spec-defined UTC metadata into `instantUtc`; JavaScript `Date` is now used only for whole-second calendar and offset rollover.
+- Kept nanosecond-exact resolver validation. Genuine offset/instant disagreements, including a one-nanosecond mismatch, remain rejected.
+- The 7,391-row review replay repairs 579 affected records and safely moves 288 to `resolved/medium` with no review-row regression. A full 99,998-row replay also exposes 32 formerly high-confidence records as genuine fractional conflicts; these now fail closed instead of receiving a date from truncated evidence.
+
 ## 2026-09-22 plain-English Review Queue evidence
 
 - Replaced internal reason codes, candidate IDs, tags, and numeric scores in the Review Queue with direct explanations of why META Mover stopped.
@@ -850,3 +877,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Review list pagination now joins lightweight history, catalog, and override descriptors before filesystem identity work, so a 25-row page hashes at most 25 files. Exact get and action lookup use one catalog record and one binding.
 - Pinned validated review catalogs in memory with device, inode, size, mtime, and ctime identity checks. Catalog pagination now slices the single parsed snapshot without reparsing earlier pages, and post-open replacement, truncation, or mutation fails closed.
 - Catalog validation now computes ordering, count, and SHA-256 from the same opened byte snapshot, removing the prior validate-then-hash race.
+
+## 2026-09-23 audited placeholder metadata recovery
+
+- Added a narrow GPS recovery for the exact synthetic 2022-01-01 EXIF DateTimeOriginal/CreateDate microsecond placeholder signature. A valid 2023/2024 embedded GPS UTC instant now wins; compatible Photoshop local time remains evidence but never replaces the GPS instant.
+- Added a narrow editorial recovery for exact 2003-07-01 or 2022-01-01 midnight EXIF placeholders when nonmidnight Photoshop DateCreated, IPTC DateCreated+TimeCreated, and IPTC DigitalCreationDate+Time agree exactly.
+- Both recoveries reject missing signature fields, out-of-window GPS values, conflicting editorial time, and extra conflicting embedded creation evidence.
+
+## 2026-09-23 PNG screenshot and Apple AM/PM recovery
+
+- Added native PNG screenshot-date recovery for two audited signatures: agreement among PNG CreateDate, a structured screenshot filename, and the filesystem-modified instant plus an older PNG ModifyDate/XMP DateCreated edit pair; or the exact Apple Display P3 1170x2532 screenshot signature where nonmidnight native CreateDate follows older embedded content dates and PNG ModifyDate is the known 2022 placeholder.
+- Added a narrow Apple iPhone 6/6s/7 AM/PM correction requiring agreeing Photoshop/IPTC local time, an IPTC offset that exactly matches the coordinate-supported `-05:00` or `-07:00` GPS relationship, GPS UTC within 49 seconds, and EXIF/XMP creation fields exactly 12 hours earlier.
+- Rejected an LA file whose IPTC time claimed `-05:00` while its coordinates and GPS instant proved `-07:00`; META Mover does not synthesize a corrected anchored value.
+- Added counterexamples for altered models, missing coordinates, incompatible offsets, a 50-second GPS miss, mismatching IPTC time, and rejected PNG placeholder metadata.

@@ -143,7 +143,10 @@ function trustedTarget(
 
   const extension = path.extname(basename);
   const fraction = parts.fraction ? `.${parts.fraction}` : '';
-  const generated = `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}${fraction}${extension}`;
+  const generated =
+    value.precision === 'date'
+      ? `${parts.year}-${parts.month}-${parts.day}${extension}`
+      : `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}${fraction}${extension}`;
   const filename =
     request.appendScreenshotSuffix && request.screenshotDetected
       ? appendScreenshotSuffix(generated)

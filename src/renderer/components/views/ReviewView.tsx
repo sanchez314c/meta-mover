@@ -295,6 +295,7 @@ export function ReviewView() {
   const [selected, setSelected] = useState<ReviewItemDTO | null>(null);
   const [action, setAction] = useState<ReviewAction | null>(null);
   const [manualDate, setManualDate] = useState('');
+  const [manualCalendarDate, setManualCalendarDate] = useState('');
   const [plan, setPlan] = useState<ReviewDryRunDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -308,6 +309,8 @@ export function ReviewView() {
     setError(null);
     setPlan(null);
     setAction(null);
+    setManualDate('');
+    setManualCalendarDate('');
     try {
       const detail = unwrap(await bridge.reviewGet({ reviewId }));
       setSelected(detail);
@@ -368,6 +371,7 @@ export function ReviewView() {
 
   const chooseManual = (input: string) => {
     setManualDate(input);
+    setManualCalendarDate('');
     setPlan(null);
     if (!input) return setAction(null);
     setAction({
@@ -377,6 +381,16 @@ export function ReviewView() {
         zoneBasis: 'floating-local',
         precision: input.length > 16 ? 'second' : 'minute',
       },
+    });
+  };
+  const chooseManualCalendarDate = (input: string) => {
+    setManualCalendarDate(input);
+    setManualDate('');
+    setPlan(null);
+    if (!input) return setAction(null);
+    setAction({
+      type: 'manual-date',
+      value: { localIso: input, zoneBasis: 'date-only', precision: 'date' },
     });
   };
   const preview = async () => {
@@ -532,6 +546,8 @@ export function ReviewView() {
                                     action.candidateId === candidate.id
                                   }
                                   onChange={() => {
+                                    setManualDate('');
+                                    setManualCalendarDate('');
                                     setAction({
                                       type: 'select-candidate',
                                       candidateId: candidate.id,
@@ -562,10 +578,19 @@ export function ReviewView() {
                     value={manualDate}
                     onChange={(event) => chooseManual(event.currentTarget.value)}
                   />
+                  <input
+                    aria-label="Manual calendar date"
+                    type="date"
+                    value={manualCalendarDate}
+                    onChange={(event) => chooseManualCalendarDate(event.currentTarget.value)}
+                  />
+                  <small>Date is known; time remains unknown.</small>
                 </div>
                 <Toolbar>
                   <Button
                     onClick={() => {
+                      setManualDate('');
+                      setManualCalendarDate('');
                       setAction({ type: 'retry-metadata' });
                       setPlan(null);
                     }}
@@ -574,6 +599,8 @@ export function ReviewView() {
                   </Button>
                   <Button
                     onClick={() => {
+                      setManualDate('');
+                      setManualCalendarDate('');
                       setAction({ type: 'keep' });
                       setPlan(null);
                     }}

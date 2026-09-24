@@ -1,3 +1,35 @@
+## 2026-09-23 calendar date without invented time
+
+- Evidence validation correction: both coordinator admission and the shared Review contract now reuse `isValidDateEvidenceValue` for Gregorian `YYYY-MM-DD` validation. Impossible months, impossible month days, non-leap February 29, and year zero fail closed. Contract and coordinator tests reproduced acceptance of `2022-99-99` and `2023-02-30` before the correction.
+- Regression correction: calendar-date recovery now separates imprecise evidence from reliable clock evidence. One trustworthy non-midnight embedded timestamp remains timestamp precision even when IPTC confirms only its day; date precision is selected when no trustworthy embedded time remains or when multiple trustworthy embedded times conflict and imprecise evidence confirms the shared day.
+- TDD: the trusted EXIF plus same-day IPTC case and the same-day timed-conflict case both failed before the predicate correction. The resolver suite passes 103 tests afterward, including the existing midnight-placeholder case.
+- Discussion: 3,000-plus review assets carry a defensible calendar day but no defensible clock time. Treating `time unknown` as `date unknown` inflated the error queue; turning midnight placeholders into `00-00-00` filenames manufactured precision.
+- Decision: resolve only when at least one eligible embedded creation candidate exists and every eligible or corroboration-only embedded EXIF, XMP, or IPTC creation candidate reduces to one local calendar day. Filename, filesystem, sidecar, editorial modification, forbidden, invalid, and future claims cannot create consensus. Canon and Samsung capture candidates participate and veto through the same embedded boundary.
+- Built: `date-resolution/2`; medium-confidence `YYYY-MM-DD` selection; exact audit reasons; date-only planner naming; metadata-write suppression; v1 evidence compatibility with v2 invariant validation; and manual calendar-date review input.
+- MakerNote inventory: the remaining corpus contains 147 `Canon:TimeStamp` rows and 60 `Samsung:TimeStamp` rows. All 147 Canon rows were freshly reread with ExifTool and satisfy the audited EOS 5D qualifier. Samsung candidates are present in the replay and remain subject to exact instant validation.
+- Reviewer correction: embedded EXIF/XMP/IPTC candidates establish consensus, but every credible eligible or corroboration-only nonfilesystem creation contender participates as a veto. A sidecar or container creation claim on another day blocks automation and remains in `contenderIds`. Filename and filesystem evidence still cannot establish consensus.
+- Replay: `tools/replay-date-resolution.ts` against the refreshed candidate snapshot produces 6,262 resolved, 3,652 date-only selections, and 1,129 residue. The precision correction removes 351 prior date-only selections: 287 retain trustworthy timed resolution and 64 with conflicting trustworthy times return to review. `docs/CALENDAR_DATE_REPLAY.md` records the command, historical baseline, and current accounting. This does not claim the sub-1-percent gate.
+- Contract correction: v2 automatic date-only evidence requires the consensus reason triplet. Manual calendar dates remain valid only when the selected eligible candidate is a user override with `NON_AUTHORITATIVE_SELECTION` and `RESOLVED_MEDIUM_CONFIDENCE`. The Review UI controls both manual inputs and clears the alternate value whenever the action changes.
+- Final contract alignment: the shared Review guard now matches coordinator linkage checks for v2 date-only evidence. It rejects an unknown selected ID, non-eligible or zero-scored selection, invalid creation provenance, and a selected value unsupported by that exact candidate. Regressions cover each forged shape and a valid manual override.
+- Validation: focused resolver, planner, normalization, executor, review contract, review service, Review UI, and evidence suites pass 269 tests. TypeScript and ESLint pass. Full validation is tracked after integration with concurrent offset and MakerNote edits. The running app was not restarted.
+
+## 2026-09-23 audited MakerNote recovery rules
+
+- Discussion: the remaining review corpus contains useful manufacturer metadata mixed with non-date MakerNote settings. A generic MakerNote priority would admit runtime counters, firmware dates, camera display modes, timers, and exposure settings as false capture dates.
+- Decision: use two audited cohort rules only. Canon is restricted to the original EOS 5D signature where a non-midnight `Canon:TimeStamp` exactly matches `IFD0:ModifyDate` and both standard EXIF creation fields repeat the same midnight placeholder. Samsung remains capture evidence when its explicit-zone timestamp and standard EXIF agree at the whole second; differing fractional representations are disclosed and omitted from the selected value.
+- TDD: collector tests cover the valid Canon signature, wrong model, mismatched modify date, non-repeated placeholders, midnight MakerNote time, and denied non-capture MakerNote tags. Resolver tests cover Canon selection, Samsung whole-second recovery, and preservation of genuine fractional conflict evidence.
+- Corpus replay: all 147 Canon-tagged review assets were re-read with ExifTool; all 147 are Canon EOS 5D and satisfy the full predicate. The 7,391-row resolution replay contains 60 Samsung-tagged rows. Instant-aware review rejects two rows whose GPS UTC instant differs from Samsung. One stored row still contains the separately corrected nanosecond instant defect; current-ledger replay is 57 safe recoveries plus that known corrected row, so a fresh collector pass yields 58. Together with 147 Canon recoveries, the safe MakerNote transition count is 205 with zero unrelated transitions.
+- Validation: focused collector and resolver suites, TypeScript, ESLint, Prettier, and diff checks pass. The running application was not restarted.
+
+## 2026-09-23 exact offset and subsecond instant correction
+
+- Discussion: explicit-offset metadata retained 4 to 9 digits in `localIso` and `fractionalDigits`, but constructed `instantUtc` through JavaScript `Date`, which serializes only milliseconds. The resolver correctly treated the two representations as inconsistent.
+- Decision: keep strict instant validation and correct the collector. Compute calendar and offset rollover at whole-second precision, then append the exact source fraction unchanged to the UTC instant.
+- Built `exactUtcInstant` and applied it to explicit-offset and spec-defined UTC candidates. Added collector coverage for every precision from 1 through 9 digits, positive and negative offsets, both rollover directions, and resolver coverage proving exact values pass while a one-nanosecond mismatch still fails.
+- Review replay: all 7,391 review records were replayed; 579 carried the truncation defect. Exactly 287 `review-required/low` and 1 `ambiguous/none` record became `resolved/medium`; no reviewed record moved to a worse status.
+- Full-ledger replay: all 99,998 resolution records were replayed. The correction affects 3,354 rows because the defect also existed in previously accepted candidates. It produces the 288 safe recoveries above and changes 32 `resolved/high` rows to `ambiguous/none` because exact fractions reveal real conflicts previously hidden by millisecond truncation. The other 3,034 rows retain their status and confidence. This is deliberate fail-closed correction, not weakened mismatch handling.
+- Validation: 153 focused collector and resolver tests pass. TypeScript, ESLint, and Prettier pass. The running application was not restarted.
+
 ## 2026-09-22 Review Queue explanation correction
 
 - User reported that the Review Queue exposed raw reason codes, opaque candidate IDs, field tags, and scores without explaining the actual problem.
@@ -749,3 +781,46 @@ The first Review Queue load performed one complete normalization-index scan per 
 The remaining filesystem cost was removed by separating descriptor discovery from item materialization. Status filtering, stable review-ID ordering, cursor slicing, and exact-ID selection now happen before native identity and SHA-256 binding. A 7,391-row regression proves a 25-row page performs exactly 25 bindings, the next page has no duplicate IDs, and exact get performs one exact audit lookup plus one binding. Stale identity detection remains part of materializing each returned row.
 
 Reviewer follow-up removed two remaining catalog integrity and complexity defects. The repository now reads each compact catalog once from one file descriptor, validates records and hashes those exact bytes, builds immutable page and exact-lookup structures, and pins the visible file identity. Later page or exact operations reject replacement, truncation, and in-place mutation through inode, size, mtime, and ctime checks. Pagination slices the immutable record set, so draining every 100-row page parses N records once rather than repeatedly parsing page prefixes. Instrumentation asserts JSON parsing does not increase across ten pages.
+
+## 2026-09-23 audited placeholder metadata recovery
+
+### Discussed
+
+The remaining review corpus contained two independently reproducible corruption signatures: synthetic EXIF midnight timestamps competing with real GPS capture time, and synthetic EXIF midnight timestamps competing with unanimous XMP/IPTC editorial capture fields.
+
+### Decided
+
+Match semantic metadata signatures only. Do not whitelist filenames or hashes. For GPS records, preserve the exact GPS UTC instant; Photoshop local time can corroborate timezone context but cannot synthesize a replacement instant. For editorial records, require exact nonmidnight agreement across Photoshop, IPTC creation, and IPTC digital creation fields.
+
+### Built
+
+- Added `SYNTHETIC_EXIF_PLACEHOLDER_GPS_RECOVERY` for matching EXIF DateTimeOriginal/CreateDate 2022-01-01 tiny-fraction placeholders plus valid 2023/2024 GPS UTC evidence.
+- Added `EDITORIAL_CAPTURE_CONSENSUS_RECOVERY` for exact 2003-07-01 or 2022-01-01 EXIF midnight placeholders contradicted by three agreeing XMP/IPTC fields.
+- Added positive and counterexample tests for missing corroboration, GPS year boundaries, Photoshop context, and conflicting IPTC time.
+
+### Validation
+
+- DateResolver focused suite: 109 tests passed.
+- TypeScript and ESLint passed before concurrent unrelated recovery work entered the shared resolver; final combined validation remains the orchestrator's gate.
+
+## 2026-09-23 PNG screenshot and Apple AM/PM recovery
+
+### Discussed
+
+Two small residue cohorts carried enough independent evidence to recover a timestamp: PNG screenshots whose native creation clock agrees with the screenshot name and filesystem instant, and older Apple photos whose EXIF/XMP clock was shifted exactly 12 hours by AM/PM corruption.
+
+### Decided
+
+Use semantic predicates only. Require all corroborators and keep every near miss in review. The PNG rule admits either an exact edit-pair signature or an exact Apple Display P3 1170x2532 screenshot signature with the known `2022-01-01 00:00:00` PNG placeholder and an older embedded content date. The Apple photo rule accepts only iPhone 6, 6s, and 7 metadata with coordinates, an IPTC offset exactly matching the geographically supported `-05:00` or `-07:00` GPS relationship, and no more than 49 seconds of GPS clock drift.
+
+### Built
+
+- The collector binds each approved signature into the selected candidate's raw evidence.
+- The resolver revalidates that evidence and emits `PNG_SCREENSHOT_NATIVE_DATE_RECOVERY` or `APPLE_AM_PM_CORRUPTION_RECOVERY` at medium confidence.
+- Positive and required near-miss tests exercise the complete collector-to-resolver path.
+
+### Validation
+
+- Focused collector/resolver integration: 77 tests passed.
+- Fresh read-only replay over the proposed 28 files produced 19 PNG and 8 safe Apple transitions, zero overlap. One LA file remains ambiguous because its IPTC `-05:00` offset conflicts with the coordinate/GPS-derived `-07:00` offset. The combined rules project residue 996 of 99,998 without inventing a corrected instant.
+- TypeScript passed. Final combined lint and corpus replay remain the orchestrator's gate.

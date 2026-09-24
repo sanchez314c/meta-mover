@@ -1,4 +1,7 @@
-import { buildMetadataNormalizationPlan, isMetadataNormalizationSupported } from '../../../src/main/core/metadata/MetadataNormalizationPolicy';
+import {
+  buildMetadataNormalizationPlan,
+  isMetadataNormalizationSupported,
+} from '../../../src/main/core/metadata/MetadataNormalizationPolicy';
 
 const selectedDate = {
   localIso: '2024-03-04T05:06:07',
@@ -9,6 +12,15 @@ const selectedDate = {
 };
 
 describe('MetadataNormalizationPolicy', () => {
+  it('refuses to invent time metadata for a calendar-date-only resolution', () => {
+    expect(() =>
+      buildMetadataNormalizationPlan('/tmp/photo.jpg', {
+        localIso: '2022-12-12',
+        zoneBasis: 'date-only',
+        precision: 'date',
+      })
+    ).toThrow(/calendar date.*must not be written/i);
+  });
   it('reports the same explicit format allowlist used by the writer', () => {
     expect(isMetadataNormalizationSupported('/tmp/photo.JPG')).toBe(true);
     expect(isMetadataNormalizationSupported('/tmp/raw.cr3')).toBe(false);
@@ -57,26 +69,36 @@ describe('MetadataNormalizationPolicy', () => {
 
   it('stores EXIF local timestamps and offsets in their dedicated companion tags', () => {
     const jpeg = buildMetadataNormalizationPlan('/tmp/photo.jpg', selectedDate);
-    expect(jpeg.assignments).toEqual(expect.arrayContaining([
-      { tag: 'ExifIFD:DateTimeOriginal', value: '2024:03:04 05:06:07' },
-      { tag: 'ExifIFD:OffsetTimeOriginal', value: '-05:00' },
-      { tag: 'ExifIFD:OffsetTimeDigitized', value: '-05:00' },
-    ]));
-    expect(jpeg.assignments.find(({ tag }) => tag === 'ExifIFD:DateTimeOriginal')?.value).not.toContain('-05:00');
+    expect(jpeg.assignments).toEqual(
+      expect.arrayContaining([
+        { tag: 'ExifIFD:DateTimeOriginal', value: '2024:03:04 05:06:07' },
+        { tag: 'ExifIFD:OffsetTimeOriginal', value: '-05:00' },
+        { tag: 'ExifIFD:OffsetTimeDigitized', value: '-05:00' },
+      ])
+    );
+    expect(
+      jpeg.assignments.find(({ tag }) => tag === 'ExifIFD:DateTimeOriginal')?.value
+    ).not.toContain('-05:00');
   });
 
   it('refuses to fabricate a UTC container instant from a floating local timestamp', () => {
-    expect(() => buildMetadataNormalizationPlan('/tmp/clip.mov', {
-      localIso: '2024-03-04T05:06:07', zoneBasis: 'floating-local', precision: 'second',
-    })).toThrow(/UTC instant/i);
+    expect(() =>
+      buildMetadataNormalizationPlan('/tmp/clip.mov', {
+        localIso: '2024-03-04T05:06:07',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      })
+    ).toThrow(/UTC instant/i);
   });
 
-  it('accepts a date-only local value without inventing an offset', () => {
-    const plan = buildMetadataNormalizationPlan('/tmp/photo.heic', {
-      localIso: '2024-03-04', zoneBasis: 'date-only', precision: 'date',
-    });
-    expect(plan.assignments.map(({ tag }) => tag)).not.toContain('ExifIFD:OffsetTimeOriginal');
-    expect(plan.assignments[0].value).toBe('2024:03:04 00:00:00');
+  it('does not convert a date-only value into a false midnight timestamp', () => {
+    expect(() =>
+      buildMetadataNormalizationPlan('/tmp/photo.heic', {
+        localIso: '2024-03-04',
+        zoneBasis: 'date-only',
+        precision: 'date',
+      })
+    ).toThrow(/unknown time/i);
   });
 
   it.each([
@@ -85,7 +107,9 @@ describe('MetadataNormalizationPolicy', () => {
     [{ ...selectedDate, offsetMinutes: 1.5 }, /invalid UTC offset/i],
     [{ ...selectedDate, instantUtc: '2024-03-04 10:06:07' }, /invalid UTC instant/i],
   ])('fails closed for malformed temporal values', (value, expected) => {
-    expect(() => buildMetadataNormalizationPlan('/tmp/clip.mov', value as typeof selectedDate)).toThrow(expected);
+    expect(() =>
+      buildMetadataNormalizationPlan('/tmp/clip.mov', value as typeof selectedDate)
+    ).toThrow(expected);
   });
 
   it('fails closed for raw, document, and unknown containers', () => {
