@@ -824,3 +824,24 @@ Use semantic predicates only. Require all corroborators and keep every near miss
 - Focused collector/resolver integration: 77 tests passed.
 - Fresh read-only replay over the proposed 28 files produced 19 PNG and 8 safe Apple transitions, zero overlap. One LA file remains ambiguous because its IPTC `-05:00` offset conflicts with the coordinate/GPS-derived `-07:00` offset. The combined rules project residue 996 of 99,998 without inventing a corrected instant.
 - TypeScript passed. Final combined lint and corpus replay remain the orchestrator's gate.
+
+## 2026-09-24 strongest timestamp selection correction
+
+### Discussed
+
+A fresh run crashed while persisting a resolved record. The generic resolver had selected an IPTC calendar date as a fallback for unverified EXIF subseconds, then emitted a result without the audit triplet required for a date-only resolution.
+
+### Decided
+
+Candidate identity and subsecond precision are separate decisions. Keep the strongest candidate selected and reduce only its unsupported fractional precision to whole seconds. Calendar dates remain valid only through their existing audited resolution paths.
+
+### Built
+
+- Removed the generic preference for any candidate without `fractionalDigits`.
+- Added an integration regression for EXIF DateTimeOriginal/CreateDate at `2003-10-11T15:34:20.000007`, competing IPTC date-only metadata, and a midnight filename claim.
+- Added counterexamples proving whole-second and date-only-only inputs retain their existing behavior.
+
+### Validation
+
+- Collector and resolver focused suites: 195 tests passed.
+- TypeScript, ESLint, and Prettier validation passed.

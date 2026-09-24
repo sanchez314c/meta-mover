@@ -1607,10 +1607,7 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     };
   }
 
-  const selected =
-    subsecondAssessment.selected ??
-    top.candidates.find((candidate) => candidate.value.fractionalDigits === undefined) ??
-    top.candidates[0];
+  const selected = subsecondAssessment.selected ?? top.candidates[0];
   if (selected.sourceKind === 'filename' || selected.value.zoneBasis === 'date-only') {
     reasonCodes.push('NON_AUTHORITATIVE_SELECTION');
   }

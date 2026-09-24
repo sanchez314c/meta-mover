@@ -575,6 +575,71 @@ describe('MetadataCandidateCollector', () => {
     expect(adapter.closeCalls).toBe(1);
   });
 
+  describe('generic subsecond selection', () => {
+    it('keeps the strongest EXIF timestamp while omitting unsupported subseconds', async () => {
+      const result = await resolveImage('2003-10-11_00-00-00.jpeg', {
+        'ExifIFD:DateTimeOriginal': '2003:10:11 15:34:20',
+        'ExifIFD:CreateDate': '2003:10:11 15:34:20',
+        'ExifIFD:SubSecTimeOriginal': '000007',
+        'ExifIFD:SubSecTimeDigitized': '000007',
+        'IPTC:DateCreated': '2003:10:11',
+      });
+
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: {
+          localIso: '2003-10-11T15:34:20',
+          zoneBasis: 'floating-local',
+          precision: 'second',
+        },
+      });
+      expect(result.selectedValue).not.toHaveProperty('fractionalDigits');
+      expect(result.reasonCodes).toEqual(
+        expect.arrayContaining(['UNVERIFIED_SUBSECONDS_OMITTED', 'RESOLVED_MEDIUM_CONFIDENCE'])
+      );
+      expect(result.reasonCodes).not.toEqual(
+        expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'RESOLVED_DATE_ONLY', 'TIME_UNKNOWN'])
+      );
+      expect(result.candidates.find((item) => item.id === result.selectedCandidateId)?.tag).toBe(
+        'ExifIFD:DateTimeOriginal'
+      );
+    });
+
+    it('preserves a legitimate strongest whole-second timestamp', async () => {
+      const result = await resolveImage('photo.jpeg', {
+        'ExifIFD:DateTimeOriginal': '2003:10:11 15:34:20',
+        'ExifIFD:CreateDate': '2003:10:11 15:34:20',
+        'IPTC:DateCreated': '2003:10:11',
+      });
+
+      expect(result.selectedValue).toMatchObject({
+        localIso: '2003-10-11T15:34:20',
+        precision: 'second',
+      });
+      expect(result.candidates.find((item) => item.id === result.selectedCandidateId)?.tag).toBe(
+        'ExifIFD:DateTimeOriginal'
+      );
+    });
+
+    it('still resolves inputs that contain only an embedded calendar date', async () => {
+      const result = await resolveImage('photo.jpeg', {
+        'IPTC:DateCreated': '2003:10:11',
+      });
+
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: {
+          localIso: '2003-10-11',
+          zoneBasis: 'date-only',
+          precision: 'date',
+        },
+      });
+      expect(result.reasonCodes).toEqual(
+        expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'RESOLVED_DATE_ONLY', 'TIME_UNKNOWN'])
+      );
+    });
+  });
+
   it.each([
     ['1 digit', '2024:03:04 05:06:07', '1', '-05:30', '2024-03-04T10:36:07.1Z'],
     ['2 digits', '2024:03:04 05:06:07', '12', '+02:00', '2024-03-04T03:06:07.12Z'],

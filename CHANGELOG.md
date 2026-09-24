@@ -890,3 +890,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a narrow Apple iPhone 6/6s/7 AM/PM correction requiring agreeing Photoshop/IPTC local time, an IPTC offset that exactly matches the coordinate-supported `-05:00` or `-07:00` GPS relationship, GPS UTC within 49 seconds, and EXIF/XMP creation fields exactly 12 hours earlier.
 - Rejected an LA file whose IPTC time claimed `-05:00` while its coordinates and GPS instant proved `-07:00`; META Mover does not synthesize a corrected anchored value.
 - Added counterexamples for altered models, missing coordinates, incompatible offsets, a 50-second GPS miss, mismatching IPTC time, and rejected PNG placeholder metadata.
+
+## 2026-09-24 strongest timestamp selection correction
+
+- Fixed generic date resolution selecting a lower-authority date-only candidate merely because it lacked fractional digits.
+- Unsupported subseconds are now removed from the strongest candidate's value while its identity, timestamp, and audit reasons remain intact.
+- Added collector-to-resolver regressions for the crashing EXIF/IPTC/filename combination, a legitimate whole-second timestamp, and date-only-only metadata.
