@@ -38,6 +38,257 @@ function request(candidates: DateCandidateInput[]): ResolveDateRequest {
 }
 
 describe('resolveDateCandidates', () => {
+  it('recovers a whole capture second corroborated by EXIF and XMP despite fractional disagreement', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.123456789',
+            zoneBasis: 'floating-local',
+            precision: 'nanosecond',
+            fractionalDigits: '123456789',
+          },
+        }),
+        candidate({
+          id: 'xmp',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2010-03-04T12:13:14.987',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '987',
+          },
+        }),
+      ])
+    );
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedValue: { localIso: '2010-03-04T12:13:14', precision: 'second' },
+    });
+    expect(result.reasonCodes).toEqual(
+      expect.arrayContaining(['WHOLE_SECOND_CAPTURE_CONSENSUS', 'UNVERIFIED_SUBSECONDS_OMITTED'])
+    );
+  });
+
+  it('does not infer a capture second when two explicit instants disagree within that second', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.123',
+            instantUtc: '2010-03-04T17:13:14.123Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'millisecond',
+            fractionalDigits: '123',
+          },
+        }),
+        candidate({
+          id: 'xmp',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2010-03-04T12:13:14.987',
+            instantUtc: '2010-03-04T17:13:14.987Z',
+            offsetMinutes: -300,
+            zoneBasis: 'explicit-offset',
+            precision: 'millisecond',
+            fractionalDigits: '987',
+          },
+        }),
+      ])
+    );
+    expect(result.reasonCodes).not.toContain('WHOLE_SECOND_CAPTURE_CONSENSUS');
+    expect(result.selectedValue?.precision).toBe('date');
+  });
+
+  it('does not infer a capture second across a conflicting full filename timestamp', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.123',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '123',
+          },
+        }),
+        candidate({
+          id: 'xmp',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2010-03-04T12:13:14.987',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '987',
+          },
+        }),
+        candidate({
+          id: 'filename',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          tag: 'filename:2010-03-04_12-13-15.jpg',
+          value: {
+            localIso: '2010-03-04T12:13:15',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+    expect(result.reasonCodes).not.toContain('WHOLE_SECOND_CAPTURE_CONSENSUS');
+  });
+
+  it('does not infer a capture second across a conflicting filename calendar day', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.123',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '123',
+          },
+        }),
+        candidate({
+          id: 'xmp',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2010-03-04T12:13:14.987',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '987',
+          },
+        }),
+        candidate({
+          id: 'filename-day',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename-date-only',
+          tag: 'filename:2011-03-04.jpg',
+          value: { localIso: '2011-03-04', zoneBasis: 'date-only', precision: 'date' },
+        }),
+      ])
+    );
+    expect(result.reasonCodes).not.toContain('WHOLE_SECOND_CAPTURE_CONSENSUS');
+  });
+
+  it('does not treat an EXIF mirror in XMP as independent capture evidence', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'exif',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.123',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '123',
+          },
+        }),
+        candidate({
+          id: 'xmp-mirror',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          tag: 'XMP-exif:DateTimeOriginal',
+          value: {
+            localIso: '2010-03-04T12:13:14.987',
+            zoneBasis: 'floating-local',
+            precision: 'millisecond',
+            fractionalDigits: '987',
+          },
+        }),
+      ])
+    );
+    expect(result.reasonCodes).not.toContain('WHOLE_SECOND_CAPTURE_CONSENSUS');
+  });
+
+  it.each(['sidecar', 'user-override'] as const)(
+    'does not supersede a %s date claim',
+    (sourceKind) => {
+      const result = resolveDateCandidates(
+        request([
+          candidate({
+            id: 'exif',
+            mediaKind: 'image',
+            semantic: 'capture',
+            sourceKind: 'embedded-exif',
+            tag: 'ExifIFD:DateTimeOriginal',
+            value: {
+              localIso: '2010-03-04T12:13:14.123',
+              zoneBasis: 'floating-local',
+              precision: 'millisecond',
+              fractionalDigits: '123',
+            },
+          }),
+          candidate({
+            id: 'xmp',
+            mediaKind: 'image',
+            semantic: 'capture',
+            sourceKind: 'embedded-xmp',
+            tag: 'XMP-photoshop:DateCreated',
+            value: {
+              localIso: '2010-03-04T12:13:14.987',
+              zoneBasis: 'floating-local',
+              precision: 'millisecond',
+              fractionalDigits: '987',
+            },
+          }),
+          candidate({
+            id: sourceKind,
+            mediaKind: 'image',
+            semantic: sourceKind === 'sidecar' ? 'sidecar-claim' : 'capture',
+            sourceKind,
+            tag: sourceKind === 'sidecar' ? 'Sidecar:DateCreated' : 'User:DateTimeOriginal',
+            value: {
+              localIso: '2011-03-04T12:13:14',
+              zoneBasis: 'floating-local',
+              precision: 'second',
+            },
+          }),
+        ])
+      );
+      expect(result.reasonCodes).not.toContain('WHOLE_SECOND_CAPTURE_CONSENSUS');
+    }
+  );
   it('exposes the active policy through the public date module', () => {
     expect(DATE_RESOLUTION_POLICY_VERSION).toBe('date-resolution/2');
   });
@@ -199,7 +450,7 @@ describe('resolveDateCandidates', () => {
     expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
-  it('uses date precision for the audited same-second embedded fractional ambiguity', () => {
+  it('uses second precision for the audited same-second embedded fractional ambiguity', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -291,10 +542,14 @@ describe('resolveDateCandidates', () => {
     expect(result).toMatchObject({
       status: 'resolved',
       confidence: 'medium',
-      selectedValue: { localIso: '2020-04-13', zoneBasis: 'date-only', precision: 'date' },
+      selectedValue: {
+        localIso: '2020-04-13T15:32:38',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      },
     });
     expect(result.reasonCodes).toEqual(
-      expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'])
+      expect.arrayContaining(['WHOLE_SECOND_CAPTURE_CONSENSUS', 'UNVERIFIED_SUBSECONDS_OMITTED'])
     );
   });
 

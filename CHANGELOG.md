@@ -954,3 +954,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Raised the bounded ExifTool pool from four to 16 concurrent readers after a 2,000-image benchmark measured 412 versus 913 metadata reads per second with no errors.
 - Added a regression for the 16-worker limit and seventeenth queued request.
+
+## 2026-09-26 low-confidence review routing
+
+- Routed review-required images with a plausible selected date to `_Needs Review/Low Confidence` instead of `No Usable Date` on future runs.
+- Preserved date-only filenames when embedded sources disagree about the time; existing output and review history remain in place.
+- Recovered an agreed capture second when independent embedded sources differ only in unverified fractional digits. Explicit instant conflicts, placeholders, and conflicting filename claims still prevent this recovery.

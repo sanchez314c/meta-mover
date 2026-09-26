@@ -45,6 +45,7 @@ type ReviewReasonFolder =
   | 'Placeholder Dates'
   | 'Conflicting Dates'
   | 'Metadata Read Failed'
+  | 'Low Confidence'
   | 'No Usable Date';
 
 function sanitizeBasename(sourcePath: string): string {
@@ -129,6 +130,13 @@ function reviewReasonFolder(resolution: DateResolutionRecord): ReviewReasonFolde
     resolution.reasonCodes.includes('METADATA_READ_FAILED')
   ) {
     return 'Metadata Read Failed';
+  }
+  if (
+    resolution.status === 'review-required' &&
+    resolution.selectedValue !== undefined &&
+    resolution.reasonCodes.includes('REVIEW_REQUIRED_LOW_CONFIDENCE')
+  ) {
+    return 'Low Confidence';
   }
   return 'No Usable Date';
 }

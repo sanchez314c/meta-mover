@@ -1018,3 +1018,22 @@ Benchmark the existing bundled ExifTool pool on the same 2,000 images at 4, 8, 1
 - Raised the ExifTool pool cap to 16 workers.
 - Added a regression proving a seventeenth read queues behind 16 active workers.
 - The isolated warm-cache metadata benchmark measured 412, 748, 849, and 913 files per second at 4, 8, 12, and 16 workers respectively, with zero errors. The full preview includes inventory and destination checks, so its rate must be measured separately.
+
+## 2026-09-26 review residue and date-only output audit
+
+### Discussed
+
+The latest output contains 698 Photos review items: 449 conflicting embedded dates and 249 in No Usable Date. One No Usable Date item has a selected but low-confidence digitization timestamp, so its folder is misleading. Six example output names omit times; their embedded time sources conflict even though their calendar dates agree.
+
+### Decided
+
+Keep date-only names when the time remains disputed, including the example EXIF/IPTC 12-hour conflict and the example GPS UTC versus IPTC offset conflict. Route selected low-confidence review items to a distinct folder on future runs. Preserve current output paths and review history. Do not infer a capture date from repeated batch timestamps or empty metadata.
+
+### Built
+
+- Added `_Needs Review/Low Confidence` routing for review-required records with a selected date and `REVIEW_REQUIRED_LOW_CONFIDENCE`.
+- Added a routing regression. Existing assets were not moved.
+
+### Whole-second correction
+
+An audit of 10,270 date-only output names found a large cohort whose embedded capture sources agree through the second but disagree on fractional digits. Added a guarded medium-confidence recovery that keeps the agreed second and omits the unverified fraction. It requires EXIF and an eligible Photoshop or IPTC capture claim, rejects placeholders, conflicting embedded or filename times, sidecars, user overrides, and differing explicit instants. This leaves genuine 12-hour and GPS timezone conflicts date-only. Direct collector-to-resolver checks recovered the sampled 2006 and 2010 files to whole seconds while the six reported 2018 examples remained date-only. Current output assets were not renamed by this source change.

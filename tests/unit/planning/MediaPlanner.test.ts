@@ -157,7 +157,7 @@ describe('MediaPlanner', () => {
     ['ambiguous', 'none', ['STRONG_CONFLICT'], 'Conflicting Dates'],
     ['unresolved', 'none', ['METADATA_READ_FAILED'], 'Metadata Read Failed'],
     ['unresolved', 'none', ['NO_ELIGIBLE_CANDIDATES'], 'No Usable Date'],
-    ['resolved', 'low', ['REVIEW_REQUIRED_LOW_CONFIDENCE'], 'No Usable Date'],
+    ['review-required', 'low', ['REVIEW_REQUIRED_LOW_CONFIDENCE'], 'Low Confidence'],
   ] as const)(
     'routes %s/%s evidence to the %s review reason with the sanitized original basename',
     (status, confidence, reasonCodes, reviewFolder) => {
@@ -189,6 +189,23 @@ describe('MediaPlanner', () => {
       expect(plan.resolution).toBe(input.resolution);
     }
   );
+
+  it('does not label low confidence as a usable date without a selected value', () => {
+    const input = request(
+      path.join(sourceRoot, 'missing-date.jpg'),
+      destinationRoot,
+      resolution({
+        status: 'review-required',
+        confidence: 'low',
+        selectedValue: undefined,
+        reasonCodes: ['REVIEW_REQUIRED_LOW_CONFIDENCE'],
+      })
+    );
+
+    expect(new MediaPlanner().planForPreview(input).targetPath).toBe(
+      path.join(destinationRoot, 'Photos', '_Needs Review', 'No Usable Date', 'missing-date.jpg')
+    );
+  });
 
   it.each(['high', 'medium'] as const)(
     'rejects forged %s-confidence filesystem modification time at the planning boundary',

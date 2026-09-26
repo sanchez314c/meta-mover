@@ -1472,6 +1472,77 @@ function recoverUnanimousEmbeddedCalendarDate(
   };
 }
 
+function recoverWholeSecondCaptureConsensus(
+  candidates: readonly ScoredDateCandidate[]
+): UnanimousLocalCaptureRecovery | null {
+  const credible = candidates.filter(
+    (candidate) =>
+      (candidate.eligibility === 'eligible' || candidate.eligibility === 'corroboration-only') &&
+      isResolvedCreationProvenance(candidate)
+  );
+  if (credible.some((candidate) => ['user-override', 'sidecar'].includes(candidate.sourceKind))) {
+    return null;
+  }
+  const embedded = credible.filter((candidate) =>
+    ['embedded-exif', 'embedded-xmp', 'embedded-iptc'].includes(candidate.sourceKind)
+  );
+  const capture = embedded.filter(
+    (candidate) =>
+      candidate.semantic === 'capture' &&
+      candidate.eligibility === 'eligible' &&
+      candidate.score.final > 0 &&
+      candidate.value.precision !== 'date' &&
+      !hasPlaceholderModifier(candidate)
+  );
+  const fractions = new Set(capture.map((candidate) => candidate.value.fractionalDigits ?? ''));
+  if (
+    fractions.size < 2 ||
+    !capture.some((candidate) => candidate.value.fractionalDigits !== undefined) ||
+    !capture.some((candidate) => candidate.sourceKind === 'embedded-exif') ||
+    !capture.some(
+      (candidate) =>
+        (candidate.sourceKind === 'embedded-xmp' &&
+          candidate.tag.toLowerCase() === 'xmp-photoshop:datecreated') ||
+        (candidate.sourceKind === 'embedded-iptc' &&
+          candidate.tag.toLowerCase() === 'iptc:datecreated')
+    )
+  ) {
+    return null;
+  }
+
+  const second = capture.length > 0 ? capture[0].value.localIso.slice(0, 19) : '';
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(second) || second.endsWith('T00:00:00')) {
+    return null;
+  }
+  if (
+    embedded.some(
+      (candidate) =>
+        hasPlaceholderModifier(candidate) ||
+        (candidate.value.precision === 'date'
+          ? candidate.value.localIso !== second.slice(0, 10)
+          : candidate.value.localIso.slice(0, 19) !== second)
+    ) ||
+    credible.some(
+      (candidate) =>
+        candidate.sourceKind === 'filename' &&
+        (candidate.value.precision === 'date'
+          ? candidate.value.localIso !== second.slice(0, 10)
+          : candidate.value.localIso.slice(0, 19) !== second)
+    )
+  ) {
+    return null;
+  }
+  const explicitInstants = embedded
+    .map((candidate) => candidate.value.instantUtc)
+    .filter((instant): instant is string => instant !== undefined);
+  if (new Set(explicitInstants).size > 1) return null;
+
+  const selected = [...capture].sort(
+    (left, right) => right.score.final - left.score.final || left.id.localeCompare(right.id)
+  )[0];
+  return { selected, contenderIds: credible.map((candidate) => candidate.id).sort() };
+}
+
 function recoverReviewOnlyEmbeddedCaptureCalendarDate(
   candidates: readonly ScoredDateCandidate[]
 ): CalendarDateRecovery | null {
@@ -1754,6 +1825,35 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
       selectedValue: omitSubseconds(unanimousLocalCapture.selected.value),
       contenderIds: unanimousLocalCapture.contenderIds,
       reasonCodes: uniqueSorted(reasonCodes),
+    };
+  }
+
+  const wholeSecondRecovery =
+    !subsecondConsensus &&
+    (recoverUnanimousEmbeddedCalendarDate(candidates) !== null ||
+      (!(top.score >= 90 && (contenderNeutralized ? Math.max(lead, 15) : lead) >= 15) &&
+        recoverReviewOnlyEmbeddedCaptureCalendarDate(candidates) !== null))
+      ? recoverWholeSecondCaptureConsensus(candidates)
+      : null;
+  if (wholeSecondRecovery !== null) {
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === wholeSecondRecovery.selected.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: wholeSecondRecovery.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: omitSubseconds(wholeSecondRecovery.selected.value),
+      contenderIds: wholeSecondRecovery.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        'WHOLE_SECOND_CAPTURE_CONSENSUS',
+        'UNVERIFIED_SUBSECONDS_OMITTED',
+        'RESOLVED_MEDIUM_CONFIDENCE',
+      ]),
     };
   }
 
