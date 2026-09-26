@@ -98,6 +98,26 @@ function persistence(initial: HistoryJobSnapshot[] = []): jest.Mocked<JobHistory
 }
 
 describe('CoordinatorJobHistoryAdapter', () => {
+  it('persists partial inventory issues and returns them in terminal history', async () => {
+    const store = persistence([
+      {
+        ...snapshot(JobStatus.COMPLETED),
+        inventoryIssues: [{ filePath: '/source/a/2019', code: 'EIO' }],
+      },
+    ]);
+    const adapter = new CoordinatorJobHistoryAdapter(store);
+    const prepared = preview();
+    prepared.inventoryIssues = [{ filePath: '/source/a/2019', code: 'EIO' }];
+    await adapter.recordPreview(prepared);
+    expect(store.createJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inventoryIssues: [{ filePath: '/source/a/2019', code: 'EIO' }],
+      })
+    );
+    expect((await adapter.listJobs())[0].inventoryIssues).toEqual([
+      { filePath: '/source/a/2019', code: 'EIO' },
+    ]);
+  });
   it('persists preview identity and immutable request data exactly', async () => {
     const store = persistence();
     const adapter = new CoordinatorJobHistoryAdapter(store);

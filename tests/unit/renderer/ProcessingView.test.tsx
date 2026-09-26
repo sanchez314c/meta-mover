@@ -3,6 +3,38 @@ import { render, screen } from '@testing-library/react';
 import { ProcessingView } from '../../../src/renderer/components/views/ProcessingView';
 
 describe('ProcessingView', () => {
+  it('shows persisted unreadable paths after a completed partial inventory run', async () => {
+    window.electronAPI = {
+      getJobHistory: jest.fn().mockResolvedValue({
+        success: true,
+        data: [
+          {
+            jobId: 'partial-scan',
+            previewId: 'preview',
+            status: 'completed',
+            sourcePaths: ['/media/source'],
+            destinationPath: '/media/destination',
+            effectiveOptions: {
+              operation: 'move',
+              conflictPolicy: 'rename',
+              folderStructure: 'year/month',
+              workerCount: 1,
+              verifyIntegrity: true,
+              appendScreenshotSuffix: false,
+              writeMetadataDates: false,
+            },
+            createdAt: '2026-08-29T20:00:00.000Z',
+            progress: { filesProcessed: 7, totalFiles: 7, percentage: 100 },
+            inventoryIssues: [{ filePath: '/media/source/2019', code: 'EIO' }],
+          },
+        ],
+      }),
+    } as unknown as Window['electronAPI'];
+    render(<ProcessingView />);
+    expect(await screen.findByText(/Source scan incomplete/)).toBeInTheDocument();
+    expect(screen.getByText(/\/media\/source\/2019.*EIO/)).toBeInTheDocument();
+    expect(screen.getByText(/unknown number of files/)).toBeInTheDocument();
+  });
   afterEach(() => {
     delete window.electronAPI;
   });

@@ -11,6 +11,7 @@ import {
   CancellationFileState,
   DateEvidenceSource,
   FolderStructure,
+  InventoryIssueDTO,
   OperationMode,
   ProcessingEvent,
   ProcessingEventKind,
@@ -67,6 +68,7 @@ export interface CreateHistoryJobInput {
   effectiveOptions: ProcessingOptionsDTO;
   previewSummary: PreviewSummaryDTO;
   previewRows: PreviewRowDTO[];
+  inventoryIssues?: InventoryIssueDTO[];
 }
 
 export interface HistoryJobSnapshot {
@@ -78,6 +80,7 @@ export interface HistoryJobSnapshot {
   readonly effectiveOptions: Readonly<ProcessingOptionsDTO>;
   readonly previewSummary: Readonly<PreviewSummaryDTO>;
   readonly previewRows?: readonly Readonly<PreviewRowDTO>[];
+  readonly inventoryIssues?: readonly Readonly<InventoryIssueDTO>[];
   readonly status: JobStatus;
   readonly lastSequence: number;
   readonly terminalEventKind: ProcessingEvent['kind'] | null;
@@ -763,7 +766,7 @@ function validateCreationShape(
   const code: JobHistoryStoreErrorCode = persisted ? 'CORRUPT_HISTORY' : 'INVALID_INPUT';
   if (
     !isPlainObject(value) ||
-    !hasExactKeys(value, required, ['previewRows']) ||
+    !hasExactKeys(value, required, ['previewRows', 'inventoryIssues']) ||
     !isSerializableProcessingValue(value)
   ) {
     throw new JobHistoryStoreError(code, 'Invalid job creation record');
@@ -778,6 +781,17 @@ function validateCreationShape(
     value.sourcePaths.some((item) => !isNonEmptyString(item)) ||
     !isProcessingOptions(value.effectiveOptions) ||
     !isPreviewSummary(value.previewSummary) ||
+    (value.inventoryIssues !== undefined &&
+      (!Array.isArray(value.inventoryIssues) ||
+        value.inventoryIssues.length === 0 ||
+        value.inventoryIssues.some(
+          (issue) =>
+            !isPlainObject(issue) ||
+            !hasExactKeys(issue, ['filePath', 'code']) ||
+            !isNonEmptyString(issue.filePath) ||
+            !path.isAbsolute(issue.filePath as string) ||
+            issue.code !== 'EIO'
+        ))) ||
     (!persisted && !Array.isArray(value.previewRows)) ||
     (value.previewRows !== undefined &&
       (!Array.isArray(value.previewRows) ||
@@ -1015,6 +1029,9 @@ export class JobHistoryStore {
         effectiveOptions: cloneSerializable(validated.effectiveOptions),
         previewSummary: cloneSerializable(validated.previewSummary),
         previewRows: cloneSerializable(validated.previewRows),
+        ...(validated.inventoryIssues === undefined
+          ? {}
+          : { inventoryIssues: cloneSerializable(validated.inventoryIssues) }),
       };
       const entry: JobEntry = { creation, events: [], machine: seedMachine(creation) };
       await this.appendRecord({

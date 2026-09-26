@@ -100,6 +100,27 @@ const waitForBarrier = async (barrier: Promise<void>, label: string): Promise<vo
 };
 
 describe('JobHistoryStore', () => {
+  it('replays partial inventory issues while accepting legacy jobs without them', async () => {
+    const historyPath = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'meta-mover-history-')),
+      'jobs.jsonl'
+    );
+    const first = new JobHistoryStore(historyPath);
+    await first.initialize();
+    const partial = await first.createJob({
+      ...creation(),
+      inventoryIssues: [{ filePath: '/media/source/2019', code: 'EIO' }],
+    });
+    const legacy = await first.createJob(creation());
+    await first.close();
+    const reopened = new JobHistoryStore(historyPath);
+    await reopened.initialize();
+    expect((await reopened.getJob(partial.jobId))?.inventoryIssues).toEqual([
+      { filePath: '/media/source/2019', code: 'EIO' },
+    ]);
+    expect((await reopened.getJob(legacy.jobId))?.inventoryIssues).toBeUndefined();
+    await reopened.close();
+  });
   let sandbox: string;
   let historyPath: string;
   let openStores: JobHistoryStore[];

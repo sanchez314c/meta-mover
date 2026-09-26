@@ -254,6 +254,89 @@ describe('MediaInventory', () => {
     await expect(inventory.inventory([root])).rejects.toMatchObject({ code: 'FILE_UNREADABLE' });
   });
 
+  it('continues past child EIO entries and reports their exact paths', async () => {
+    const good = path.join(root, 'good.jpg');
+    const bad = path.join(root, 'bad.jpg');
+    await writeFile(good, 'good');
+    await writeFile(bad, 'bad');
+    const skipped: Array<{ filePath: string; code: string }> = [];
+    const inventory = new MediaInventory({
+      inspectPath: async (candidatePath) => {
+        if (candidatePath === bad) {
+          const error = new Error('I/O failure') as NodeJS.ErrnoException;
+          error.code = 'EIO';
+          throw error;
+        }
+        return lstat(candidatePath);
+      },
+    });
+
+    const files = await inventory.inventory([root], undefined, (entry) => skipped.push(entry));
+    expect(files.map((file) => file.filePath)).toEqual([good]);
+    expect(skipped).toEqual([{ filePath: bad, code: 'EIO' }]);
+    await expect(inventory.inventory([root])).rejects.toMatchObject({
+      code: 'FILE_UNREADABLE',
+      filePath: bad,
+    });
+  });
+
+  it('continues past child directory EIO and keeps root EIO fatal', async () => {
+    const good = path.join(root, 'good.jpg');
+    const bad = path.join(root, 'bad-directory');
+    await writeFile(good, 'good');
+    await mkdir(bad);
+    const skipped: Array<{ filePath: string; code: string }> = [];
+    const inventory = new MediaInventory({
+      readDirectory: async (candidatePath) => {
+        if (candidatePath === bad) {
+          const error = new Error('I/O failure') as NodeJS.ErrnoException;
+          error.code = 'EIO';
+          throw error;
+        }
+        return (await import('fs/promises')).readdir(candidatePath, { withFileTypes: true });
+      },
+    });
+
+    const files = await inventory.inventory([root], undefined, (entry) => skipped.push(entry));
+    expect(files.map((file) => file.filePath)).toEqual([good]);
+    expect(skipped).toEqual([{ filePath: bad, code: 'EIO' }]);
+
+    const rootFailure = new MediaInventory({
+      readDirectory: async () => {
+        const error = new Error('I/O failure') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      },
+    });
+    await expect(
+      rootFailure.inventory([root], undefined, (entry) => skipped.push(entry))
+    ).rejects.toMatchObject({ code: 'DIRECTORY_UNREADABLE', filePath: root });
+    expect(skipped).toEqual([{ filePath: bad, code: 'EIO' }]);
+  });
+
+  it('reports a child EIO once when overlapping roots encounter it twice', async () => {
+    const nested = path.join(root, 'nested');
+    const bad = path.join(nested, 'broken');
+    await mkdir(nested);
+    await mkdir(bad);
+    const skipped: string[] = [];
+    const inventory = new MediaInventory({
+      inspectPath: async (candidatePath) => {
+        if (candidatePath === bad) {
+          const error = new Error('I/O failure') as NodeJS.ErrnoException;
+          error.code = 'EIO';
+          throw error;
+        }
+        return lstat(candidatePath);
+      },
+    });
+
+    expect(
+      await inventory.inventory([root, nested], undefined, (entry) => skipped.push(entry.filePath))
+    ).toEqual([]);
+    expect(skipped).toEqual([bad]);
+  });
+
   it('stops discovery when the preview signal is aborted during a directory read', async () => {
     const controller = new AbortController();
     let inspections = 0;

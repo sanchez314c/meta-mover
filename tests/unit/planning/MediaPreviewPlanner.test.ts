@@ -97,6 +97,30 @@ const occupiedDestination = (targetPath: string) => ({
 });
 
 describe('MediaPreviewPlanner', () => {
+  it('keeps unreadable child paths separate from the readable file count', async () => {
+    const planner = new MediaPreviewPlanner({
+      inventory: {
+        inventory: async (_sources, _signal, onSkipped) => {
+          onSkipped?.({ filePath: '/source/2019', code: 'EIO' });
+          return [inventoryFile()];
+        },
+      },
+      roots,
+      metadata: {
+        collectDetailed: async ({ fileId }) => ({
+          candidates: [embeddedCandidate(fileId)],
+          warnings: [],
+        }),
+      },
+      destination: availableDestination,
+      sourceContent,
+      now: () => Date.parse('2026-08-29T13:00:00.000Z'),
+    });
+    const plan = await planner.plan(request());
+    expect(plan.summary.totalFiles).toBe(1);
+    expect(plan.rows).toHaveLength(1);
+    expect(plan.inventoryIssues).toEqual([{ filePath: '/source/2019', code: 'EIO' }]);
+  });
   it('does not pass filesystem modified time into creation-date collection', async () => {
     const collectDetailed = jest.fn(async () => ({ candidates: [], warnings: [] }));
     const planner = new MediaPreviewPlanner({

@@ -50,6 +50,11 @@ export interface UnsupportedInventoryMediaFile extends InventoryMediaFileBase {
 
 export type InventoryMediaFile = SupportedInventoryMediaFile | UnsupportedInventoryMediaFile;
 
+export interface InventorySkippedEntry {
+  filePath: string;
+  code: 'EIO';
+}
+
 interface InventoryDependencies {
   readDirectory(directoryPath: string): Promise<Dirent[]>;
   inspectPath(filePath: string): Promise<Stats>;
@@ -116,7 +121,8 @@ export class MediaInventory {
 
   async inventory(
     sourcePaths: readonly string[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSkipped?: (entry: InventorySkippedEntry) => void
   ): Promise<InventoryMediaFile[]> {
     throwIfAborted(signal);
     if (!Array.isArray(sourcePaths) || sourcePaths.length === 0) {
@@ -128,6 +134,19 @@ export class MediaInventory {
     }
 
     const files = new Map<string, InventoryMediaFile>();
+    const reportedSkipped = new Set<string>();
+    const reportSkipped = (entry: InventorySkippedEntry): void => {
+      if (!onSkipped) {
+        throw new MediaInventoryError(
+          'FILE_UNREADABLE',
+          entry.filePath,
+          'Inventory entry cannot be inspected (EIO); skipped-path reporting is required'
+        );
+      }
+      if (reportedSkipped.has(entry.filePath)) return;
+      onSkipped(entry);
+      reportedSkipped.add(entry.filePath);
+    };
     const roots: string[] = [];
     for (const sourcePath of sourcePaths) {
       throwIfAborted(signal);
@@ -137,7 +156,7 @@ export class MediaInventory {
 
     for (const root of roots) {
       throwIfAborted(signal);
-      await this.scan(root, root, files, signal);
+      await this.scan(root, root, files, signal, reportSkipped);
     }
     throwIfAborted(signal);
     return [...files.values()].sort((left, right) => comparePaths(left.filePath, right.filePath));
@@ -201,13 +220,19 @@ export class MediaInventory {
     rootPath: string,
     directoryPath: string,
     files: Map<string, InventoryMediaFile>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSkipped?: (entry: InventorySkippedEntry) => void
   ): Promise<void> {
     throwIfAborted(signal);
     let entries: Dirent[];
     try {
       entries = await this.dependencies.readDirectory(directoryPath);
     } catch (error) {
+      if (directoryPath !== rootPath && errorCode(error) === 'EIO') {
+        throwIfAborted(signal);
+        onSkipped?.({ filePath: directoryPath, code: 'EIO' });
+        return;
+      }
       throw new MediaInventoryError(
         'DIRECTORY_UNREADABLE',
         directoryPath,
@@ -231,6 +256,11 @@ export class MediaInventory {
       try {
         stats = await this.dependencies.inspectPath(entryPath);
       } catch (error) {
+        if (errorCode(error) === 'EIO') {
+          throwIfAborted(signal);
+          onSkipped?.({ filePath: entryPath, code: 'EIO' });
+          continue;
+        }
         throw new MediaInventoryError(
           'FILE_UNREADABLE',
           entryPath,
@@ -246,7 +276,7 @@ export class MediaInventory {
         );
       }
       if (stats.isDirectory()) {
-        await this.scan(rootPath, entryPath, files, signal);
+        await this.scan(rootPath, entryPath, files, signal, onSkipped);
         continue;
       }
       if (!stats.isFile()) continue;

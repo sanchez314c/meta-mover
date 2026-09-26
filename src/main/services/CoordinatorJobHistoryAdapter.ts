@@ -85,6 +85,9 @@ function mapSnapshot(snapshot: HistoryJobSnapshot): JobHistoryDTO {
   return {
     jobId: snapshot.jobId,
     previewId: snapshot.previewId,
+    ...(snapshot.inventoryIssues === undefined
+      ? {}
+      : { inventoryIssues: snapshot.inventoryIssues.map((issue) => ({ ...issue })) }),
     status: statusFor(snapshot),
     sourcePaths: [...snapshot.sourcePaths],
     destinationPath: snapshot.destinationPath,
@@ -125,6 +128,9 @@ export class CoordinatorJobHistoryAdapter implements CoordinatorHistoryPort, His
       destinationPath: preview.request.destinationPath,
       effectiveOptions: { ...preview.effectiveOptions },
       previewSummary: { ...preview.summary },
+      ...(preview.inventoryIssues === undefined
+        ? {}
+        : { inventoryIssues: preview.inventoryIssues.map((issue) => ({ ...issue })) }),
       previewRows: (preview.rows ?? []).map((row) => ({
         ...row,
         dateEvidence: { ...row.dateEvidence, warnings: [...row.dateEvidence.warnings] },

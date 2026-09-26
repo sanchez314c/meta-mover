@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import path from 'path';
 import { JobStateMachine, isTerminalJobStatus } from '../core/JobStateMachine';
 import type { DateResolutionRecord } from '../core/date';
 import {
@@ -10,6 +11,7 @@ import {
   ConflictPolicy,
   CancellationFileState,
   FolderStructure,
+  InventoryIssueDTO,
   OperationMode,
   ProcessingEvent,
   ProcessingEventKind,
@@ -58,6 +60,7 @@ export interface PlannedOperation {
 
 export interface PreviewPlan {
   summary: PreviewSummaryDTO;
+  inventoryIssues?: InventoryIssueDTO[];
   rows?: PreviewRowDTO[];
   operations: readonly PlannedOperation[];
   decisionRecords?: readonly PreviewDecisionRecord[];
@@ -591,6 +594,7 @@ export class ProcessingCoordinator {
         request: normalizedRequest,
         effectiveOptions: { ...effectiveOptions },
         summary: { ...plan.summary },
+        ...(plan.inventoryIssues === undefined ? {} : { inventoryIssues: plan.inventoryIssues }),
         ...(plan.rows === undefined
           ? {}
           : { rows: plan.rows.slice(0, MAX_PUBLIC_PREVIEW_ROWS).map(publicPreviewRow) }),
@@ -1726,6 +1730,29 @@ export class ProcessingCoordinator {
       throw new ProcessingCoordinatorError(
         CoordinatorErrorCode.INVALID_PLAN,
         'planner returned an invalid preview row'
+      );
+    }
+
+    const issuePaths = new Set<string>();
+    if (
+      plan.inventoryIssues !== undefined &&
+      (!Array.isArray(plan.inventoryIssues) ||
+        plan.inventoryIssues.some((issue) => {
+          if (
+            typeof issue.filePath !== 'string' ||
+            !path.isAbsolute(issue.filePath) ||
+            path.normalize(issue.filePath) !== issue.filePath ||
+            issue.code !== 'EIO' ||
+            issuePaths.has(issue.filePath)
+          )
+            return true;
+          issuePaths.add(issue.filePath);
+          return false;
+        }))
+    ) {
+      throw new ProcessingCoordinatorError(
+        CoordinatorErrorCode.INVALID_PLAN,
+        'planner returned invalid inventory issues'
       );
     }
 

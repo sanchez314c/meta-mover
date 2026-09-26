@@ -954,10 +954,26 @@ export function ProcessingLauncher() {
       {preview && stage !== 'running' && (
         <Card>
           <CardTitle>Preview ready</CardTitle>
+          {preview.inventoryIssues && preview.inventoryIssues.length > 0 && (
+            <Banner $tone="warning" role="alert">
+              <strong>Source scan incomplete.</strong> These paths could not be inspected. An
+              unknown number of files may be inside them; the totals below cover only readable
+              files.
+              <ul>
+                {preview.inventoryIssues.map((issue) => (
+                  <li key={`${issue.filePath}:${issue.code}`}>
+                    {issue.filePath}: {issue.code}
+                  </li>
+                ))}
+              </ul>
+            </Banner>
+          )}
           <StatGrid>
             <Stat>
               <strong>{preview.summary.totalFiles}</strong>
-              <span>Total files</span>
+              <span>
+                {preview.inventoryIssues?.length ? 'Readable files found' : 'Total files'}
+              </span>
             </Stat>
             <Stat>
               <strong>{preview.summary.copyFiles + preview.summary.moveFiles}</strong>
@@ -1028,6 +1044,9 @@ export function ProcessingLauncher() {
               <span>
                 I understand Move deletes each source only after the destination copy passes
                 integrity verification.
+                {preview.inventoryIssues?.length
+                  ? ' I also understand this source scan is incomplete and Move will process only the readable files listed in this preview.'
+                  : ''}
               </span>
             </Confirmation>
           )}
@@ -1136,9 +1155,22 @@ export function ProcessingLauncher() {
               ? `${activeJob.filesProcessed} succeeded, ${activeJob.cancelledFiles ?? 0} cancelled, ${activeJob.unattemptedFiles ?? 0} not attempted, ${activeJob.committedResidueBytes ?? 0} residue bytes.`
               : activeJob.status === 'partial' || (activeJob.failedFiles ?? 0) > 0
                 ? `${activeJob.filesProcessed} succeeded, ${(activeJob.skippedFiles ?? 0) > 0 ? `${activeJob.skippedFiles} skipped, ` : ''}${activeJob.failedFiles ?? 0} failed, ${activeJob.totalFiles} total.`
-                : `${activeJob.filesProcessed} of ${activeJob.totalFiles} files succeeded.`}
+                : `${activeJob.filesProcessed} of ${activeJob.totalFiles} readable files succeeded.`}
             {activeJob.error ? ` ${activeJob.error}` : ''}
           </Subtitle>
+          {preview?.inventoryIssues && preview.inventoryIssues.length > 0 && (
+            <Banner $tone="warning" role="alert">
+              Source scan was incomplete. {preview.inventoryIssues.length} unreadable path
+              {preview.inventoryIssues.length === 1 ? '' : 's'} had an unknown number of files.
+              <ul>
+                {preview.inventoryIssues.map((issue) => (
+                  <li key={`${issue.filePath}:${issue.code}`}>
+                    {issue.filePath}: {issue.code}
+                  </li>
+                ))}
+              </ul>
+            </Banner>
+          )}
           {activeJob.fileFailures && activeJob.fileFailures.length > 0 && (
             <FailureList aria-label="Failed files">
               {activeJob.fileFailures.map((failure) => (

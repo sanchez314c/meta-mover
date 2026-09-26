@@ -731,6 +731,7 @@ function validatePreview(snapshot: Record<string, CanonicalJsonValue>): {
       'request',
       'effectiveOptions',
       'summary',
+      'inventoryIssues',
       'rows',
       'nextPageToken',
     ],
@@ -757,6 +758,18 @@ function validatePreview(snapshot: Record<string, CanonicalJsonValue>): {
   requireString(request, 'destinationPath', 'preview.request');
   validateOptions(request.options, 'preview.request.options');
   validateOptions(snapshot.effectiveOptions, 'preview.effectiveOptions');
+
+  if (snapshot.inventoryIssues !== undefined) {
+    if (!Array.isArray(snapshot.inventoryIssues) || snapshot.inventoryIssues.length === 0)
+      invalidSchema('preview.inventoryIssues must be a non-empty array');
+    for (let index = 0; index < snapshot.inventoryIssues.length; index += 1) {
+      const label = `preview.inventoryIssues[${index}]`;
+      const issue = requireObject(snapshot.inventoryIssues[index], label);
+      assertKeys(issue, ['filePath', 'code'], ['filePath', 'code'], label);
+      if (requireString(issue, 'filePath', label).length === 0 || issue.code !== 'EIO')
+        invalidSchema(`${label} must contain a path and EIO code`);
+    }
+  }
 
   const rows = snapshot.rows;
   if (!Array.isArray(rows)) invalidSchema('preview.rows must contain the complete preview rows');

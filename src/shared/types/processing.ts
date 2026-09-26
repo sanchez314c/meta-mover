@@ -146,6 +146,12 @@ export interface PreviewSummaryDTO {
   totalBytes: number;
 }
 
+/** Paths that could not be inspected during inventory. Files beneath a path are unknown. */
+export interface InventoryIssueDTO {
+  filePath: string;
+  code: 'EIO';
+}
+
 export interface PreviewProgressDTO {
   phase: ProcessingPhase;
   filesProcessed: number;
@@ -162,6 +168,7 @@ export interface PreviewResultDTO {
   request: PreviewRequestDTO;
   effectiveOptions: ProcessingOptionsDTO;
   summary: PreviewSummaryDTO;
+  inventoryIssues?: InventoryIssueDTO[];
   rows?: PreviewRowDTO[];
   nextPageToken?: string;
 }
@@ -409,6 +416,7 @@ export type TerminalProcessingEventKind = TerminalProcessingEvent['kind'];
 export interface JobHistoryDTO {
   jobId: string;
   previewId: string;
+  inventoryIssues?: InventoryIssueDTO[];
   status:
     | 'preview-ready'
     | 'queued'

@@ -77,6 +77,27 @@ function preview(jobId = '9d54e950-f226-4df5-8838-39895197634e'): PreviewResultD
   };
 }
 
+describe('partial inventory evidence', () => {
+  it('persists unreadable paths in the preview manifest', async () => {
+    const evidenceRoot = await mkdtemp(path.join(tmpdir(), 'meta-mover-partial-evidence-'));
+    try {
+      const adapter = await CoordinatorEvidenceAdapter.create({
+        evidenceRoot,
+        policyVersion: 'date-resolution/1',
+      });
+      const prepared = preview();
+      prepared.inventoryIssues = [{ filePath: '/source/2019', code: 'EIO' }];
+      await adapter.recordPreview(prepared, audit(prepared));
+      const manifest = await readFile(adapter.manifestPathForJob(prepared.jobId), 'utf8');
+      expect(manifest).toContain('/source/2019');
+      expect(manifest).toContain('inventoryIssues');
+      await adapter.shutdown();
+    } finally {
+      await rm(evidenceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 function terminal(jobId: string): TerminalProcessingEvent {
   return {
     kind: ProcessingEventKind.JOB_COMPLETED,

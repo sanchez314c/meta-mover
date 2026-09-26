@@ -178,6 +178,28 @@ describe('ProcessingLauncher', () => {
     delete window.electronAPI;
   });
 
+  it('shows unreadable source paths and says the inventory count is incomplete', async () => {
+    installAPI({
+      previewProcessing: jest.fn().mockResolvedValue({
+        success: true,
+        data: {
+          ...preview('move'),
+          inventoryIssues: [{ filePath: '/media/source/2019', code: 'EIO' }],
+        },
+      }),
+    });
+    const user = userEvent.setup();
+    createHarness().renderLauncher();
+    await selectFolders(user);
+    await user.click(screen.getByRole('button', { name: 'Build Preview' }));
+
+    expect(await screen.findByText(/Source scan incomplete/)).toBeInTheDocument();
+    expect(screen.getByText(/unknown number of files/)).toBeInTheDocument();
+    expect(screen.getByText(/\/media\/source\/2019.*EIO/)).toBeInTheDocument();
+    expect(screen.getByText('Readable files found')).toBeInTheDocument();
+    expect(screen.getByText(/Move will process only the readable files/)).toBeInTheDocument();
+  });
+
   it('requires a preview before start and shows the evidence summary and warnings', async () => {
     const api = installAPI();
     const previewReady = jest.fn();

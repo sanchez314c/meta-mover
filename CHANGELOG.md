@@ -937,3 +937,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Centralized the required audit reason triplet for every automatic resolved calendar-date-only decision.
 - Preserved manual date overrides under their existing explicit override contract.
 - Added resolver and immutable evidence-persistence regressions for audited narrow metadata returning date precision.
+
+## 2026-09-26 incomplete source inventory reporting
+
+- Continued previewing readable images when a child directory returns `EIO`, while listing each unreadable path and explaining that its file count is unknown.
+- Persisted incomplete scan diagnostics in job history and the immutable preview evidence, so a completed readable subset cannot appear as a complete source scan after relaunch.
+- Added a Move acknowledgment for partial scans and regressions for inventory, preview, evidence, history replay, and renderer presentation.

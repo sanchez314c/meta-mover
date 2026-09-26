@@ -11,6 +11,7 @@ import {
 } from '../core/date';
 import {
   InventoryMediaFile,
+  InventorySkippedEntry,
   MediaInventory,
   SupportedInventoryMediaFile,
 } from '../core/inventory/MediaInventory';
@@ -84,7 +85,11 @@ export interface SourceContentProbePort {
 }
 
 export interface MediaInventoryPort {
-  inventory(sourcePaths: readonly string[], signal?: AbortSignal): Promise<InventoryMediaFile[]>;
+  inventory(
+    sourcePaths: readonly string[],
+    signal?: AbortSignal,
+    onSkipped?: (entry: InventorySkippedEntry) => void
+  ): Promise<InventoryMediaFile[]>;
 }
 
 export interface MetadataCollectionPort {
@@ -441,7 +446,12 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
       assertProcessingRootIdentitiesUnchanged(request.validatedRoots, roots);
     }
     throwIfAborted(signal);
-    const files = (await this.inventory.inventory(roots.sourcePaths, signal)).map((file) => ({
+    const inventoryIssues: InventorySkippedEntry[] = [];
+    const files = (
+      await this.inventory.inventory(roots.sourcePaths, signal, (entry) => {
+        inventoryIssues.push(entry);
+      })
+    ).map((file) => ({
       ...file,
     }));
     files.forEach(validateInventoryFile);
@@ -723,6 +733,7 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
       rows,
       operations,
       decisionRecords,
+      ...(inventoryIssues.length === 0 ? {} : { inventoryIssues }),
     };
   }
 }

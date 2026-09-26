@@ -167,10 +167,23 @@ export function ProcessingView() {
                       ? cancellationMeta(job)
                       : (job.statistics?.failedFiles ?? 0) > 0
                         ? `${job.progress.filesProcessed} succeeded, ${(job.statistics?.skippedFiles ?? 0) > 0 ? `${job.statistics?.skippedFiles} skipped, ` : ''}${job.statistics?.failedFiles ?? 0} failed, ${job.progress.totalFiles} total`
-                        : `${job.progress.filesProcessed}/${job.progress.totalFiles} files succeeded`}
+                        : `${job.progress.filesProcessed}/${job.progress.totalFiles} ${job.inventoryIssues?.length ? 'readable files' : 'files'} succeeded`}
                     {' | '}
                     {new Date(job.createdAt).toLocaleString()}
                   </JobMeta>
+                  {job.inventoryIssues && job.inventoryIssues.length > 0 && (
+                    <div role="alert">
+                      Source scan incomplete. An unknown number of files could not be counted in
+                      these paths:
+                      <FailureList aria-label="Unreadable source paths">
+                        {job.inventoryIssues.map((issue) => (
+                          <li key={`${issue.filePath}:${issue.code}`}>
+                            {issue.filePath}: {issue.code}
+                          </li>
+                        ))}
+                      </FailureList>
+                    </div>
+                  )}
                   {job.fileFailures && job.fileFailures.length > 0 && (
                     <FailureList aria-label="Failed files">
                       {job.fileFailures.map((failure) => (

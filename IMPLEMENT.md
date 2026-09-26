@@ -970,3 +970,19 @@ Normalize the audit reasons at the resolver's public boundary whenever an automa
 ### Validation
 
 - Date resolver and coordinator evidence focused suites: 166 tests passed.
+
+## 2026-09-26 incomplete source inventory
+
+### Discussed
+
+An interrupted system left six child directory entries in the full test source returning `EIO`. META Mover stopped the entire inventory, preventing the readable images from being previewed. The readable file total must not be presented as the total source count.
+
+### Decided
+
+Continue past child `EIO` entries, preserve their exact paths and error code, and call out that each unreadable subtree has an unknown file count. Root failures still stop the preview. A Move from a partial scan requires explicit acknowledgment. Save the warning in both preview evidence and job history so it survives relaunch.
+
+### Built
+
+- Added child inventory diagnostics to the planner, preview DTO, evidence validation, durable job history, and renderer.
+- Kept unreadable entries separate from file rows and totals because they have no trustworthy file fingerprint or known subtree count.
+- Added regressions for preview, history replay, and rendered completion/history states.
