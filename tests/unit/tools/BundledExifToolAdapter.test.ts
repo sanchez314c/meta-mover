@@ -48,6 +48,31 @@ function successfulFakeChild(tags: Record<string, unknown>): ChildProcess {
   return child;
 }
 
+function successfulStayOpenChild(...responses: Record<string, unknown>[]): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  let input = '';
+  let responseIndex = 0;
+  Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null });
+  child.kill = jest.fn(() => {
+    child.signalCode = 'SIGTERM';
+    queueMicrotask(() => child.emit('close', null, 'SIGTERM'));
+    return true;
+  });
+  stdin.on('data', (chunk: Buffer) => {
+    input += chunk.toString('utf8');
+    const match = input.match(/-execute(\d+)\n/);
+    if (!match) return;
+    input = input.slice(match.index! + match[0].length);
+    const tags = responses[Math.min(responseIndex++, responses.length - 1)];
+    stdout.write(`${JSON.stringify([tags])}\n{ready${match[1]}}\n`);
+    stderr.write(`MMERR${match[1]}:0\n`);
+  });
+  return child;
+}
+
 function successfulWriteChild(stdoutText = '    1 image files updated\n'): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   const stdin = new PassThrough();
@@ -238,7 +263,7 @@ describe('BundledExifToolAdapter', () => {
         const exiftoolPath = '/opt/META Mover/resources/tools/exiftool/exiftool';
         const perlLibraryPaths = ['/opt/META Mover/resources/tools/perl-lib/00'];
         const spawnProcess = jest.fn(() =>
-          successfulFakeChild({ 'EXIF:DateTimeOriginal': '2024:01:02 03:04:05' })
+          successfulStayOpenChild({ 'EXIF:DateTimeOriginal': '2024:01:02 03:04:05' })
         );
         const adapter = new BundledExifToolAdapter(
           { platform, perlPath, exiftoolPath, perlLibraryPaths },
@@ -250,7 +275,7 @@ describe('BundledExifToolAdapter', () => {
         });
         expect(spawnProcess).toHaveBeenCalledWith(
           perlPath,
-          [exiftoolPath, '-json', '-G1', '-a', '-s', '--', snapshotPath],
+          [exiftoolPath, '-stay_open', 'True', '-@', '-'],
           {
             detached: false,
             env: {
@@ -282,7 +307,7 @@ describe('BundledExifToolAdapter', () => {
       await writeFile(snapshotPath, 'exact-input');
       const exiftoolPath =
         'C:\\Program Files\\META Mover\\resources\\tools\\exiftool\\exiftool.exe';
-      const spawnProcess = jest.fn(() => successfulFakeChild({ FileType: 'JPEG' }));
+      const spawnProcess = jest.fn(() => successfulStayOpenChild({ FileType: 'JPEG' }));
       const adapter = new BundledExifToolAdapter(
         { platform: 'win32', exiftoolPath },
         { spawnProcess }
@@ -291,7 +316,7 @@ describe('BundledExifToolAdapter', () => {
       await expect(adapter.readRaw(snapshotPath)).resolves.toEqual({ FileType: 'JPEG' });
       expect(spawnProcess).toHaveBeenCalledWith(
         exiftoolPath,
-        ['-json', '-G1', '-a', '-s', '--', snapshotPath],
+        ['-stay_open', 'True', '-@', '-'],
         expect.objectContaining({ shell: false, stdio: 'pipe' })
       );
       await adapter.close();
@@ -326,9 +351,8 @@ describe('BundledExifToolAdapter', () => {
       };
       const spawnProcess = jest
         .fn()
-        .mockImplementationOnce(() => successfulFakeChild(before))
-        .mockImplementationOnce(() => successfulWriteChild())
-        .mockImplementationOnce(() => successfulFakeChild(after));
+        .mockImplementationOnce(() => successfulStayOpenChild(before, after))
+        .mockImplementationOnce(() => successfulWriteChild());
       const adapter = new BundledExifToolAdapter(
         {
           platform: 'linux',
@@ -376,11 +400,12 @@ describe('BundledExifToolAdapter', () => {
 
   it('skips the write and reports idempotence when every planned field already matches', async () => {
     const snapshotPath = '/tmp/already-clean.png';
+    await writeFile(snapshotPath, 'test image');
     const tags = {
       'PNG:CreateDate': '2024:03:04 05:06:07',
       'XMP-xmp:CreateDate': '2024:03:04 05:06:07',
     };
-    const spawnProcess = jest.fn(() => successfulFakeChild(tags));
+    const spawnProcess = jest.fn(() => successfulStayOpenChild(tags));
     const adapter = new BundledExifToolAdapter(
       {
         platform: 'linux',
@@ -395,6 +420,8 @@ describe('BundledExifToolAdapter', () => {
       adapter.normalizeDateMetadata({ filePath: snapshotPath, selectedDate })
     ).resolves.toMatchObject({ idempotent: true, verified: true, family: 'png' });
     expect(spawnProcess).toHaveBeenCalledTimes(1);
+    await adapter.close();
+    await rm(snapshotPath, { force: true });
   });
 
   it('streams verified bytes from a held descriptor across snapshot pathname swap and restoration', async () => {

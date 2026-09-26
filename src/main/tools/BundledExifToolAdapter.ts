@@ -23,9 +23,9 @@ import {
 } from '../native/NativeFilesystemHelperClient';
 import { nativePackageBrokerLaunchTrustPolicy } from '../native/NativePackageTrustPolicies';
 import { BundledRuntimeHealth } from './BundledRuntimeHealth';
+import { ExifToolStayOpenPool } from './ExifToolStayOpenPool';
 
 const VERIFIED_READ_ARGS = ['-json', '-G1', '-a', '-s', '-'] as const;
-const DIRECT_READ_ARGS = ['-json', '-G1', '-a', '-s', '--'] as const;
 const MAX_VERIFIED_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VERIFIED_ERROR_BYTES = 64 * 1024;
 
@@ -88,9 +88,9 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter, MetadataDate
   private readonly spawnProcess: SpawnProcess;
   private readonly verifiedExecutable: string;
   private readonly verifiedArguments: readonly string[];
-  private readonly directArgumentPrefix: readonly string[];
   private readonly commandPrefix: readonly string[];
   private readonly spawnOptions: SpawnOptions;
+  private readonly readPool: ExifToolStayOpenPool;
   private closed = false;
 
   constructor(
@@ -134,13 +134,19 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter, MetadataDate
         ? [...VERIFIED_READ_ARGS]
         : [paths.exiftoolPath, ...VERIFIED_READ_ARGS];
     this.commandPrefix = paths.platform === 'win32' ? [] : [paths.exiftoolPath];
-    this.directArgumentPrefix = [...this.commandPrefix, ...DIRECT_READ_ARGS];
     this.spawnOptions = {
       detached: false,
       env: { ...environment },
       shell: false,
       stdio: 'pipe',
     };
+    this.readPool = new ExifToolStayOpenPool(
+      this.spawnProcess,
+      this.verifiedExecutable,
+      this.commandPrefix,
+      this.spawnOptions,
+      paths.platform
+    );
   }
 
   static async createPackaged(
@@ -182,13 +188,7 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter, MetadataDate
   async readRaw(filePath: string, signal?: AbortSignal): Promise<RawExifTags> {
     this.assertUsablePath(filePath);
     throwIfAdapterAborted(signal);
-    const output = await this.runProcess([...this.directArgumentPrefix, filePath], signal);
-    if (output.code !== 0) {
-      throw new Error(
-        `Bundled ExifTool direct read failed with code ${String(output.code)}: ${output.stderr}`
-      );
-    }
-    return parseVerifiedTags(output.stdout);
+    return parseVerifiedTags(await this.readPool.read(filePath, signal));
   }
 
   async normalizeDateMetadata(
@@ -308,6 +308,7 @@ export class BundledExifToolAdapter implements ExifToolReadAdapter, MetadataDate
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.readPool.close();
   }
 
   private assertUsablePath(filePath: string): void {

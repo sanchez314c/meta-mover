@@ -943,3 +943,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Continued previewing readable images when a child directory returns `EIO`, while listing each unreadable path and explaining that its file count is unknown.
 - Persisted incomplete scan diagnostics in job history and the immutable preview evidence, so a completed readable subset cannot appear as a complete source scan after relaunch.
 - Added a Move acknowledgment for partial scans and regressions for inventory, preview, evidence, history replay, and renderer presentation.
+
+## 2026-09-26 preview metadata throughput
+
+- Reused four bounded bundled ExifTool workers for ordinary metadata reads instead of launching one process for every image.
+- Kept each request tied to a held file descriptor and retired workers on cancellation or failed response framing.
+- Added real bundled-runtime and failure-path tests. A 30-file metadata-read benchmark measured 173 ms pooled versus 2,962 ms with separate processes; full-preview speed remains to be measured in the next live run.

@@ -986,3 +986,19 @@ Continue past child `EIO` entries, preserve their exact paths and error code, an
 - Added child inventory diagnostics to the planner, preview DTO, evidence validation, durable job history, and renderer.
 - Kept unreadable entries separate from file rows and totals because they have no trustworthy file fingerprint or known subtree count.
 - Added regressions for preview, history replay, and rendered completion/history states.
+
+## 2026-09-26 preview metadata throughput
+
+### Discussed
+
+The 100,000-image preview made progress at about 80 to 100 images per second while RAID bulk throughput appeared low. Profiling found that preview metadata analysis already ran concurrently, but each image started a new bundled ExifTool process. The User requested a fix and a source relaunch for another test.
+
+### Decided
+
+Reuse a bounded pool of four bundled ExifTool processes for ordinary metadata reads. Keep each request isolated, keep the source file descriptor open through the complete response, and retire a worker after an abort, protocol error, or failed read. Leave verified streaming reads and metadata writes on their existing paths.
+
+### Built
+
+- Added a four-worker ExifTool stay-open pool and routed ordinary reads through it.
+- Added unit and real bundled-runtime integration coverage for concurrent reads, cancellation, failed workers, and cleanup.
+- Measured 30 tiny-file reads at 173 ms pooled versus 2,962 ms with one process per read. This measures metadata-tool overhead, not full-preview speed.
