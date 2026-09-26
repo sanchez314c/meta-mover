@@ -1587,7 +1587,7 @@ function assertCandidateInput(candidate: DateCandidateInput): void {
   }
 }
 
-export function resolveDateCandidates(request: ResolveDateRequest): DateResolutionRecord {
+function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolutionRecord {
   const evaluationTime = parseUtcInstant(request.evaluationTimeUtc);
   if (evaluationTime === null) {
     throw new TypeError('evaluationTimeUtc must be a valid UTC timestamp');
@@ -1946,5 +1946,28 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     confidence: 'none',
     contenderIds: top.candidates.map((candidate) => candidate.id).sort(),
     reasonCodes: ['INSUFFICIENT_CONFIDENCE'],
+  };
+}
+
+export function resolveDateCandidates(request: ResolveDateRequest): DateResolutionRecord {
+  const resolution = resolveDateCandidatesInternal(request);
+  const selected = resolution.candidates.find(
+    (candidate) => candidate.id === resolution.selectedCandidateId
+  );
+  if (
+    resolution.status !== 'resolved' ||
+    resolution.selectedValue?.precision !== 'date' ||
+    selected?.sourceKind === 'user-override'
+  ) {
+    return resolution;
+  }
+  return {
+    ...resolution,
+    reasonCodes: uniqueSorted([
+      ...resolution.reasonCodes,
+      'CALENDAR_DATE_CONSENSUS',
+      'TIME_UNKNOWN',
+      'RESOLVED_DATE_ONLY',
+    ]),
   };
 }

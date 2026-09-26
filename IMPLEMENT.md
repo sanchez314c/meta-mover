@@ -949,3 +949,24 @@ Expose a lock-protected journal fold over the existing validated streaming reade
 ### Validation
 
 - Unit and integration transaction suites: 168 tests passed.
+
+## 2026-09-26 automatic calendar-date audit contract
+
+### Discussed
+
+The staged 937-file return preview produced one automatic date-only decision whose selected date and status were valid, but its reasons omitted `CALENDAR_DATE_CONSENSUS`, `TIME_UNKNOWN`, and `RESOLVED_DATE_ONLY`. Immutable preview evidence correctly rejected that incomplete audit record.
+
+### Decided
+
+Normalize the audit reasons at the resolver's public boundary whenever an automatic resolved result has date precision. Keep the selected candidate, selected value, confidence, and status unchanged. Manual user overrides retain their separate accepted audit contract.
+
+### Built
+
+- Added a single resolver-boundary invariant for automatic resolved date-only outcomes.
+- Added a regression for audited narrow PNG recovery returning a calendar date.
+- Added a persistence-boundary regression proving the resulting resolution is accepted by immutable preview evidence.
+- Added a fail-closed exact-2022 date-only-alternative regression.
+
+### Validation
+
+- Date resolver and coordinator evidence focused suites: 166 tests passed.

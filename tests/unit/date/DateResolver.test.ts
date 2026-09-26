@@ -3797,6 +3797,69 @@ describe('resolveDateCandidates', () => {
       expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
     });
 
+    it('adds the audit triplet when audited narrow PNG recovery selects a calendar date', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(
+        candidate({
+          id: 'png-native-date',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'container-format',
+          sourceFamily: 'png-screenshot-native',
+          tag: 'PNG:CreateDate',
+          rawValue: {
+            value: '2023:01:26',
+            recoveryEvidence: {
+              kind: 'png-screenshot-native-date',
+              fileModifyDate: '2023:01:26 19:08:24',
+              pngModifyDate: '2023:01:26 19:08:24',
+              xmpDateCreated: '2023:01:26 19:08:24',
+            },
+          },
+          value: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+        }),
+        candidate({
+          id: 'screenshot-name-date',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'screenshot-filename',
+          tag: 'filename:2023-01-26-screen-shot.png',
+          value: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+        })
+      );
+
+      const result = resolveDateCandidates(request(inputs));
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedCandidateId: 'png-native-date',
+        selectedValue: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+      });
+      expect(result.reasonCodes).toEqual(
+        expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'])
+      );
+    });
+
+    it('keeps an exact-2022 date-only alternative fail-closed unless it has the audit contract', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs[2] = candidate({
+        ...inputs[2],
+        rawValue: '2023:01:26',
+        value: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+      });
+      inputs.push(xmpPlaceholder());
+
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+      expect(result.status).toBe('review-required');
+      expect(result.selectedCandidateId).toBe('dto-placeholder');
+      expect(result.selectedValue).toEqual({
+        localIso: '2022-01-01T00:00:00',
+        zoneBasis: 'floating-local',
+        precision: 'second',
+      });
+    });
+
     it('recovers the exact 2022 batch placeholder from an agreeing IPTC creation pair', () => {
       const inputs = editorialInputs();
       inputs.splice(2, 1);

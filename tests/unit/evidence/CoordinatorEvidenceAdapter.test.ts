@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import * as path from 'path';
 
 import { EvidenceManifest } from '../../../src/main/core/evidence/EvidenceManifest';
+import { resolveDateCandidates } from '../../../src/main/core/date';
 import { CoordinatorEvidenceAdapter } from '../../../src/main/services/CoordinatorEvidenceAdapter';
 import {
   ConflictPolicy,
@@ -1110,6 +1111,97 @@ describe('CoordinatorEvidenceAdapter', () => {
 
     await expect(adapter.recordTerminal(inflated)).rejects.toThrow(/processed|bytes|outcome/i);
     await expect(adapter.shutdown()).rejects.toThrow(/failed/i);
+  });
+
+  it('persists an automatic date-only narrow recovery with its complete audit contract', async () => {
+    const adapter = await CoordinatorEvidenceAdapter.create({
+      evidenceRoot,
+      policyVersion: 'date-policy/1',
+    });
+    const prepared = preview();
+    const resolution = resolveDateCandidates({
+      fileId: '7:11',
+      mediaKind: 'image',
+      evaluationTimeUtc: '2026-08-29T12:00:00.000Z',
+      candidates: [
+        {
+          id: 'png-date',
+          fileId: '7:11',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'container-format',
+          sourceFamily: 'png-screenshot-native',
+          tag: 'PNG:CreateDate',
+          rawValue: {
+            value: '2023:01:26',
+            recoveryEvidence: {
+              kind: 'png-screenshot-native-date',
+              fileModifyDate: '2023:01:26 19:08:24',
+              pngModifyDate: '2023:01:26 19:08:24',
+              xmpDateCreated: '2023:01:26 19:08:24',
+            },
+          },
+          value: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+        },
+        {
+          id: 'screenshot-date',
+          fileId: '7:11',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'screenshot-filename',
+          tag: 'filename:2023-01-26-screen-shot.png',
+          rawValue: '2023-01-26',
+          value: { localIso: '2023-01-26', zoneBasis: 'date-only', precision: 'date' },
+        },
+        {
+          id: 'photoshop-edit',
+          fileId: '7:11',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          rawValue: '2023:01:26 19:08:24',
+          value: {
+            localIso: '2023-01-26T19:08:24',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        },
+        {
+          id: 'placeholder-original',
+          fileId: '7:11',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          rawValue: '2022:01:01 00:00:00',
+          value: {
+            localIso: '2022-01-01T00:00:00',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        },
+      ],
+    });
+    expect(resolution.reasonCodes).toEqual(
+      expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'])
+    );
+    prepared.rows![0].dateEvidence = {
+      value: '2023-01-26',
+      source: DateEvidenceSource.EMBEDDED,
+      field: 'PNG:CreateDate',
+      confidence: 0.7,
+      warnings: [...resolution.reasonCodes],
+    };
+    prepared.rows![0].warnings = [...resolution.reasonCodes];
+    const privateAudit = audit(prepared);
+    privateAudit.decisionRecords[0].resolution = resolution;
+
+    await expect(adapter.recordPreview(prepared, privateAudit)).resolves.toBeUndefined();
+    await expect(adapter.shutdown()).resolves.toBeUndefined();
   });
 
   it('rejects impossible calendar dates before immutable evidence admission', async () => {

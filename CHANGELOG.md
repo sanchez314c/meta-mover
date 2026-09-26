@@ -931,3 +931,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Startup recovery and outcome derivation now fold journal records directly from the bounded stream instead of first retaining every historical record in an array.
 - Preserved one merged record per operation for recovery and one latest record per operation for outcome reporting while removing the duplicate full-history allocation.
 - Added regressions proving both paths avoid the materializing `readRecords` API.
+
+## 2026-09-26 automatic calendar-date audit contract
+
+- Centralized the required audit reason triplet for every automatic resolved calendar-date-only decision.
+- Preserved manual date overrides under their existing explicit override contract.
+- Added resolver and immutable evidence-persistence regressions for audited narrow metadata returning date precision.
