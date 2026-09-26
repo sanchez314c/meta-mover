@@ -7,6 +7,50 @@ import { PassThrough } from 'stream';
 
 import { ExifToolStayOpenPool } from '../../../src/main/tools/ExifToolStayOpenPool';
 
+it('allows sixteen concurrent metadata reads by default and queues the seventeenth', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-stay-open-capacity-'));
+  const file = path.join(root, 'image.jpg');
+  await writeFile(file, 'fixture');
+  let spawnCount = 0;
+  const pool = new ExifToolStayOpenPool(
+    () => {
+      spawnCount += 1;
+      const child = new EventEmitter() as ChildProcess;
+      Object.assign(child, {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        exitCode: null,
+        signalCode: null,
+      });
+      child.kill = jest.fn((signal: NodeJS.Signals) => {
+        child.signalCode = signal;
+        queueMicrotask(() => child.emit('close', null, signal));
+        return true;
+      });
+      return child;
+    },
+    '/fake/perl',
+    ['/fake/exiftool'],
+    { stdio: 'pipe' },
+    'linux'
+  );
+  try {
+    const reads = Array.from({ length: 17 }, () =>
+      pool.read(file).then(
+        () => 'resolved',
+        () => 'rejected'
+      )
+    );
+    expect(spawnCount).toBe(16);
+    await pool.close();
+    expect((await Promise.all(reads)).every((result) => result === 'rejected')).toBe(true);
+  } finally {
+    await pool.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 describe('bundled ExifTool stay-open framing', () => {
   it('keeps concurrent metadata reads separate, survives a bad file, and closes workers', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'meta-mover-stay-open-'));

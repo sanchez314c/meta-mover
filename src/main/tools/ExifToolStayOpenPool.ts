@@ -43,7 +43,7 @@ export class ExifToolStayOpenPool {
     private readonly prefix: readonly string[],
     private readonly options: SpawnOptions,
     private readonly platform: NodeJS.Platform,
-    private readonly size = 4
+    private readonly size = 16
   ) {}
 
   read(filePath: string, signal?: AbortSignal): Promise<Buffer> {

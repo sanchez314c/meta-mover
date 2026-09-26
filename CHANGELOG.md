@@ -949,3 +949,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reused four bounded bundled ExifTool workers for ordinary metadata reads instead of launching one process for every image.
 - Kept each request tied to a held file descriptor and retired workers on cancellation or failed response framing.
 - Added real bundled-runtime and failure-path tests. A 30-file metadata-read benchmark measured 173 ms pooled versus 2,962 ms with separate processes; full-preview speed remains to be measured in the next live run.
+
+## 2026-09-26 preview concurrency tuning
+
+- Raised the bounded ExifTool pool from four to 16 concurrent readers after a 2,000-image benchmark measured 412 versus 913 metadata reads per second with no errors.
+- Added a regression for the 16-worker limit and seventeenth queued request.

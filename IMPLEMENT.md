@@ -1002,3 +1002,19 @@ Reuse a bounded pool of four bundled ExifTool processes for ordinary metadata re
 - Added a four-worker ExifTool stay-open pool and routed ordinary reads through it.
 - Added unit and real bundled-runtime integration coverage for concurrent reads, cancellation, failed workers, and cleanup.
 - Measured 30 tiny-file reads at 173 ms pooled versus 2,962 ms with one process per read. This measures metadata-tool overhead, not full-preview speed.
+
+## 2026-09-26 preview concurrency tuning
+
+### Discussed
+
+The live preview used all four pooled ExifTool workers and processed about 134 files per second. The User requested more throughput. A read-only code review found that preview analysis permits 16 concurrent files while metadata extraction was limited to four.
+
+### Decided
+
+Benchmark the existing bundled ExifTool pool on the same 2,000 images at 4, 8, 12, and 16 workers, then use the fastest stable setting. Keep the rest of the preview pipeline unchanged for this tuning pass.
+
+### Built
+
+- Raised the ExifTool pool cap to 16 workers.
+- Added a regression proving a seventeenth read queues behind 16 active workers.
+- The isolated warm-cache metadata benchmark measured 412, 748, 849, and 913 files per second at 4, 8, 12, and 16 workers respectively, with zero errors. The full preview includes inventory and destination checks, so its rate must be measured separately.
