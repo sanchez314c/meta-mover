@@ -1287,6 +1287,143 @@ function recoverEditorialCaptureConsensus(
   };
 }
 
+function isExact2022BatchPlaceholder(candidate: ScoredDateCandidate): boolean {
+  const fraction = candidate.value.fractionalDigits;
+  return (
+    candidate.value.localIso.slice(0, 19) === '2022-01-01T00:00:00' &&
+    (fraction === undefined || /^0*$/.test(fraction) || /^0{3}\d{1,3}$/.test(fraction))
+  );
+}
+
+function recoverExact2022BatchPlaceholder(
+  candidates: readonly ScoredDateCandidate[]
+): AuditedPlaceholderRecovery | null {
+  const isNamedAlternative = (candidate: ScoredDateCandidate): boolean => {
+    const tag = candidate.tag.toLowerCase();
+    return (
+      tag === 'xmp-photoshop:datecreated' ||
+      (tag === 'iptc:datecreated' && candidate.value.precision !== 'date') ||
+      tag === 'iptc:digitalcreationdate+iptc:digitalcreationtime'
+    );
+  };
+  if (
+    candidates.some(
+      (candidate) =>
+        isNamedAlternative(candidate) &&
+        (candidate.eligibility !== 'eligible' || !isResolvedCreationProvenance(candidate))
+    )
+  ) {
+    return null;
+  }
+  const credible = candidates.filter(
+    (candidate) =>
+      candidate.sourceKind !== 'filename' &&
+      candidate.sourceKind !== 'filesystem' &&
+      (candidate.eligibility === 'eligible' || candidate.eligibility === 'corroboration-only') &&
+      isResolvedCreationProvenance(candidate)
+  );
+  const originals = candidates.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.sourceFamily === 'exif' &&
+      candidate.tag.toLowerCase().includes('datetimeoriginal')
+  );
+  const exifCreates = candidates.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.sourceFamily === 'exif' &&
+      candidate.tag.toLowerCase().endsWith(':createdate')
+  );
+  if (
+    originals.length !== 1 ||
+    exifCreates.length !== 1 ||
+    originals[0].eligibility !== 'eligible' ||
+    exifCreates[0].eligibility !== 'eligible' ||
+    !isResolvedCreationProvenance(originals[0]) ||
+    !isResolvedCreationProvenance(exifCreates[0]) ||
+    !isExact2022BatchPlaceholder(originals[0]) ||
+    !isExact2022BatchPlaceholder(exifCreates[0]) ||
+    originals[0].value.localIso !== exifCreates[0].value.localIso
+  ) {
+    return null;
+  }
+
+  const xmpCreates = candidates.filter(
+    (candidate) => candidate.tag.toLowerCase() === 'xmp-xmp:createdate'
+  );
+  if (
+    xmpCreates.some(
+      (candidate) =>
+        (candidate.eligibility !== 'eligible' && candidate.eligibility !== 'corroboration-only') ||
+        !isResolvedCreationProvenance(candidate) ||
+        !isExact2022BatchPlaceholder(candidate)
+    )
+  ) {
+    return null;
+  }
+
+  const knownPlaceholder = (candidate: ScoredDateCandidate): boolean =>
+    isExact2022BatchPlaceholder(candidate) ||
+    (candidate.value.precision === 'date' && candidate.value.localIso === '2022-01-01');
+  const alternatives = credible.filter((candidate) => !knownPlaceholder(candidate));
+  const photoshop = alternatives.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-xmp' &&
+      candidate.sourceFamily === 'xmp' &&
+      candidate.tag.toLowerCase() === 'xmp-photoshop:datecreated'
+  );
+  const iptcCreated = alternatives.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-iptc' &&
+      candidate.sourceFamily === 'iptc' &&
+      candidate.tag.toLowerCase() === 'iptc:datecreated' &&
+      candidate.value.precision !== 'date'
+  );
+  const iptcDigital = alternatives.filter(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-iptc' &&
+      candidate.sourceFamily === 'iptc-digital' &&
+      candidate.tag.toLowerCase() === 'iptc:digitalcreationdate+iptc:digitalcreationtime'
+  );
+
+  let selected: ScoredDateCandidate | undefined;
+  let allowedIds = new Set<string>();
+  if (photoshop.length === 1 && iptcCreated.length === 0 && iptcDigital.length === 0) {
+    selected = photoshop[0];
+    allowedIds = new Set([selected.id]);
+  } else if (photoshop.length === 0 && iptcCreated.length === 1 && iptcDigital.length === 1) {
+    const createdSecond = wholeSecondLocal(iptcCreated[0].value);
+    if (
+      createdSecond === null ||
+      createdSecond.endsWith('T00:00:00') ||
+      wholeSecondLocal(iptcDigital[0].value) !== createdSecond
+    ) {
+      return null;
+    }
+    selected = iptcCreated[0];
+    allowedIds = new Set([iptcCreated[0].id, iptcDigital[0].id]);
+    for (const candidate of alternatives) {
+      if (
+        candidate.sourceKind === 'embedded-iptc' &&
+        candidate.sourceFamily === 'iptc' &&
+        candidate.tag.toLowerCase() === 'iptc:datecreated' &&
+        candidate.value.precision === 'date' &&
+        candidate.value.localIso === createdSecond.slice(0, 10)
+      ) {
+        allowedIds.add(candidate.id);
+      }
+    }
+  }
+  if (!selected || wholeSecondLocal(selected.value)?.endsWith('T00:00:00') !== false) return null;
+  if (alternatives.some((candidate) => !allowedIds.has(candidate.id))) return null;
+
+  return {
+    selected,
+    contenderIds: credible.map((candidate) => candidate.id).sort(),
+    reasonCode: 'EXACT_2022_BATCH_PLACEHOLDER_RECOVERY',
+  };
+}
+
 function recoverUnanimousEmbeddedCalendarDate(
   candidates: readonly ScoredDateCandidate[]
 ): CalendarDateRecovery | null {
@@ -1332,6 +1469,57 @@ function recoverUnanimousEmbeddedCalendarDate(
     selected,
     calendarDate: [...days][0],
     contenderIds: credibleCreationCandidates.map((candidate) => candidate.id).sort(),
+  };
+}
+
+function recoverReviewOnlyEmbeddedCaptureCalendarDate(
+  candidates: readonly ScoredDateCandidate[]
+): CalendarDateRecovery | null {
+  const credibleCreationCandidates = candidates.filter(
+    (candidate) =>
+      candidate.sourceKind !== 'filename' &&
+      candidate.sourceKind !== 'filesystem' &&
+      (candidate.eligibility === 'eligible' || candidate.eligibility === 'corroboration-only') &&
+      isResolvedCreationProvenance(candidate)
+  );
+  const embeddedCaptureCandidates = credibleCreationCandidates.filter(
+    (candidate) =>
+      candidate.semantic === 'capture' &&
+      ['embedded-exif', 'embedded-xmp', 'embedded-iptc'].includes(candidate.sourceKind)
+  );
+  const eligible = embeddedCaptureCandidates.filter(
+    (candidate) => candidate.eligibility === 'eligible' && candidate.score.final > 0
+  );
+  if (eligible.length === 0) return null;
+
+  const calendarDayVetoCandidates = credibleCreationCandidates.filter(
+    (candidate) => !candidate.sourceKind.startsWith('embedded-') || candidate.semantic === 'capture'
+  );
+  const days = new Set(
+    calendarDayVetoCandidates.map((candidate) => candidate.value.localIso.slice(0, 10))
+  );
+  if (days.size !== 1) return null;
+
+  const timed = embeddedCaptureCandidates.filter(
+    (candidate) => candidate.value.precision !== 'date'
+  );
+  const conflictingTimes = timed.some((candidate, index) =>
+    timed
+      .slice(index + 1)
+      .some((otherCandidate) => !valuesAgree(candidate.value, otherCandidate.value))
+  );
+  const impreciseTime = embeddedCaptureCandidates.some(
+    (candidate) => candidate.value.precision === 'date' || hasPlaceholderModifier(candidate)
+  );
+  if (!impreciseTime && !conflictingTimes) return null;
+
+  const selected = [...eligible].sort(
+    (left, right) => right.score.final - left.score.final || left.id.localeCompare(right.id)
+  )[0];
+  return {
+    selected,
+    calendarDate: [...days][0],
+    contenderIds: calendarDayVetoCandidates.map((candidate) => candidate.id).sort(),
   };
 }
 
@@ -1497,6 +1685,9 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
       reasonCodes: uniqueSorted([
         ...reasonCodes,
         auditedPlaceholderRecovery.reasonCode,
+        ...(auditedPlaceholderRecovery.reasonCode === 'EXACT_2022_BATCH_PLACEHOLDER_RECOVERY'
+          ? ['KNOWN_BATCH_PLACEHOLDER']
+          : []),
         'RESOLVED_MEDIUM_CONFIDENCE',
       ]),
     };
@@ -1593,7 +1784,77 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     };
   }
 
-  if (second && second.score >= 75 && lead < 15 && !contenderNeutralized) {
+  const selected = subsecondAssessment.selected ?? top.candidates[0];
+  const effectiveLead =
+    subsecondConsensus || sameInstant
+      ? Math.max(lead, 15)
+      : authoritativeOriginal
+        ? Math.max(lead, 10)
+        : lead;
+  const selectedIsPlaceholder = hasPlaceholderModifier(selected);
+  const hardConflict =
+    second !== undefined && second.score >= 75 && lead < 15 && !contenderNeutralized;
+  const wouldResolveHigh =
+    !selectedIsPlaceholder && !authoritativeOriginal && top.score >= 90 && effectiveLead >= 15;
+  const wouldResolveMedium = !selectedIsPlaceholder && top.score >= 75 && effectiveLead >= 10;
+  const wouldRemainReviewRequired =
+    !hardConflict && !wouldResolveHigh && !wouldResolveMedium && top.score >= 60;
+  const exact2022Recovery =
+    hardConflict || wouldRemainReviewRequired ? recoverExact2022BatchPlaceholder(candidates) : null;
+  if (exact2022Recovery !== null) {
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === exact2022Recovery.selected.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: exact2022Recovery.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: { ...exact2022Recovery.selected.value },
+      contenderIds: exact2022Recovery.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        exact2022Recovery.reasonCode,
+        'KNOWN_BATCH_PLACEHOLDER',
+        'RESOLVED_MEDIUM_CONFIDENCE',
+      ]),
+    };
+  }
+  const reviewOnlyCalendarDateRecovery =
+    hardConflict || wouldRemainReviewRequired
+      ? recoverReviewOnlyEmbeddedCaptureCalendarDate(candidates)
+      : null;
+  if (reviewOnlyCalendarDateRecovery !== null) {
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some(
+        (candidate) => candidate.id === reviewOnlyCalendarDateRecovery.selected.id
+      )
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: reviewOnlyCalendarDateRecovery.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: {
+        localIso: reviewOnlyCalendarDateRecovery.calendarDate,
+        zoneBasis: 'date-only',
+        precision: 'date',
+      },
+      contenderIds: reviewOnlyCalendarDateRecovery.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        'CALENDAR_DATE_CONSENSUS',
+        'TIME_UNKNOWN',
+        'RESOLVED_DATE_ONLY',
+      ]),
+    };
+  }
+
+  if (hardConflict) {
     reasonCodes.push('STRONG_CONFLICT');
     return {
       ...baseRecord,
@@ -1607,20 +1868,12 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
     };
   }
 
-  const selected = subsecondAssessment.selected ?? top.candidates[0];
   if (selected.sourceKind === 'filename' || selected.value.zoneBasis === 'date-only') {
     reasonCodes.push('NON_AUTHORITATIVE_SELECTION');
   }
   // A same-instant or subsecond contender is not a disagreement, so it cannot dilute the lead.
   // An authoritative original beats an editorial or container date but stays at medium confidence:
   // the file still carries a real conflicting claim that the User can see in the evidence.
-  const effectiveLead =
-    subsecondConsensus || sameInstant
-      ? Math.max(lead, 15)
-      : authoritativeOriginal
-        ? Math.max(lead, 10)
-        : lead;
-  const selectedIsPlaceholder = hasPlaceholderModifier(selected);
   if (selectedIsPlaceholder) reasonCodes.push('MIDNIGHT_PLACEHOLDER_REVIEW');
   const selectedValue =
     subsecondAssessment.hasFractionalClaims && !subsecondConsensus

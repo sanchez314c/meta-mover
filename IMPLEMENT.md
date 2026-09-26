@@ -1,3 +1,36 @@
+## 2026-09-25 exact 2022 batch-placeholder recovery
+
+The completed run's remaining 937 decisions contain 209 files with one exact synthetic batch signature. EXIF DateTimeOriginal and EXIF CreateDate repeat the same `2022-01-01 00:00:00` wall time. Most carry a matching `000xxx` subsecond copied into both EXIF fields, while CreateDate may also carry an offset. When XMP CreateDate exists, it repeats the same midnight placeholder.
+
+The correction recognizes only this 2022 signature. It selects one nonmidnight, nonfuture creation alternative only when no second nonplaceholder creation contender exists: either XMP Photoshop DateCreated alone, or the IPTC DateCreated+Time and DigitalCreationDate+Time pair agreeing at the whole second. Date-only IPTC support for that same selected day is allowed. Arbitrary editorial metadata, other placeholder dates, unequal EXIF fractions, mismatched XMP CreateDate, and conflicting contenders remain review decisions.
+
+The rule is residue-only. Established GPS, editorial-consensus, PNG screenshot, manufacturer, and ordinary confidence resolution run first; the 2022 rule is considered only when that baseline would stay ambiguous or require review. XMP Photoshop must be embedded XMP from the XMP family. IPTC DateCreated must be embedded IPTC from the IPTC family, and DigitalCreationDate+Time must be embedded IPTC from the IPTC-digital family. Present malformed or ineligible named alternatives veto recovery instead of disappearing during candidate filtering.
+
+TDD covers the Photoshop-only route, the agreeing IPTC pair, the tiny-subsecond plus offset EXIF signature, mismatched XMP CreateDate, a second creation contender, and the non-generalized 2003 case. Replay of all 937 latest-run residue decisions recovers exactly 209 rows with `EXACT_2022_BATCH_PLACEHOLDER_RECOVERY` and `KNOWN_BATCH_PLACEHOLDER`: 197 Photoshop selections and 12 IPTC selections. The signature invariant check reports zero spillover. Alongside the preceding 35 calendar-date recoveries, 693 rows remain: 427 ambiguous and 266 unresolved.
+
+Regression coverage also preserves the pre-existing PNG screenshot recovery, rejects swapped source provenance, and rejects invalid named alternatives. A full 99,998-decision evidence replay reports zero previously resolved records carrying the new reason code and zero previously resolved selected-value changes attributable to this rule.
+
+## 2026-09-25 unanimous embedded capture calendar recovery
+
+### Discussed
+
+The completed 99,998-file run left 937 files in Review Queue. Corpus analysis identified 35 rows where all eligible embedded capture claims agree on the calendar day while their time is conflicting, placeholder-marked, or unavailable.
+
+### Decided
+
+Apply calendar recovery only if the ordinary resolver would otherwise return `ambiguous` or `review-required`. Require every eligible embedded EXIF, XMP, or IPTC capture claim to name one calendar day and require missing, placeholder, or conflicting clock evidence. Never replace a trustworthy timestamp that the ordinary resolver can already select. Filename and filesystem evidence remain context only. Embedded digitized and content-created lifecycle fields can describe import or processing events, so they neither establish nor veto the capture day. Credible external creation evidence and every eligible embedded capture claim still veto on a different day.
+
+### Built
+
+- Restricted `recoverUnanimousEmbeddedCalendarDate` to eligible embedded capture provenance and gated it behind the resolver's existing ambiguous or review-required outcome conditions.
+- Added regressions for valid alternate video tags and source families, an unaudited tag, an already-resolvable whole-second timestamp, filename and filesystem disagreement, fractional and GPS conflicts, and a true multiday embedded conflict.
+
+### Validation
+
+- DateResolver focused suite: 113 tests passed.
+- Exact 937-row replay: 33 `ambiguous` and 2 `review-required` rows become date-only `resolved`; 902 remain, including all 266 unresolved rows.
+- Full 99,998-row replay: zero status changes and zero selected-value changes among all 99,061 previously resolved rows. The combined residue-only rules recover 244 rows: 35 calendar fallbacks and 209 exact 2022 placeholder records.
+
 ## 2026-09-23 calendar date without invented time
 
 - Evidence validation correction: both coordinator admission and the shared Review contract now reuse `isValidDateEvidenceValue` for Gregorian `YYYY-MM-DD` validation. Impossible months, impossible month days, non-leap February 29, and year zero fail closed. Contract and coordinator tests reproduced acceptance of `2022-99-99` and `2023-02-30` before the correction.

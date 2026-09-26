@@ -74,6 +74,20 @@ describe('resolveDateCandidates', () => {
           value: { localIso: '2020-01-01', zoneBasis: 'date-only', precision: 'date' },
         }),
         candidate({
+          id: 'filesystem-disagreement',
+          mediaKind: 'image',
+          semantic: 'filesystem-birth',
+          sourceKind: 'filesystem',
+          sourceFamily: 'filesystem-birth',
+          tag: 'FileSystem:BirthTime',
+          value: {
+            localIso: '2026-01-01T02:03:04',
+            instantUtc: '2026-01-01T02:03:04.000Z',
+            zoneBasis: 'spec-defined-utc',
+            precision: 'second',
+          },
+        }),
+        candidate({
           id: 'sidecar-same-day',
           mediaKind: 'image',
           semantic: 'sidecar-claim',
@@ -95,6 +109,7 @@ describe('resolveDateCandidates', () => {
       expect.arrayContaining(['placeholder-original', 'iptc-day', 'sidecar-same-day'])
     );
     expect(result.contenderIds).not.toContain('filename-disagreement');
+    expect(result.contenderIds).not.toContain('filesystem-disagreement');
     expect(result.reasonCodes).toEqual(
       expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'])
     );
@@ -138,7 +153,7 @@ describe('resolveDateCandidates', () => {
     expect(result.reasonCodes).not.toContain('CALENDAR_DATE_CONSENSUS');
   });
 
-  it('uses date precision when credible embedded timestamps conflict within the same day', () => {
+  it('preserves historical calendar consensus before the review-only fallback', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -180,6 +195,225 @@ describe('resolveDateCandidates', () => {
       status: 'resolved',
       confidence: 'medium',
       selectedValue: { localIso: '2022-12-12', zoneBasis: 'date-only', precision: 'date' },
+    });
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
+  });
+
+  it('uses date precision for the audited same-second embedded fractional ambiguity', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'original-fraction',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2020-04-13T15:32:38.000411',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000411',
+          },
+        }),
+        candidate({
+          id: 'digitized-fraction',
+          mediaKind: 'image',
+          semantic: 'digitized',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:CreateDate',
+          value: {
+            localIso: '2020-04-13T15:32:38.000411',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000411',
+          },
+        }),
+        candidate({
+          id: 'editorial-fraction',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2020-04-13T15:32:38.411',
+            instantUtc: '2020-04-13T19:32:38.411Z',
+            offsetMinutes: -240,
+            zoneBasis: 'explicit-offset',
+            precision: 'millisecond',
+            fractionalDigits: '411',
+          },
+        }),
+        candidate({
+          id: 'xmp-original-seconds',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp-exif',
+          tag: 'XMP-exif:DateTimeOriginal',
+          value: {
+            localIso: '2020-04-13T15:32:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-created-seconds',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-xmp:CreateDate',
+          value: {
+            localIso: '2020-04-13T15:32:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'filename-seconds',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'filename',
+          tag: 'filename:2020-04-13_15-32-38.jpeg',
+          value: {
+            localIso: '2020-04-13T15:32:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedValue: { localIso: '2020-04-13', zoneBasis: 'date-only', precision: 'date' },
+    });
+    expect(result.reasonCodes).toEqual(
+      expect.arrayContaining(['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'])
+    );
+  });
+
+  it('does not generalize lifecycle fraction recovery to an unaudited XMP tag', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'original-fraction',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:DateTimeOriginal',
+          value: {
+            localIso: '2020-04-13T15:32:38.000411',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000411',
+          },
+        }),
+        candidate({
+          id: 'digitized-fraction',
+          mediaKind: 'image',
+          semantic: 'digitized',
+          sourceKind: 'embedded-exif',
+          sourceFamily: 'exif',
+          tag: 'ExifIFD:CreateDate',
+          value: {
+            localIso: '2020-04-13T15:32:38.000411',
+            zoneBasis: 'floating-local',
+            precision: 'microsecond',
+            fractionalDigits: '000411',
+          },
+        }),
+        candidate({
+          id: 'unaudited-editorial-fraction',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-dc:Date',
+          value: {
+            localIso: '2020-04-13T15:32:38.411',
+            instantUtc: '2020-04-13T19:32:38.411Z',
+            offsetMinutes: -240,
+            zoneBasis: 'explicit-offset',
+            precision: 'millisecond',
+            fractionalDigits: '411',
+          },
+        }),
+        candidate({
+          id: 'xmp-original-seconds',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp-exif',
+          tag: 'XMP-exif:DateTimeOriginal',
+          value: {
+            localIso: '2020-04-13T15:32:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'xmp-created-seconds',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-xmp:CreateDate',
+          value: {
+            localIso: '2020-04-13T15:32:38',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result.reasonCodes).not.toContain('CALENDAR_DATE_CONSENSUS');
+    expect(result.selectedValue).not.toMatchObject({ precision: 'date' });
+  });
+
+  it('uses the same calendar contract for valid embedded video capture tags', () => {
+    const result = resolveDateCandidates(
+      request([
+        candidate({
+          id: 'video-original',
+          mediaKind: 'video',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp-video',
+          tag: 'XMP-exif:DateTimeOriginal',
+          value: {
+            localIso: '2024-05-06T07:08:09',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'video-editorial',
+          mediaKind: 'video',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp-photoshop',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2024-05-06T17:18:19',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+      ])
+    );
+
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedValue: { localIso: '2024-05-06', zoneBasis: 'date-only', precision: 'date' },
     });
     expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
@@ -584,7 +818,7 @@ describe('resolveDateCandidates', () => {
     expect(result.candidates[0].resolutionIssues).toContain('FUTURE_VALUE');
   });
 
-  it('does not truncate conflicting nanosecond instants to milliseconds', () => {
+  it('preserves only the calendar day for conflicting nanosecond instants', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -620,8 +854,13 @@ describe('resolveDateCandidates', () => {
       ])
     );
 
-    expect(result.status).toBe('ambiguous');
-    expect(result.contenderIds).toEqual(['nano-one', 'nano-two']);
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue).toEqual({
+      localIso: '2024-03-04',
+      zoneBasis: 'date-only',
+      precision: 'date',
+    });
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
   it('does not call conflicting fractional values subsecond consensus', () => {
@@ -876,7 +1115,7 @@ describe('resolveDateCandidates', () => {
     expect(result.selectedValue).toBeUndefined();
   });
 
-  it('keeps grouping independent of candidate ids and the first group member', () => {
+  it('keeps calendar recovery independent of candidate ids and the first group member', () => {
     const inputs = [
       candidate({
         id: 'a-minute-bridge',
@@ -921,10 +1160,11 @@ describe('resolveDateCandidates', () => {
       request(inputs.map((input, index) => ({ ...input, id: `renamed-${2 - index}` })))
     );
 
-    expect(result.status).toBe('ambiguous');
-    expect(result.contenderIds).toEqual(['a-minute-bridge', 'b-exact-start', 'c-exact-end']);
-    expect(renamed.status).toBe('ambiguous');
-    expect(renamed.contenderIds).toHaveLength(3);
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue?.precision).toBe('date');
+    expect(renamed.status).toBe('resolved');
+    expect(renamed.selectedValue?.precision).toBe('date');
+    expect(renamed.contenderIds).toHaveLength(2);
   });
 
   it('fails closed on non-JSON evidence, undefined properties, and non-finite offsets', () => {
@@ -2249,6 +2489,7 @@ describe('resolveDateCandidates', () => {
           semantic: 'capture',
           sourceKind: 'embedded-xmp',
           sourceFamily: 'xmp',
+          sourceFamily: 'xmp',
           tag: 'XMP-photoshop:DateCreated',
           rawValue: '2023:08:22 19:19:25',
           value: {
@@ -2262,6 +2503,7 @@ describe('resolveDateCandidates', () => {
           mediaKind: 'image',
           semantic: 'capture',
           sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
           sourceFamily: 'iptc',
           tag: 'IPTC:DateCreated',
           rawValue: '2023:08:22 19:19:25',
@@ -2333,6 +2575,7 @@ describe('resolveDateCandidates', () => {
           semantic: 'capture',
           sourceKind: 'embedded-iptc',
           sourceFamily: 'iptc',
+          sourceFamily: 'iptc',
           tag: 'IPTC:DateCreated',
           value: {
             localIso: '2024-03-04T05:06:07',
@@ -2351,7 +2594,7 @@ describe('resolveDateCandidates', () => {
     expect(result.reasonCodes).toContain('AUTHORITATIVE_ORIGINAL_PREFERRED');
   });
 
-  it('does not merge equal wall clocks that explicitly identify different instants', () => {
+  it('keeps only the shared calendar day when equal wall clocks identify different instants', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -2387,11 +2630,12 @@ describe('resolveDateCandidates', () => {
       ])
     );
 
-    expect(result.status).toBe('ambiguous');
-    expect(result.reasonCodes).toContain('STRONG_CONFLICT');
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue?.precision).toBe('date');
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
-  it('does not let a matching filename erase conflicting UTC interpretations of one wall clock', () => {
+  it('ignores a matching filename while preserving only the shared embedded calendar day', () => {
     const wallClock = '2020-01-01T10:00:00';
     const result = resolveDateCandidates(
       request([
@@ -2441,8 +2685,9 @@ describe('resolveDateCandidates', () => {
       ])
     );
 
-    expect(result.status).toBe('ambiguous');
-    expect(result.reasonCodes).toContain('STRONG_CONFLICT');
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue?.precision).toBe('date');
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
   it('recovers a unanimous embedded local capture clock split only by UTC representation', () => {
@@ -2760,7 +3005,7 @@ describe('resolveDateCandidates', () => {
     expect(result.reasonCodes).not.toContain('UNANIMOUS_LOCAL_CAPTURE_RECOVERY');
   });
 
-  it('does not let filename agreement override a different authoritative local capture time', () => {
+  it('does not let filename agreement choose between conflicting embedded clocks', () => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -2807,8 +3052,9 @@ describe('resolveDateCandidates', () => {
       ])
     );
 
-    expect(result.status).toBe('ambiguous');
-    expect(result.reasonCodes).toContain('STRONG_CONFLICT');
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue?.precision).toBe('date');
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
   it('prefers a corroborated original lifecycle date without letting an isolated ancient outlier win', () => {
@@ -3152,7 +3398,7 @@ describe('resolveDateCandidates', () => {
         },
       }),
     ],
-  ])('does not apply Samsung recovery across a conflicting %s instant', (_name, conflicting) => {
+  ])('keeps only the shared day across a conflicting %s instant', (_name, conflicting) => {
     const result = resolveDateCandidates(
       request([
         candidate({
@@ -3188,7 +3434,9 @@ describe('resolveDateCandidates', () => {
       ])
     );
     expect(result.reasonCodes).not.toContain('SAMSUNG_FRACTION_REPRESENTATION_RECOVERY');
-    expect(result.status).toBe('ambiguous');
+    expect(result.status).toBe('resolved');
+    expect(result.selectedValue?.precision).toBe('date');
+    expect(result.reasonCodes).toContain('CALENDAR_DATE_CONSENSUS');
   });
 
   it('accepts a GPS calendar rollover when its UTC instant matches Samsung at the whole second', () => {
@@ -3414,7 +3662,9 @@ describe('resolveDateCandidates', () => {
           mediaKind: 'image',
           semantic: 'capture',
           sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
           tag: 'XMP-photoshop:DateCreated',
+          rawValue: editorialTime.replace(/-/g, ':').replace('T', ' '),
           value: { localIso: editorialTime, zoneBasis: 'floating-local', precision: 'second' },
         }),
         candidate({
@@ -3422,6 +3672,7 @@ describe('resolveDateCandidates', () => {
           mediaKind: 'image',
           semantic: 'capture',
           sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
           tag: 'IPTC:DateCreated',
           value: { localIso: editorialTime, zoneBasis: 'floating-local', precision: 'second' },
         }),
@@ -3430,10 +3681,27 @@ describe('resolveDateCandidates', () => {
           mediaKind: 'image',
           semantic: 'digitized',
           sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc-digital',
           tag: 'IPTC:DigitalCreationDate+IPTC:DigitalCreationTime',
           value: { localIso: editorialTime, zoneBasis: 'floating-local', precision: 'second' },
         }),
       ];
+    }
+
+    function xmpPlaceholder() {
+      return candidate({
+        id: 'xmp-create-placeholder',
+        mediaKind: 'image',
+        semantic: 'content-created',
+        sourceKind: 'embedded-xmp',
+        sourceFamily: 'xmp',
+        tag: 'XMP-xmp:CreateDate',
+        value: {
+          localIso: '2022-01-01T00:00:00',
+          zoneBasis: 'floating-local',
+          precision: 'second',
+        },
+      });
     }
 
     it('selects exact nonmidnight XMP and IPTC consensus over the audited placeholder', () => {
@@ -3459,6 +3727,229 @@ describe('resolveDateCandidates', () => {
       });
       const result = resolveDateCandidates(request(inputs));
       expect(result.reasonCodes).not.toContain('EDITORIAL_CAPTURE_CONSENSUS_RECOVERY');
+    });
+
+    it('recovers the exact 2022 batch placeholder from a sole Photoshop creation date', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(xmpPlaceholder());
+      const result = resolveDateCandidates(request(inputs));
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedCandidateId: 'photoshop',
+        selectedValue: { localIso: '2023-01-26T19:08:24' },
+      });
+      expect(result.reasonCodes).toEqual(
+        expect.arrayContaining([
+          'EXACT_2022_BATCH_PLACEHOLDER_RECOVERY',
+          'KNOWN_BATCH_PLACEHOLDER',
+          'RESOLVED_MEDIUM_CONFIDENCE',
+        ])
+      );
+    });
+
+    it('preserves an existing narrow PNG resolution instead of overriding it', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(
+        candidate({
+          id: 'png-native',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'container-format',
+          sourceFamily: 'png-screenshot-native',
+          tag: 'PNG:CreateDate',
+          rawValue: {
+            value: '2022:01:01 00:00:00',
+            recoveryEvidence: {
+              kind: 'png-screenshot-native-date',
+              fileModifyDate: '2021:12:31 19:00:00-05:00',
+              pngModifyDate: '2023:01:26 19:08:24',
+              xmpDateCreated: '2023:01:26 19:08:24',
+            },
+          },
+          value: {
+            localIso: '2022-01-01T00:00:00',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        }),
+        candidate({
+          id: 'screenshot-name',
+          mediaKind: 'image',
+          semantic: 'filename-claim',
+          sourceKind: 'filename',
+          sourceFamily: 'screenshot-filename',
+          tag: 'filename:2022-01-01_00-00-00-screen-shot.png',
+          value: {
+            localIso: '2022-01-01T00:00:00',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        })
+      );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedCandidateId: 'png-native',
+        selectedValue: { localIso: '2022-01-01T00:00:00' },
+      });
+      expect(result.reasonCodes).toContain('PNG_SCREENSHOT_NATIVE_DATE_RECOVERY');
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('recovers the exact 2022 batch placeholder from an agreeing IPTC creation pair', () => {
+      const inputs = editorialInputs();
+      inputs.splice(2, 1);
+      inputs.push(xmpPlaceholder());
+      const result = resolveDateCandidates(request(inputs));
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedCandidateId: 'iptc-created',
+        selectedValue: { localIso: '2023-01-26T19:08:24' },
+      });
+      expect(result.reasonCodes).toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('recognizes the audited tiny subsecond signature across local and offset EXIF fields', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs[0] = candidate({
+        ...inputs[0],
+        value: {
+          localIso: '2022-01-01T00:00:00.000066',
+          zoneBasis: 'floating-local',
+          precision: 'microsecond',
+          fractionalDigits: '000066',
+        },
+      });
+      inputs[1] = candidate({
+        ...inputs[1],
+        value: {
+          localIso: '2022-01-01T00:00:00.000066',
+          instantUtc: '2022-01-01T04:00:00.000066Z',
+          offsetMinutes: -240,
+          zoneBasis: 'explicit-offset',
+          precision: 'microsecond',
+          fractionalDigits: '000066',
+        },
+      });
+      inputs.push(xmpPlaceholder());
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+      expect(result).toMatchObject({ status: 'resolved', selectedCandidateId: 'photoshop' });
+    });
+
+    it('requires optional XMP CreateDate to repeat the exact 2022 placeholder', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(
+        candidate({
+          id: 'xmp-create-disagrees',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-xmp:CreateDate',
+          value: {
+            localIso: '2022-01-01T00:00:01',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        })
+      );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('fails closed when a present XMP CreateDate is invalid', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(
+        candidate({
+          id: 'invalid-xmp-create',
+          mediaKind: 'image',
+          semantic: 'content-created',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-xmp:CreateDate',
+          value: {
+            localIso: '2030-01-01T00:00:00',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        })
+      );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('does not recover when a second nonplaceholder creation contender exists', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs.push(
+        candidate({
+          id: 'second-creation-contender',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-iptc',
+          sourceFamily: 'iptc',
+          tag: 'IPTC:DateCreated',
+          value: {
+            localIso: '2023-01-27T10:11:12',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        })
+      );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('rejects a Photoshop tag with swapped source provenance', () => {
+      const inputs = editorialInputs().slice(0, 3);
+      inputs[2] = candidate({ ...inputs[2], sourceKind: 'embedded-iptc', sourceFamily: 'iptc' });
+      inputs.push(xmpPlaceholder());
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('rejects an ineligible named alternative instead of ignoring it', () => {
+      const inputs = editorialInputs();
+      inputs.splice(2, 1);
+      inputs.push(xmpPlaceholder());
+      inputs.push(
+        candidate({
+          id: 'future-photoshop',
+          mediaKind: 'image',
+          semantic: 'capture',
+          sourceKind: 'embedded-xmp',
+          sourceFamily: 'xmp',
+          tag: 'XMP-photoshop:DateCreated',
+          value: {
+            localIso: '2030-01-01T10:11:12',
+            zoneBasis: 'floating-local',
+            precision: 'second',
+          },
+        })
+      );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
+    });
+
+    it('does not generalize the single-editorial-field rule to the 2003 placeholder', () => {
+      const inputs = editorialInputs()
+        .slice(0, 3)
+        .map((input, index) =>
+          index < 2
+            ? candidate({
+                ...input,
+                value: {
+                  localIso: '2003-07-01T00:00:00',
+                  zoneBasis: 'floating-local',
+                  precision: 'second',
+                },
+              })
+            : input
+        );
+      const result = resolveDateCandidates(request(inputs));
+      expect(result.reasonCodes).not.toContain('EXACT_2022_BATCH_PLACEHOLDER_RECOVERY');
     });
   });
 });
