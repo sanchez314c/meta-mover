@@ -960,3 +960,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Routed review-required images with a plausible selected date to `_Needs Review/Low Confidence` instead of `No Usable Date` on future runs.
 - Preserved date-only filenames when embedded sources disagree about the time; existing output and review history remain in place.
 - Recovered an agreed capture second when independent embedded sources differ only in unverified fractional digits. Explicit instant conflicts, placeholders, and conflicting filename claims still prevent this recovery.
+- Added an audited maintenance tool to rename existing date-only output files after a verified whole-second decision, with no-overwrite collision allocation, durable ledger, recovery, and rollback.
