@@ -42,6 +42,7 @@ interface DateParts {
 }
 
 type ReviewReasonFolder =
+  | 'Invalid File'
   | 'Placeholder Dates'
   | 'Conflicting Dates'
   | 'Metadata Read Failed'
@@ -116,6 +117,7 @@ export function mediaKindFolder(mediaKind: MediaKind): string {
 }
 
 function reviewReasonFolder(resolution: DateResolutionRecord): ReviewReasonFolder {
+  if (resolution.reasonCodes.includes('EMPTY_FILE')) return 'Invalid File';
   if (
     resolution.status === 'review-required' &&
     resolution.reasonCodes.includes('MIDNIGHT_PLACEHOLDER_REVIEW')

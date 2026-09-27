@@ -1060,6 +1060,41 @@ export class MetadataCandidateCollector {
     }
 
     if (request.mediaKind === 'image' || request.mediaKind === 'raw') {
+      const d40Original = candidates.find(
+        (candidate) => candidate.tag === 'ExifIFD:DateTimeOriginal'
+      );
+      const d40Iptc = candidates.find(
+        (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+      );
+      if (
+        d40Original &&
+        tags['IFD0:Make'] === 'NIKON CORPORATION' &&
+        tags['IFD0:Model'] === 'NIKON D40' &&
+        tags['IFD0:Software'] === 'Adobe Photoshop CS5 Windows'
+      ) {
+        const evidence = {
+          kind: 'nikon-d40-photoshop-cs5-rewrite',
+          make: tags['IFD0:Make'],
+          model: tags['IFD0:Model'],
+          software: tags['IFD0:Software'],
+          exifOriginal: tags['ExifIFD:DateTimeOriginal'],
+          exifCreated: tags['ExifIFD:CreateDate'],
+          xmpCreated: tags['XMP-xmp:CreateDate'],
+          iptcDate: tags['IPTC:DateCreated'],
+          iptcTime: tags['IPTC:TimeCreated'],
+          photoshopDate: tags['XMP-photoshop:DateCreated'],
+          ifd0Modified: tags['IFD0:ModifyDate'],
+          xmpModified: tags['XMP-xmp:ModifyDate'],
+          metadataDate: tags['XMP-xmp:MetadataDate'],
+          historyWhen: tags['XMP-xmpMM:HistoryWhen'],
+          historyAction: tags['XMP-xmpMM:HistoryAction'],
+          historyAgent: tags['XMP-xmpMM:HistorySoftwareAgent'],
+          title: tags['XMP-dc:Title'],
+        };
+        const recoveryEvidence = JSON.parse(JSON.stringify(evidence)) as JsonValue;
+        d40Original.rawValue = { value: d40Original.rawValue, recoveryEvidence };
+        if (d40Iptc) d40Iptc.rawValue = { date: d40Iptc.rawValue, recoveryEvidence };
+      }
       const nikonDate = candidates.find(
         (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
       );

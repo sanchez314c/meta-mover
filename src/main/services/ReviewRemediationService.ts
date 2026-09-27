@@ -800,6 +800,12 @@ export class ReviewRemediationService {
     let targetPath: string | null = null;
     let refreshedEvidence: ReviewEvidenceSnapshot | undefined;
     if (
+      action.type !== 'keep' &&
+      located.item.evidence.resolution.reasonCodes.includes('EMPTY_FILE')
+    ) {
+      throw new Error('empty file cannot be assigned a date; replace it with a valid copy');
+    }
+    if (
       action.type === 'select-candidate' ||
       action.type === 'manual-date' ||
       action.type === 'ai-estimate'

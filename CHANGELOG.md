@@ -1030,3 +1030,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added guarded recovery of a 2013 whole-second capture time for 14 iPhone 5 images whose GPS UTC clock matches their local camera modification time despite a repeated false 1998 EXIF date. A fifteenth image without GPS time remains in review.
 - Added date-only 2013-12-03 recovery for two Nikon D800E JPEGs whose RAW conversion history predates the later JPEG export date stored in EXIF. Malformed history times and other creation claims veto recovery.
 - The completed source-app review pass moved exactly those 16 files with zero failures. The 100,000-file output now contains 99,727 organized photos and 273 review files (0.273%): 248 without a usable creation date and 25 with conflicting date evidence.
+
+## 2026-09-27 Nikon D40 Photoshop CS5 rewrite cohort
+
+- Resolve only the exact Nikon D40 / Photoshop CS5 batch rewrite pattern when independent IPTC and Photoshop creation times agree with the 2013 local edit time. Keep the supported whole-second time and omit unsupported subsecond digits.
+- Hold the same 2026 rewrite pattern in review when IPTC and Photoshop creation dates are absent, even if a 2013 title and save history exist. The 1998 EXIF sentinel requires the complete creation consensus.
+- Added positive and veto regressions for camera/software identity, clock disagreement, history validity and missing creation evidence.
+
+## 2026-09-27 16:21 EDT
+
+- Route zero-byte supported media to `_Needs Review/Invalid File` before metadata/date analysis, so filename dates cannot place empty files in dated output. The AI final pass abstains without a model call. Review Queue explains the invalid file and prevents date assignment or metadata retry. Added planner, routing, AI, remediation and UI regressions.
+- Accepted valid minute-precision May 13 Photoshop save history after real-corpus replay. Reject explicit Photoshop timezone disagreement and invalid calendar rollover in saved history before selecting a capture time. The read-only 325-file replay produced 123 guarded resolutions, three D40 files held for review, and no unexpected activations.

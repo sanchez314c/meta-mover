@@ -387,6 +387,63 @@ describe('MediaPreviewPlanner', () => {
     ]);
   });
 
+  it('moves a zero-byte image to Invalid File review instead of naming it from its filename', async () => {
+    const metadata = jest.fn();
+    const capture = jest.fn();
+    const inspect = jest.fn(availableDestination.inspect);
+    const planner = new MediaPreviewPlanner({
+      inventory: {
+        inventory: async () => [
+          inventoryFile({ filePath: '/source/2024-03-04_05-06-07.jpg', size: 0 }),
+        ],
+      },
+      roots,
+      metadata: { collectDetailed: metadata },
+      destination: { inspect },
+      sourceContent: { capture },
+    });
+
+    const plan = await planner.plan(
+      request({ options: { ...request().options, operation: OperationMode.MOVE } })
+    );
+
+    expect(plan.summary).toMatchObject({
+      totalFiles: 1,
+      copyFiles: 0,
+      moveFiles: 1,
+      skippedFiles: 0,
+      unresolvedDates: 1,
+      totalBytes: 0,
+    });
+    expect(plan.operations).toEqual([
+      expect.objectContaining({
+        sourcePath: '/source/2024-03-04_05-06-07.jpg',
+        targetPath: '/destination/Photos/_Needs Review/Invalid File/2024-03-04_05-06-07.jpg',
+        bytes: 0,
+      }),
+    ]);
+    expect(plan.decisionRecords).toEqual([
+      expect.objectContaining({
+        resolution: expect.objectContaining({
+          reasonCodes: expect.arrayContaining(['EMPTY_FILE']),
+        }),
+      }),
+    ]);
+    expect(plan.rows).toEqual([
+      expect.objectContaining({
+        sourcePath: '/source/2024-03-04_05-06-07.jpg',
+        targetPath: '/destination/Photos/_Needs Review/Invalid File/2024-03-04_05-06-07.jpg',
+        operation: 'move',
+        warnings: expect.arrayContaining([
+          'Invalid file: empty file (0 bytes); no image data to inspect.',
+        ]),
+      }),
+    ]);
+    expect(capture).not.toHaveBeenCalled();
+    expect(metadata).not.toHaveBeenCalled();
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces metadata read warnings and skips occupied targets under skip policy', async () => {
     const planner = new MediaPreviewPlanner({
       inventory: { inventory: async () => [inventoryFile()] },

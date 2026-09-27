@@ -157,6 +157,7 @@ describe('MediaPlanner', () => {
     ['ambiguous', 'none', ['STRONG_CONFLICT'], 'Conflicting Dates'],
     ['unresolved', 'none', ['METADATA_READ_FAILED'], 'Metadata Read Failed'],
     ['unresolved', 'none', ['NO_ELIGIBLE_CANDIDATES'], 'No Usable Date'],
+    ['unresolved', 'none', ['EMPTY_FILE', 'NO_ELIGIBLE_CANDIDATES'], 'Invalid File'],
     ['review-required', 'low', ['REVIEW_REQUIRED_LOW_CONFIDENCE'], 'Low Confidence'],
   ] as const)(
     'routes %s/%s evidence to the %s review reason with the sanitized original basename',

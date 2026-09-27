@@ -311,6 +311,8 @@ function unsupportedWarning(file: InventoryMediaFile): string {
   return `Needs Review: unsupported or unrecognized file format (${format}). Source left unchanged.`;
 }
 
+const EMPTY_FILE_WARNING = 'Invalid file: empty file (0 bytes); no image data to inspect.';
+
 function safeAdd(total: number, value: number, label: string): number {
   const next = total + value;
   if (!Number.isSafeInteger(next)) throw new Error(`${label} exceeds the safe integer range`);
@@ -506,6 +508,31 @@ export class MediaPreviewPlanner implements PreviewPlannerPort {
           throwIfAborted(workSignal);
           if (!isSupportedInventoryFile(file)) return { kind: 'unsupported' as const, file };
           const fileId = `${file.device}:${file.inode}`;
+          if (file.size === 0) {
+            const resolution = resolveDateCandidates({
+              fileId,
+              mediaKind: file.mediaKind,
+              evaluationTimeUtc,
+              candidates: [],
+            });
+            resolution.reasonCodes = ['EMPTY_FILE', ...resolution.reasonCodes];
+            const metadata: MetadataCollectionResult = {
+              candidates: [],
+              warnings: [EMPTY_FILE_WARNING],
+            };
+            const planned = this.planner.planForPreview({
+              sourcePath: file.filePath,
+              destinationRoot: roots.destinationPath,
+              mediaKind: file.mediaKind,
+              resolution,
+              operation: request.options.operation,
+              conflictPolicy: request.options.conflictPolicy,
+              folderStructure: request.options.folderStructure,
+              appendScreenshotSuffix: request.options.appendScreenshotSuffix,
+              screenshotDetected: false,
+            });
+            return { kind: 'supported' as const, file, metadata, resolution, planned };
+          }
           const sourceSnapshot = await this.sourceContent.capture(file, workSignal);
           let metadata: MetadataCollectionResult | undefined;
           const boundaryErrors: unknown[] = [];

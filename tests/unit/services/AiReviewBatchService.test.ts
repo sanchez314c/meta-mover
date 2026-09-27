@@ -61,6 +61,34 @@ function deterministic<T extends object>(review: T) {
 }
 
 describe('AiReviewBatchService', () => {
+  it('abstains on an empty file before metadata retry or paid AI analysis', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
+    const invalid = JSON.parse(JSON.stringify(item)) as ReviewItemDTO;
+    invalid.reasonCodes = ['EMPTY_FILE'];
+    invalid.evidence.resolution.reasonCodes = ['EMPTY_FILE'];
+    invalid.evidence.resolution.candidates = [];
+    const review = deterministic({
+      list: jest.fn(async () => ({ items: [invalid] })),
+      get: jest.fn(async () => invalid),
+      dryRun: jest.fn(),
+      apply: jest.fn(),
+    });
+    const client = { propose: jest.fn() };
+    const metadataReader = { read: jest.fn() };
+    const service = new AiReviewBatchService({
+      review,
+      client,
+      metadataReader,
+      ledgerPath: path.join(dir, 'ledger.jsonl'),
+    });
+    await service.start({ apiKey: 'secret' });
+    await service.wait();
+    expect(service.status()).toMatchObject({ processed: 1, abstained: 1, failed: 0 });
+    expect(review.automaticRetryDryRun).not.toHaveBeenCalled();
+    expect(review.automaticRetryApply).not.toHaveBeenCalled();
+    expect(metadataReader.read).not.toHaveBeenCalled();
+    expect(client.propose).not.toHaveBeenCalled();
+  });
   it('commits a fast second proposal while the first model call is still pending', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
     const rows = [0, 1].map((n) => {

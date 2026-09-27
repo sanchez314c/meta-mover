@@ -486,6 +486,10 @@ export class AiReviewBatchService {
       if (!item || (item.status !== 'pending' && item.status !== 'failed'))
         return { ...entry, terminal: 'skip' };
       entry.originalItem = item;
+      if (item.evidence.resolution.reasonCodes.includes('EMPTY_FILE')) {
+        entry.item = item;
+        return { ...entry, terminal: 'abstained' };
+      }
       stage = 'automatic-plan';
       this.state.currentStage = stage;
       const automatic = await this.options.review.automaticRetryDryRun({

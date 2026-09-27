@@ -30,9 +30,12 @@ describe('TransactionalOperationExecutor integration', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  async function operation(targetPath: string): Promise<PlannedOperation> {
+  async function operation(
+    targetPath: string,
+    content = 'executor-ground-truth'
+  ): Promise<PlannedOperation> {
     const sourcePath = path.join(sourceRoot, 'photo.jpg');
-    await writeFile(sourcePath, 'executor-ground-truth');
+    await writeFile(sourcePath, content);
     const [stats, sourceRootStats, destinationRootStats] = await Promise.all([
       lstat(sourcePath),
       lstat(sourceRoot),
@@ -163,6 +166,27 @@ describe('TransactionalOperationExecutor integration', () => {
       // Destination exists
       expect(await readFile(targetPath, 'utf8')).toBe('executor-ground-truth');
       // Source should be gone
+      await expect(lstat(planned.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('moves a zero-byte file into Invalid File with native transaction accounting', async () => {
+    const targetPath = path.join(
+      destinationRoot,
+      'Photos',
+      '_Needs Review',
+      'Invalid File',
+      'photo.jpg'
+    );
+    const planned = await operation(targetPath, '');
+    const executor = nativeExecutor();
+    try {
+      const entry = await executor.execute(planned, { ...context(), mode: OperationMode.MOVE });
+
+      expect(entry).toEqual({ operationId: planned.id, outcome: 'committed', bytes: 0 });
+      expect((await lstat(targetPath)).size).toBe(0);
       await expect(lstat(planned.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await executor.close();

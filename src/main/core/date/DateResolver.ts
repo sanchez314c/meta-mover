@@ -1024,6 +1024,177 @@ interface CalendarDateRecovery {
   contenderIds: string[];
 }
 
+function recoverNikonD40Rewrite(
+  candidates: readonly ScoredDateCandidate[]
+): { selected?: ScoredDateCandidate; contenderIds: string[] } | null {
+  const original = candidates.find(
+    (candidate) =>
+      candidate.tag === 'ExifIFD:DateTimeOriginal' &&
+      candidate.mediaKind === 'image' &&
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.eligibility === 'eligible'
+  );
+  const raw = original ? jsonRecord(original.rawValue) : null;
+  const evidence = raw ? jsonRecord(raw.recoveryEvidence) : null;
+  if (
+    !original ||
+    !evidence ||
+    evidence.kind !== 'nikon-d40-photoshop-cs5-rewrite' ||
+    evidence.make !== 'NIKON CORPORATION' ||
+    evidence.model !== 'NIKON D40' ||
+    evidence.software !== 'Adobe Photoshop CS5 Windows'
+  )
+    return null;
+  const field = (name: string): string | null =>
+    typeof evidence[name] === 'string' ? (evidence[name] as string) : null;
+  const normalized = (value: string): string =>
+    value.replace(/^(\d{4}):(\d{2}):(\d{2})(?=[ T]|$)/, '$1-$2-$3').replace(' ', 'T');
+  const validSaveTime = (value: string): boolean => {
+    const normalizedValue = normalized(value);
+    const parts = parseLocalIso(normalizedValue.slice(0, -6));
+    return (
+      /^2013-05-13T\d{2}:\d{2}(?::\d{2})?-04:00$/.test(normalizedValue) &&
+      parts !== null &&
+      isCalendarValid(parts) &&
+      Number.isFinite(Date.parse(normalizedValue))
+    );
+  };
+  const exifCreated = field('exifCreated');
+  const xmpCreated = field('xmpCreated');
+  const exifOriginal = field('exifOriginal');
+  const ifd0Modified = field('ifd0Modified');
+  const xmpModified = field('xmpModified');
+  const metadataDate = field('metadataDate');
+  if (
+    !exifCreated ||
+    !xmpCreated ||
+    !exifOriginal ||
+    !ifd0Modified ||
+    !xmpModified ||
+    !metadataDate
+  )
+    return null;
+  const rewriteSecond = normalized(exifCreated);
+  const priorSecond = normalized(ifd0Modified);
+  const rewriteParts = parseLocalIso(rewriteSecond);
+  const priorParts = parseLocalIso(priorSecond);
+  if (
+    !rewriteParts ||
+    !isCalendarValid(rewriteParts) ||
+    !priorParts ||
+    !isCalendarValid(priorParts) ||
+    !/^2026-01-21T\d{2}:\d{2}:\d{2}$/.test(rewriteSecond) ||
+    !/^2013-05-05T\d{2}:\d{2}:\d{2}$/.test(priorSecond) ||
+    normalized(xmpCreated) !== rewriteSecond ||
+    normalized(xmpModified) !== priorSecond ||
+    ![rewriteSecond, '1998-02-09T06:49:00'].includes(normalized(exifOriginal)) ||
+    original.value.localIso.slice(0, 19) !== normalized(exifOriginal) ||
+    !validSaveTime(metadataDate) ||
+    Date.parse(normalized(metadataDate)) <= calendarMilliseconds(priorParts) ||
+    candidates.some(
+      (candidate) =>
+        candidate.sourceKind === 'filename' &&
+        candidate.value.localIso.slice(0, 19) !== rewriteSecond
+    )
+  )
+    return null;
+  const historyWhen = evidence.historyWhen;
+  const historyAction = evidence.historyAction;
+  const historyAgent = evidence.historyAgent;
+  if (
+    !Array.isArray(historyWhen) ||
+    !Array.isArray(historyAction) ||
+    !Array.isArray(historyAgent) ||
+    historyWhen.length < 2 ||
+    historyWhen.length !== historyAction.length ||
+    historyWhen.length !== historyAgent.length ||
+    !historyWhen.every(
+      (item) =>
+        typeof item === 'string' &&
+        validSaveTime(item) &&
+        Date.parse(normalized(item)) === Date.parse(normalized(metadataDate))
+    ) ||
+    !historyAction.every((item) => item === 'saved') ||
+    !historyAgent.every((item) => item === 'Adobe Photoshop CS5 Windows')
+  )
+    return null;
+  const created = candidates.find((candidate) => candidate.tag === 'ExifIFD:CreateDate');
+  const xmp = candidates.find((candidate) => candidate.tag === 'XMP-xmp:CreateDate');
+  if (
+    !created ||
+    !xmp ||
+    created.value.localIso.slice(0, 19) !== rewriteSecond ||
+    xmp.value.localIso.slice(0, 19) !== rewriteSecond
+  )
+    return null;
+  const contenderIds = candidates
+    .filter((item) => item.eligibility === 'eligible')
+    .map((item) => item.id)
+    .sort();
+  const iptcDate = field('iptcDate');
+  const iptcTime = field('iptcTime');
+  const photoshopDate = field('photoshopDate');
+  if (!iptcDate && !iptcTime && !photoshopDate) {
+    const title = field('title');
+    if (title?.startsWith(priorSecond.replace('T', '_').replace(/:/g, '-')))
+      return { contenderIds };
+    return null;
+  }
+  if (!iptcDate || !iptcTime || !photoshopDate) return null;
+  const iptcValue = parseLocalIso(normalized(`${iptcDate}T${iptcTime}`).slice(0, 19));
+  if (
+    !iptcValue ||
+    !isCalendarValid(iptcValue) ||
+    normalized(`${iptcDate}T${iptcTime}`).slice(0, 19) !== priorSecond ||
+    normalized(photoshopDate).slice(0, 19) !== priorSecond
+  )
+    return null;
+  const selected = candidates.find(
+    (candidate) =>
+      candidate.tag === 'IPTC:DateCreated' &&
+      candidate.value.precision === 'second' &&
+      candidate.value.localIso === priorSecond &&
+      candidate.value.zoneBasis === 'explicit-offset' &&
+      candidate.eligibility === 'eligible'
+  );
+  const photoshop = candidates.find(
+    (candidate) =>
+      candidate.tag === 'XMP-photoshop:DateCreated' &&
+      candidate.value.localIso.slice(0, 19) === priorSecond &&
+      candidate.eligibility === 'eligible'
+  );
+  const day = candidates.find(
+    (candidate) =>
+      candidate.tag === 'IPTC:DateCreated' &&
+      candidate.value.precision === 'date' &&
+      candidate.value.localIso === '2013-05-05' &&
+      candidate.eligibility === 'eligible'
+  );
+  if (!selected || !photoshop || !day) return null;
+  if (
+    photoshop.value.zoneBasis === 'explicit-offset' ||
+    photoshop.value.zoneBasis === 'spec-defined-utc'
+  ) {
+    const photoshopInstant = comparableNanoseconds(photoshop.value);
+    const iptcInstant = comparableNanoseconds(selected.value);
+    if (
+      photoshopInstant === null ||
+      iptcInstant === null ||
+      floorDivide(photoshopInstant, 1_000_000_000n) !== floorDivide(iptcInstant, 1_000_000_000n)
+    )
+      return null;
+  }
+  const allowed = candidates.every((candidate) => {
+    if (candidate.sourceKind === 'filesystem') return true;
+    if (candidate.sourceKind === 'filename')
+      return candidate.value.localIso.slice(0, 19) === rewriteSecond;
+    if ([original.id, created.id, xmp.id, selected.id, photoshop.id, day.id].includes(candidate.id))
+      return true;
+    return false;
+  });
+  return allowed ? { selected, contenderIds } : null;
+}
+
 function recoverNikonRawHistoryDay(
   candidates: readonly ScoredDateCandidate[]
 ): CalendarDateRecovery | null {
@@ -2098,6 +2269,37 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
         ...(auditedPlaceholderRecovery.reasonCode === 'ORIGINAL_NAME_2022_REWRITE_RECOVERY'
           ? ['BATCH_REWRITE_EVIDENCE']
           : []),
+        'RESOLVED_MEDIUM_CONFIDENCE',
+      ]),
+    };
+  }
+
+  const d40Rewrite = recoverNikonD40Rewrite(candidates);
+  if (d40Rewrite !== null) {
+    if (!d40Rewrite.selected) {
+      return {
+        ...baseRecord,
+        status: 'ambiguous',
+        confidence: 'none',
+        contenderIds: d40Rewrite.contenderIds,
+        reasonCodes: uniqueSorted([...reasonCodes, 'NIKON_D40_REWRITE_CAPTURE_UNKNOWN']),
+      };
+    }
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === d40Rewrite.selected?.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: d40Rewrite.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: omitSubseconds(d40Rewrite.selected.value),
+      contenderIds: d40Rewrite.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        'NIKON_D40_PHOTOSHOP_REWRITE_RECOVERY',
         'RESOLVED_MEDIUM_CONFIDENCE',
       ]),
     };

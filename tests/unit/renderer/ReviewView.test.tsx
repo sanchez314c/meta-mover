@@ -322,6 +322,36 @@ describe('ReviewView', () => {
     expect(screen.queryByText(/MIDNIGHT_PLACEHOLDER_REVIEW/)).not.toBeInTheDocument();
   });
 
+  it('labels empty files as invalid instead of a date ambiguity', async () => {
+    const invalid = {
+      ...item,
+      reasonCodes: ['EMPTY_FILE'],
+      warnings: ['Invalid file: empty file (0 bytes); no image data to inspect.'],
+      evidence: {
+        ...item.evidence,
+        resolution: {
+          ...resolution,
+          status: 'unresolved' as const,
+          confidence: 'none' as const,
+          reasonCodes: ['EMPTY_FILE', 'NO_ELIGIBLE_CANDIDATES'],
+          candidates: [],
+        },
+      },
+    };
+    const bridge = window.electronAPI as unknown as { reviewList: jest.Mock; reviewGet: jest.Mock };
+    bridge.reviewList.mockResolvedValue({ success: true, data: { items: [invalid] } });
+    bridge.reviewGet.mockResolvedValue({ success: true, data: invalid });
+
+    render(<ReviewView />);
+
+    expect(await screen.findByText('Empty file, no image data')).toBeInTheDocument();
+    expect(screen.getByText(/file is empty.*cannot inspect image metadata/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry metadata/i })).toBeDisabled();
+    expect(screen.getByLabelText(/^manual date$/i)).toBeDisabled();
+    expect(screen.getByLabelText(/manual calendar date/i)).toBeDisabled();
+    expect(screen.queryByText(/additional metadata conflict/i)).not.toBeInTheDocument();
+  });
+
   it('keeps offset-only and subsecond conflicts separate and shows their exact time basis', async () => {
     const temporal = {
       ...item,

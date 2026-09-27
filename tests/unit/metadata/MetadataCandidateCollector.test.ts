@@ -36,6 +36,107 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  describe('Nikon D40 Photoshop CS5 rewrite', () => {
+    const base = {
+      'IFD0:Make': 'NIKON CORPORATION',
+      'IFD0:Model': 'NIKON D40',
+      'IFD0:Software': 'Adobe Photoshop CS5 Windows',
+      'IFD0:ModifyDate': '2013:05:05 20:32:36',
+      'ExifIFD:DateTimeOriginal': '2026:01:21 21:59:16',
+      'ExifIFD:CreateDate': '2026:01:21 21:59:16',
+      'XMP-xmp:CreateDate': '2026:01:21 21:59:16',
+      'IPTC:DateCreated': '2013:05:05',
+      'IPTC:TimeCreated': '20:32:36+00:00',
+      'XMP-photoshop:DateCreated': '2013:05:05 20:32:36.007',
+      'XMP-xmp:ModifyDate': '2013:05:05 20:32:36',
+      'XMP-xmp:MetadataDate': '2013:05:13 19:30:18-04:00',
+      'XMP-xmpMM:HistoryWhen': ['2013:05:13 19:30:18-04:00', '2013:05:13 19:30:18-04:00'],
+      'XMP-xmpMM:HistoryAction': ['saved', 'saved'],
+      'XMP-xmpMM:HistorySoftwareAgent': [
+        'Adobe Photoshop CS5 Windows',
+        'Adobe Photoshop CS5 Windows',
+      ],
+      'XMP-dc:Title': '2013-05-05_20-32-36-000070-1',
+    } satisfies RawExifTags;
+
+    it('selects the corroborated 2013 whole-second capture time', async () => {
+      const result = await resolveImage('2026-01-21_21-59-16.000070_01.jpeg', base);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: { localIso: '2013-05-05T20:32:36', precision: 'second' },
+      });
+      expect(result.reasonCodes).toContain('NIKON_D40_PHOTOSHOP_REWRITE_RECOVERY');
+    });
+
+    it('accepts only the audited 1998 EXIF original sentinel when creation evidence agrees', async () => {
+      const result = await resolveImage('2026-01-21_21-59-16.000070_01.jpeg', {
+        ...base,
+        'ExifIFD:DateTimeOriginal': '1998:02:09 06:49:00',
+      });
+      expect(result.reasonCodes).toContain('NIKON_D40_PHOTOSHOP_REWRITE_RECOVERY');
+    });
+
+    it('accepts a valid minute-precision Photoshop save history', async () => {
+      const result = await resolveImage('2026-01-21_21-59-16.000070_01.jpeg', {
+        ...base,
+        'XMP-xmp:MetadataDate': '2013:05:13 19:30-04:00',
+        'XMP-xmpMM:HistoryWhen': ['2013:05:13 19:30-04:00', '2013:05:13 19:30-04:00'],
+      });
+      expect(result.reasonCodes).toContain('NIKON_D40_PHOTOSHOP_REWRITE_RECOVERY');
+    });
+
+    it.each([
+      ['different camera', { 'IFD0:Model': 'NIKON D50' }],
+      ['different software', { 'IFD0:Software': 'Adobe Photoshop CC' }],
+      ['different IPTC time', { 'IPTC:TimeCreated': '20:32:37+00:00' }],
+      ['different Photoshop day', { 'XMP-photoshop:DateCreated': '2012:05:05 20:32:36' }],
+      ['different Photoshop instant', { 'XMP-photoshop:DateCreated': '2013:05:05 20:32:36-05:00' }],
+      ['different EXIF day', { 'ExifIFD:DateTimeOriginal': '2025:01:21 21:59:16' }],
+      ['different history day', { 'XMP-xmpMM:HistoryWhen': ['2012:05:13 19:30:18-04:00'] }],
+      ['missing history', { 'XMP-xmpMM:HistoryWhen': undefined }],
+      [
+        'malformed history time',
+        { 'XMP-xmpMM:HistoryWhen': ['2013:05:13 99:99:99-04:00', '2013:05:13 99:99:99-04:00'] },
+      ],
+      [
+        'rolled-over history day',
+        {
+          'XMP-xmpMM:HistoryWhen': ['2013:05:13 24:00:00-04:00', '2013:05:13 24:00:00-04:00'],
+          'XMP-xmp:MetadataDate': '2013:05:13 24:00:00-04:00',
+        },
+      ],
+    ] as const)('does not recover with %s', async (_label, changes) => {
+      const result = await resolveImage('2026-01-21_21-59-16.000070_01.jpeg', {
+        ...base,
+        ...changes,
+      });
+      expect(result.reasonCodes).not.toContain('NIKON_D40_PHOTOSHOP_REWRITE_RECOVERY');
+    });
+
+    it('holds the rewritten 2026 date for review without IPTC or Photoshop creation', async () => {
+      const result = await resolveImage('2026-01-21_21-59-16.jpeg', {
+        ...base,
+        'IPTC:DateCreated': undefined,
+        'IPTC:TimeCreated': undefined,
+        'XMP-photoshop:DateCreated': undefined,
+      });
+      expect(result.status).not.toBe('resolved');
+      expect(result.reasonCodes).toContain('NIKON_D40_REWRITE_CAPTURE_UNKNOWN');
+    });
+
+    it('does not use unrelated titles to veto an EXIF original', async () => {
+      const result = await resolveImage('2026-01-21_21-59-16.jpeg', {
+        ...base,
+        'IPTC:DateCreated': undefined,
+        'IPTC:TimeCreated': undefined,
+        'XMP-photoshop:DateCreated': undefined,
+        'XMP-dc:Title': 'unrelated',
+      });
+      expect(result.reasonCodes).not.toContain('NIKON_D40_REWRITE_CAPTURE_UNKNOWN');
+    });
+  });
+
   describe('Nikon RAW history capture-day recovery', () => {
     const base = {
       'IFD0:Make': 'NIKON CORPORATION',

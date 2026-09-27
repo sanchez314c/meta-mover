@@ -1145,6 +1145,28 @@ describe('ReviewRemediationService', () => {
     });
   });
 
+  it('does not let a manual date relabel an EMPTY_FILE review item as a valid photo', async () => {
+    const value = await fixture({
+      resolution: { ...selectable(), reasonCodes: ['EMPTY_FILE'] },
+    });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    await expect(
+      value.service.dryRun({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        action: { type: 'manual-date', value: candidateValue },
+      })
+    ).rejects.toThrow(/empty file cannot be assigned a date/i);
+    await expect(
+      value.service.dryRun({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        action: { type: 'retry-metadata' },
+      })
+    ).rejects.toThrow(/empty file cannot be assigned a date/i);
+    expect(value.execute).not.toHaveBeenCalled();
+  });
+
   it('applies an exact-no-clobber move once and persists a resolved outcome', async () => {
     const { service, currentPath, execute, overrides } = await fixture();
     const item = (await service.list({ limit: 10 })).items[0];

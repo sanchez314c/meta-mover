@@ -219,6 +219,8 @@ function sourceLabel(candidate: ScoredDateCandidate): string {
 }
 
 const REASON_EXPLANATIONS: Record<string, string> = {
+  EMPTY_FILE:
+    'This file is empty (0 bytes). META Mover cannot inspect image metadata or determine a date until the file is replaced with a valid copy.',
   STRONG_CONFLICT:
     'The metadata contains two different dates that both look credible. META Mover will not guess which one is the real capture date.',
   SUBSECOND_CONFLICT:
@@ -233,7 +235,7 @@ const REASON_EXPLANATIONS: Record<string, string> = {
 
 function reasonExplanations(item: ReviewItemDTO): string[] {
   const codes = [...new Set([...item.reasonCodes, ...item.evidence.resolution.reasonCodes])];
-  const reasons = codes.map(
+  const reasons = (codes.includes('EMPTY_FILE') ? ['EMPTY_FILE'] : codes).map(
     (code) =>
       REASON_EXPLANATIONS[code] ??
       'An additional metadata conflict prevents META Mover from choosing a date safely.'
@@ -247,6 +249,7 @@ function reasonExplanations(item: ReviewItemDTO): string[] {
 
 function shortReason(item: ReviewItemDTO): string {
   const codes = new Set([...item.reasonCodes, ...item.evidence.resolution.reasonCodes]);
+  if (codes.has('EMPTY_FILE')) return 'Empty file, no image data';
   if (codes.has('STRONG_CONFLICT')) return 'Different credible dates found';
   if (codes.has('MIDNIGHT_PLACEHOLDER_REVIEW')) return 'Date may contain a placeholder time';
   if (codes.has('METADATA_READ_FAILED')) return 'Metadata could not be fully read';
@@ -695,12 +698,14 @@ export function ReviewView() {
                     aria-label="Manual date"
                     type="datetime-local"
                     step="1"
+                    disabled={selected.evidence.resolution.reasonCodes.includes('EMPTY_FILE')}
                     value={manualDate}
                     onChange={(event) => chooseManual(event.currentTarget.value)}
                   />
                   <input
                     aria-label="Manual calendar date"
                     type="date"
+                    disabled={selected.evidence.resolution.reasonCodes.includes('EMPTY_FILE')}
                     value={manualCalendarDate}
                     onChange={(event) => chooseManualCalendarDate(event.currentTarget.value)}
                   />
@@ -708,6 +713,7 @@ export function ReviewView() {
                 </div>
                 <Toolbar>
                   <Button
+                    disabled={selected.evidence.resolution.reasonCodes.includes('EMPTY_FILE')}
                     onClick={() => {
                       setManualDate('');
                       setManualCalendarDate('');
