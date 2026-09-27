@@ -38,6 +38,248 @@ function request(candidates: DateCandidateInput[]): ResolveDateRequest {
 }
 
 describe('resolveDateCandidates', () => {
+  it('accepts only a bound Nikon RAW history date-only candidate', () => {
+    const evidence = {
+      kind: 'nikon-raw-history-capture-day',
+      make: 'NIKON CORPORATION',
+      model: 'NIKON D800E',
+      software: 'Adobe Photoshop CC (Macintosh)',
+      ifd0ModifyDate: '2013:12:03 09:58:21',
+      exifOriginal: '2013:12:05 16:07:31',
+      exifCreated: '2013:12:05 16:07:31',
+      iptcDate: '2013:12:03',
+      iptcTime: '09:58:21+00:00',
+      iptcDigitalDate: '2013:12:03',
+      photoshopDate: '2013:12:03 09:58:21.003',
+      xmpModified: '2013:12:03 09:58:21',
+      xmpCreated: '2013:12:05 16:07:31',
+      xmpMetadataDate: '2013:12:05 16:07:31-05:00',
+      historyWhen: ['2013:12:03 21:03:43-05:00', '2013:12:05 16:07:31-05:00'],
+      historyAgents: [
+        'Adobe Photoshop Lightroom 5.0 (Macintosh)',
+        'Adobe Photoshop CC (Macintosh)',
+      ],
+      historyActions: ['derived', 'saved', 'converted', 'saved'],
+      historyParameters: [
+        'converted from image/x-nikon-nef to image/tiff, saved to new location',
+        'converted from application/vnd.adobe.photoshop to image/jpeg',
+      ],
+    };
+    const iptcDate = candidate({
+      id: 'nikon-date',
+      mediaKind: 'image',
+      semantic: 'capture',
+      sourceKind: 'embedded-iptc',
+      sourceFamily: 'iptc',
+      tag: 'IPTC:DateCreated',
+      rawValue: { date: '2013:12:03', recoveryEvidence: evidence },
+      value: { localIso: '2013-12-03', zoneBasis: 'date-only', precision: 'date' },
+    });
+    const later = (
+      id: string,
+      tag: string,
+      sourceKind: DateCandidateInput['sourceKind'],
+      semantic: DateCandidateInput['semantic']
+    ) =>
+      candidate({
+        id,
+        mediaKind: 'image',
+        semantic,
+        sourceKind,
+        tag,
+        value: {
+          localIso: '2013-12-05T16:07:31',
+          zoneBasis: 'floating-local',
+          precision: 'second',
+        },
+      });
+    const inputs = [
+      iptcDate,
+      candidate({
+        id: 'nikon-iptc-time',
+        mediaKind: 'image',
+        semantic: 'capture',
+        sourceKind: 'embedded-iptc',
+        sourceFamily: 'iptc',
+        tag: 'IPTC:DateCreated',
+        value: {
+          localIso: '2013-12-03T09:58:21',
+          instantUtc: '2013-12-03T09:58:21.000Z',
+          offsetMinutes: 0,
+          zoneBasis: 'explicit-offset',
+          precision: 'second',
+        },
+      }),
+      candidate({
+        id: 'nikon-photoshop',
+        mediaKind: 'image',
+        semantic: 'capture',
+        sourceKind: 'embedded-xmp',
+        sourceFamily: 'xmp',
+        tag: 'XMP-photoshop:DateCreated',
+        value: {
+          localIso: '2013-12-03T09:58:21.003',
+          zoneBasis: 'floating-local',
+          precision: 'millisecond',
+          fractionalDigits: '003',
+        },
+      }),
+      later('nikon-original', 'ExifIFD:DateTimeOriginal', 'embedded-exif', 'capture'),
+      later('nikon-created', 'ExifIFD:CreateDate', 'embedded-exif', 'digitized'),
+      later('nikon-xmp', 'XMP-xmp:CreateDate', 'embedded-xmp', 'content-created'),
+    ];
+    const result = resolveDateCandidates(request(inputs));
+    expect(result).toMatchObject({
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: 'nikon-date',
+      selectedValue: { localIso: '2013-12-03', precision: 'date' },
+    });
+    expect(result.reasonCodes).toContain('NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY');
+    expect(result.reasonCodes).not.toContain('CALENDAR_DATE_CONSENSUS');
+    const forged = inputs.map((entry) =>
+      entry.id === 'nikon-date'
+        ? {
+            ...entry,
+            rawValue: {
+              date: '2013:12:03',
+              recoveryEvidence: {
+                ...evidence,
+                historyParameters: ['converted from image/tiff to image/jpeg'],
+              },
+            },
+          }
+        : entry
+    );
+    expect(resolveDateCandidates(request(forged)).reasonCodes).not.toContain(
+      'NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY'
+    );
+    for (const changed of [
+      {
+        ifd0ModifyDate: '2013:12:03 99:99:99',
+        iptcTime: '99:99:99+00:00',
+        photoshopDate: '2013:12:03 99:99:99.003',
+        xmpModified: '2013:12:03 99:99:99',
+      },
+      {
+        exifOriginal: '2013:12:05 99:99:99',
+        exifCreated: '2013:12:05 99:99:99',
+        xmpCreated: '2013:12:05 99:99:99',
+        xmpMetadataDate: '2013:12:05 99:99:99-05:00',
+        historyWhen: ['2013:12:03 21:03:43-05:00', '2013:12:05 99:99:99-05:00'],
+      },
+    ]) {
+      const impossible = inputs
+        .filter(
+          (entry) =>
+            ![
+              'nikon-iptc-time',
+              'nikon-photoshop',
+              'nikon-original',
+              'nikon-created',
+              'nikon-xmp',
+            ].includes(entry.id)
+        )
+        .map((entry) =>
+          entry.id === 'nikon-date'
+            ? {
+                ...entry,
+                rawValue: { date: '2013:12:03', recoveryEvidence: { ...evidence, ...changed } },
+              }
+            : entry
+        );
+      expect(resolveDateCandidates(request(impossible)).reasonCodes).not.toContain(
+        'NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY'
+      );
+    }
+  });
+
+  describe('iPhone 5 GPS local capture evidence', () => {
+    const raw = {
+      make: 'Apple',
+      model: 'iPhone 5',
+      software: 'QuickTime 7.7.1',
+      original: '1998:02:09 06:49:00',
+      created: '2025:08:16 19:42:28',
+      modified: '2013:04:28 10:15:50',
+      gpsTime: '14:15:49.23',
+      latitude: '28 deg 33\' 52.80"',
+      latitudeRef: 'North',
+      longitude: '81 deg 22\' 17.40"',
+      longitudeRef: 'West',
+    };
+    const recovered = candidate({
+      id: 'iphone-recovered',
+      mediaKind: 'image',
+      semantic: 'capture',
+      sourceKind: 'embedded-exif',
+      sourceFamily: 'iphone5-gps-corroborated',
+      tag: 'Apple:GPSLocalCapture',
+      rawValue: raw,
+      value: {
+        localIso: '2013-04-28T10:15:50',
+        instantUtc: '2013-04-28T14:15:50.000Z',
+        offsetMinutes: -240,
+        zoneBasis: 'gps-inferred',
+        precision: 'second',
+      },
+    });
+    const original = candidate({
+      id: 'iphone-original',
+      mediaKind: 'image',
+      semantic: 'capture',
+      sourceKind: 'embedded-exif',
+      tag: 'ExifIFD:DateTimeOriginal',
+      value: { localIso: '1998-02-09T06:49:00', zoneBasis: 'floating-local', precision: 'second' },
+    });
+    const created = candidate({
+      id: 'iphone-created',
+      mediaKind: 'image',
+      semantic: 'digitized',
+      sourceKind: 'embedded-exif',
+      tag: 'ExifIFD:CreateDate',
+      value: { localIso: '2025-08-16T19:42:28', zoneBasis: 'floating-local', precision: 'second' },
+    });
+    const filename = candidate({
+      id: 'iphone-filename',
+      mediaKind: 'image',
+      semantic: 'filename-claim',
+      sourceKind: 'filename',
+      sourceFamily: 'filename',
+      tag: 'filename:2025-08-16_19-42-28.jpeg',
+      value: { localIso: '2025-08-16T19:42:28', zoneBasis: 'floating-local', precision: 'second' },
+    });
+    const resolve = (capture: DateCandidateInput, name = filename) =>
+      resolveDateCandidates(request([capture, original, created, name]));
+
+    it('accepts the exact rewritten filename only', () => {
+      expect(resolve(recovered).reasonCodes).toContain('IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY');
+      const conflicting = {
+        ...filename,
+        tag: 'filename:2014-01-02_03-04-05.jpeg',
+        value: {
+          localIso: '2014-01-02T03:04:05',
+          zoneBasis: 'floating-local' as const,
+          precision: 'second' as const,
+        },
+      };
+      expect(resolve(recovered, conflicting).reasonCodes).not.toContain(
+        'IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY'
+      );
+    });
+
+    it.each([
+      ['instant UTC', { value: { ...recovered.value, instantUtc: '2013-04-28T14:15:49.000Z' } }],
+      ['offset', { value: { ...recovered.value, offsetMinutes: -300 } }],
+      ['zone', { value: { ...recovered.value, zoneBasis: 'explicit-offset' as const } }],
+      ['raw local date', { rawValue: { ...raw, modified: '2013:02:30 10:15:50' } }],
+    ])('rejects forged %s', (_label, change) => {
+      expect(resolve({ ...recovered, ...change }).reasonCodes).not.toContain(
+        'IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY'
+      );
+    });
+  });
+
   it('recovers a whole capture second corroborated by EXIF and XMP despite fractional disagreement', () => {
     const result = resolveDateCandidates(
       request([

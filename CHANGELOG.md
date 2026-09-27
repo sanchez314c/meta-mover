@@ -1013,3 +1013,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Indexed compact committed review rows for the lifetime of one transaction session. Later list pages and exact review lookups reuse that index instead of cloning and scanning the full job history each time. Audit evidence, overrides, output bindings, and destination identity remain freshly checked. The index clears when the session ends.
 - Kept an active page cursor bound to its original ID order when a file leaves review between pages. A new first page rebuilds the inventory, so a removed row cannot shift the offset past the next file.
+
+## 2026-09-26 iPhone 5 GPS capture recovery
+
+- Added a narrow recovery for iPhone 5 photos with the audited false 1998 EXIF date and 2025 rewrite. It uses the 2013 local IFD0 time only when GPS time and Eastern-zone coordinates corroborate it within one second. The resolver checks the raw evidence again and records a medium-confidence recovery reason. Missing GPS or conflicting creation metadata remains in review.
+- Required any filename date candidate to match the exact 2025 rewrite date and time before the 2013 GPS recovery can override it. Direct resolver tests reject a conflicting filename and forged time, zone, or malformed raw date.
+
+## 2026-09-27 Nikon RAW history capture-day recovery
+
+- Recovered the calendar day for two Nikon D800E JPEGs whose Dec 5-6 EXIF creation times match a later Photoshop save, while IPTC, Photoshop creation, and IFD0 modification fields agree on Dec 3, 2013. Lightroom RAW-to-TIFF history precedes the JPEG save. The result is date-only with medium confidence; no time or subsecond value is invented.
+- Required the exact camera and processing signature, first/last history chronology, RAW derivation, and absence of other creation-date contenders. The resolver independently validates collector evidence. A read-only replay of all 41 current conflicting files selected exactly two Nikon dates and 14 iPhone dates; 25 remain ambiguous.
+- Rejected impossible raw editorial or JPEG-save clock values before the Nikon rule can use them, including cases where invalid time fields are omitted from parsed candidates.
+
+## 2026-09-27 final corpus review recovery
+
+- Added guarded recovery of a 2013 whole-second capture time for 14 iPhone 5 images whose GPS UTC clock matches their local camera modification time despite a repeated false 1998 EXIF date. A fifteenth image without GPS time remains in review.
+- Added date-only 2013-12-03 recovery for two Nikon D800E JPEGs whose RAW conversion history predates the later JPEG export date stored in EXIF. Malformed history times and other creation claims veto recovery.
+- The completed source-app review pass moved exactly those 16 files with zero failures. The 100,000-file output now contains 99,727 organized photos and 273 review files (0.273%): 248 without a usable creation date and 25 with conflicting date evidence.

@@ -36,6 +36,90 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  describe('Nikon RAW history capture-day recovery', () => {
+    const base = {
+      'IFD0:Make': 'NIKON CORPORATION',
+      'IFD0:Model': 'NIKON D800E',
+      'IFD0:Software': 'Adobe Photoshop CC (Macintosh)',
+      'IFD0:ModifyDate': '2013:12:03 09:58:21',
+      'ExifIFD:DateTimeOriginal': '2013:12:05 16:07:31',
+      'ExifIFD:CreateDate': '2013:12:05 16:07:31',
+      'IPTC:DateCreated': '2013:12:03',
+      'IPTC:TimeCreated': '09:58:21+00:00',
+      'IPTC:DigitalCreationDate': '2013:12:03',
+      'XMP-photoshop:DateCreated': '2013:12:03 09:58:21.003',
+      'XMP-xmp:ModifyDate': '2013:12:03 09:58:21',
+      'XMP-xmp:CreateDate': '2013:12:05 16:07:31',
+      'XMP-xmp:MetadataDate': '2013:12:05 16:07:31-05:00',
+      'XMP-xmpMM:HistoryWhen': ['2013:12:03 21:03:43-05:00', '2013:12:05 16:07:31-05:00'],
+      'XMP-xmpMM:HistorySoftwareAgent': [
+        'Adobe Photoshop Lightroom 5.0 (Macintosh)',
+        'Adobe Photoshop CC (Macintosh)',
+      ],
+      'XMP-xmpMM:HistoryAction': ['derived', 'saved', 'converted', 'saved'],
+      'XMP-xmpMM:HistoryParameters': [
+        'converted from image/x-nikon-nef to image/tiff, saved to new location',
+        'converted from application/vnd.adobe.photoshop to image/jpeg',
+      ],
+    } satisfies RawExifTags;
+
+    it('keeps the Nikon original capture calendar day without borrowing later JPEG time', async () => {
+      const result = await resolveImage('2013-12-05_16-07-31.jpeg', base);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: { localIso: '2013-12-03', zoneBasis: 'date-only', precision: 'date' },
+      });
+      expect(result.reasonCodes).toContain('NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY');
+      expect(result.reasonCodes).toContain('RESOLVED_DATE_ONLY');
+    });
+
+    it.each([
+      ['wrong camera', { 'IFD0:Model': 'NIKON D810' }],
+      ['missing history', { 'XMP-xmpMM:HistoryWhen': undefined }],
+      [
+        'misaligned history',
+        { 'XMP-xmpMM:HistorySoftwareAgent': ['Adobe Photoshop CC (Macintosh)'] },
+      ],
+      [
+        'missing RAW derivation',
+        { 'XMP-xmpMM:HistoryParameters': ['converted from image/tiff to image/jpeg'] },
+      ],
+      [
+        'wrong first history day',
+        { 'XMP-xmpMM:HistoryWhen': ['2013:12:02 21:03:43-05:00', '2013:12:05 16:07:31-05:00'] },
+      ],
+      [
+        'wrong last save',
+        { 'XMP-xmpMM:HistoryWhen': ['2013:12:03 21:03:43-05:00', '2013:12:05 16:07:30-05:00'] },
+      ],
+      ['different Photoshop day', { 'XMP-photoshop:DateCreated': '2013:12:02 09:58:21' }],
+      [
+        'impossible editorial time',
+        {
+          'IFD0:ModifyDate': '2013:12:03 99:99:99',
+          'IPTC:TimeCreated': '99:99:99+00:00',
+          'XMP-photoshop:DateCreated': '2013:12:03 99:99:99.003',
+          'XMP-xmp:ModifyDate': '2013:12:03 99:99:99',
+        },
+      ],
+      [
+        'impossible saved time',
+        {
+          'ExifIFD:DateTimeOriginal': '2013:12:05 99:99:99',
+          'ExifIFD:CreateDate': '2013:12:05 99:99:99',
+          'XMP-xmp:CreateDate': '2013:12:05 99:99:99',
+          'XMP-xmp:MetadataDate': '2013:12:05 99:99:99-05:00',
+          'XMP-xmpMM:HistoryWhen': ['2013:12:03 21:03:43-05:00', '2013:12:05 99:99:99-05:00'],
+        },
+      ],
+      ['extra capture date', { 'XMP-exif:DateTimeOriginal': '2012:12:03 09:58:21' }],
+    ] as const)('vetoes %s', async (_label, changes) => {
+      const result = await resolveImage('2013-12-05_16-07-31.jpeg', { ...base, ...changes });
+      expect(result.reasonCodes).not.toContain('NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY');
+    });
+  });
+
   it('exposes a verified raw review read through the owned adapter and rejects after close', async () => {
     const signal = new AbortController().signal;
     const receipt = {
@@ -151,6 +235,105 @@ describe('MetadataCandidateCollector', () => {
       candidates,
     });
   }
+
+  describe('audited iPhone 5 GPS capture recovery', () => {
+    const base = {
+      'IFD0:Make': 'Apple',
+      'IFD0:Model': 'iPhone 5',
+      'IFD0:Software': 'QuickTime 7.7.1',
+      'IFD0:ModifyDate': '2013:04:28 10:15:50',
+      'ExifIFD:DateTimeOriginal': '1998:02:09 06:49:00',
+      'ExifIFD:CreateDate': '2025:08:16 19:42:28',
+      'GPS:GPSTimeStamp': '14:15:49.23',
+      'GPS:GPSLatitude': '28 deg 33\' 52.80"',
+      'GPS:GPSLatitudeRef': 'North',
+      'GPS:GPSLongitude': '81 deg 22\' 17.40"',
+      'GPS:GPSLongitudeRef': 'West',
+    } satisfies RawExifTags;
+
+    it('selects the GPS-corroborated whole-second 2013 local capture date at medium confidence', async () => {
+      const result = await resolveImage('2025-08-16_19-42-28.jpeg', base);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: { localIso: '2013-04-28T10:15:50', precision: 'second' },
+      });
+      expect(result.reasonCodes).toContain('IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY');
+      expect(result.candidates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            tag: 'Apple:GPSLocalCapture',
+            semantic: 'capture',
+            sourceFamily: 'iphone5-gps-corroborated',
+          }),
+        ])
+      );
+    });
+
+    it('rejects forged raw GPS evidence and a conflicting sidecar in the resolver', async () => {
+      const observed = await resolveImage('2025-08-16_19-42-28.jpeg', base);
+      const forged = observed.candidates.map((candidate) =>
+        candidate.tag === 'Apple:GPSLocalCapture'
+          ? {
+              ...candidate,
+              rawValue: { ...(candidate.rawValue as Record<string, string>), gpsTime: '14:15:45' },
+            }
+          : candidate
+      );
+      const resolve = (candidates: typeof forged) =>
+        resolveDateCandidates({
+          fileId: 'sha256:narrow-recovery',
+          mediaKind: 'image',
+          evaluationTimeUtc: '2026-09-23T12:00:00.000Z',
+          candidates,
+        });
+      expect(resolve(forged).reasonCodes).not.toContain('IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY');
+      expect(
+        resolve([
+          ...observed.candidates,
+          {
+            ...observed.candidates[0],
+            id: 'sidecar-conflict',
+            semantic: 'sidecar-claim',
+            sourceKind: 'sidecar',
+            sourceFamily: 'sidecar',
+            tag: 'sidecar:DateTimeOriginal',
+            value: {
+              localIso: '2014-01-02T03:04:05',
+              zoneBasis: 'floating-local',
+              precision: 'second',
+            },
+          },
+        ]).reasonCodes
+      ).not.toContain('IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY');
+    });
+
+    it.each([
+      ['wrong model', { 'IFD0:Model': 'iPhone 6' }],
+      ['wrong software', { 'IFD0:Software': 'Other' }],
+      ['different original', { 'ExifIFD:DateTimeOriginal': '1998:02:10 06:49:00' }],
+      ['different rewrite day', { 'ExifIFD:CreateDate': '2025:08:17 19:42:28' }],
+      ['missing GPS time', { 'GPS:GPSTimeStamp': undefined }],
+      ['GPS date present', { 'GPS:GPSDateStamp': '2013:04:28' }],
+      ['GPS mismatch', { 'GPS:GPSTimeStamp': '14:15:45.00' }],
+      [
+        'GPS day rollover',
+        { 'IFD0:ModifyDate': '2013:04:28 21:15:50', 'GPS:GPSTimeStamp': '01:15:49.23' },
+      ],
+      ['wrong zone', { 'GPS:GPSLongitude': '118 deg 14\' 12.40"' }],
+      ['malformed local date', { 'IFD0:ModifyDate': '2013:13:28 10:15:50' }],
+      [
+        'midnight local date',
+        { 'IFD0:ModifyDate': '2013:04:28 00:00:00', 'GPS:GPSTimeStamp': '04:00:00' },
+      ],
+      ['outside 2013 spring', { 'IFD0:ModifyDate': '2013:12:28 10:15:50' }],
+      ['conflicting IPTC date', { 'IPTC:DateCreated': '2014:01:02' }],
+      ['conflicting XMP date', { 'XMP-photoshop:DateCreated': '2014:01:02 03:04:05' }],
+    ] as const)('keeps %s in review', async (_label, change) => {
+      const result = await resolveImage('2025-08-16_19-42-28.jpeg', { ...base, ...change });
+      expect(result.reasonCodes).not.toContain('IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY');
+    });
+  });
 
   describe('audited narrow metadata recoveries', () => {
     const pngTags = {

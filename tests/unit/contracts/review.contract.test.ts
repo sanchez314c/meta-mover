@@ -143,6 +143,19 @@ describe('review queue shared contract', () => {
       },
     };
     expect(isReviewEvidenceSnapshot(dateOnly)).toBe(true);
+    expect(
+      isReviewEvidenceSnapshot({
+        ...dateOnly,
+        resolution: {
+          ...dateOnly.resolution,
+          reasonCodes: [
+            'NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY',
+            'TIME_UNKNOWN',
+            'RESOLVED_DATE_ONLY',
+          ],
+        },
+      })
+    ).toBe(true);
     for (const impossibleDate of ['2022-99-99', '2023-02-30']) {
       expect(
         isReviewEvidenceSnapshot({

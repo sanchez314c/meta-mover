@@ -682,6 +682,99 @@ function wholeSecond(value: ParsedDateValue | null): string | null {
   return value?.localIso.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)?.[0] ?? null;
 }
 
+function iphone5GpsLocalCapture(tags: RawExifTags): {
+  value: ParsedDateValue;
+  rawValue: JsonValue;
+} | null {
+  const make = stringValue(tags['IFD0:Make']);
+  const model = stringValue(tags['IFD0:Model']);
+  const software = stringValue(tags['IFD0:Software']);
+  const original = stringValue(tags['ExifIFD:DateTimeOriginal']);
+  const created = stringValue(tags['ExifIFD:CreateDate']);
+  const modified = stringValue(tags['IFD0:ModifyDate']);
+  const gpsTime = stringValue(tags['GPS:GPSTimeStamp']);
+  const latitude = stringValue(tags['GPS:GPSLatitude']);
+  const longitude = stringValue(tags['GPS:GPSLongitude']);
+  const latitudeRef = stringValue(tags['GPS:GPSLatitudeRef']);
+  const longitudeRef = stringValue(tags['GPS:GPSLongitudeRef']);
+  if (
+    make !== 'Apple' ||
+    model !== 'iPhone 5' ||
+    software !== 'QuickTime 7.7.1' ||
+    original !== '1998:02:09 06:49:00' ||
+    !created ||
+    !/^2025:08:16 \d{2}:\d{2}:\d{2}$/.test(created) ||
+    !modified ||
+    !/^2013:(?:04|05|06):\d{2} \d{2}:\d{2}:\d{2}$/.test(modified) ||
+    tags['GPS:GPSDateStamp'] !== undefined ||
+    tags['ExifIFD:OffsetTimeOriginal'] !== undefined ||
+    tags['ExifIFD:OffsetTimeDigitized'] !== undefined ||
+    !gpsTime ||
+    !latitude ||
+    !longitude ||
+    latitudeRef !== 'North' ||
+    longitudeRef !== 'West'
+  )
+    return null;
+  if (
+    tags['IPTC:DateCreated'] !== undefined ||
+    tags['IPTC:TimeCreated'] !== undefined ||
+    tags['XMP-photoshop:DateCreated'] !== undefined ||
+    tags['XMP:DateCreated'] !== undefined ||
+    tags['XMP-exif:DateTimeOriginal'] !== undefined
+  )
+    return null;
+  const xmpCreated = stringValue(tags['XMP-xmp:CreateDate']);
+  if (xmpCreated !== undefined && xmpCreated !== created) return null;
+
+  const degrees = (raw: string): number | null => {
+    const parts = raw.match(/^(\d{1,3}) deg (\d{1,2})' (\d{1,2}(?:\.\d+)?)"$/);
+    if (!parts) return null;
+    const minutes = Number(parts[2]);
+    const seconds = Number(parts[3]);
+    return minutes < 60 && seconds < 60 ? Number(parts[1]) + minutes / 60 + seconds / 3600 : null;
+  };
+  const north = degrees(latitude);
+  const west = degrees(longitude);
+  if (north === null || west === null) return null;
+  const orlando = north >= 28.4 && north <= 28.7 && west >= 81.2 && west <= 81.6;
+  const atlanta = north >= 33.6 && north <= 33.9 && west >= 84.2 && west <= 84.6;
+  if (!orlando && !atlanta) return null;
+
+  const local = parseDateValue(modified, '-04:00');
+  const rewrite = parseDateValue(created);
+  const gps = gpsTime.match(/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/);
+  if (!local || !rewrite || !gps || local.precision !== 'second' || !local.instantUtc) return null;
+  const hour = Number(gps[1]);
+  const minute = Number(gps[2]);
+  const second = Number(gps[3]);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const localSeconds =
+    Number(local.localIso.slice(11, 13)) * 3600 +
+    Number(local.localIso.slice(14, 16)) * 60 +
+    Number(local.localIso.slice(17, 19));
+  if (localSeconds === 0 || localSeconds + 4 * 3600 >= 24 * 3600) return null;
+  const gpsSeconds = hour * 3600 + minute * 60 + second + Number(`0.${gps[4] ?? '0'}`);
+  if (Math.abs(gpsSeconds - localSeconds - 4 * 3600) > 1) return null;
+  return {
+    value: { ...local, zoneBasis: 'gps-inferred' },
+    rawValue: {
+      make,
+      model,
+      software,
+      original,
+      created,
+      modified,
+      gpsTime,
+      latitude,
+      latitudeRef,
+      longitude,
+      longitudeRef,
+      ...(xmpCreated ? { xmpCreated } : {}),
+    },
+  };
+}
+
 function pngScreenshotRecoveryEvidence(filePath: string, tags: RawExifTags): JsonValue | null {
   if (!screenshotFilename(path.basename(filePath))) return null;
   const created = parseDateValue(tags['PNG:CreateDate']);
@@ -967,6 +1060,70 @@ export class MetadataCandidateCollector {
     }
 
     if (request.mediaKind === 'image' || request.mediaKind === 'raw') {
+      const nikonDate = candidates.find(
+        (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+      );
+      const historyWhen = tags['XMP-xmpMM:HistoryWhen'];
+      const historyAgents = tags['XMP-xmpMM:HistorySoftwareAgent'];
+      const historyActions = tags['XMP-xmpMM:HistoryAction'];
+      const historyParameters = tags['XMP-xmpMM:HistoryParameters'];
+      const nikonFields = [
+        'IFD0:ModifyDate',
+        'ExifIFD:DateTimeOriginal',
+        'ExifIFD:CreateDate',
+        'IPTC:DateCreated',
+        'IPTC:TimeCreated',
+        'IPTC:DigitalCreationDate',
+        'XMP-photoshop:DateCreated',
+        'XMP-xmp:ModifyDate',
+        'XMP-xmp:CreateDate',
+        'XMP-xmp:MetadataDate',
+      ];
+      if (
+        nikonDate &&
+        tags['IFD0:Make'] === 'NIKON CORPORATION' &&
+        tags['IFD0:Model'] === 'NIKON D800E' &&
+        tags['IFD0:Software'] === 'Adobe Photoshop CC (Macintosh)' &&
+        Array.isArray(historyWhen) &&
+        Array.isArray(historyAgents) &&
+        Array.isArray(historyActions) &&
+        Array.isArray(historyParameters) &&
+        nikonFields.every((tag) => typeof tags[tag] === 'string')
+      ) {
+        nikonDate.rawValue = {
+          date: nikonDate.rawValue,
+          recoveryEvidence: {
+            kind: 'nikon-raw-history-capture-day',
+            make: tags['IFD0:Make'] as string,
+            model: tags['IFD0:Model'] as string,
+            software: tags['IFD0:Software'] as string,
+            ifd0ModifyDate: tags['IFD0:ModifyDate'] as JsonValue,
+            exifOriginal: tags['ExifIFD:DateTimeOriginal'] as JsonValue,
+            exifCreated: tags['ExifIFD:CreateDate'] as JsonValue,
+            iptcDate: tags['IPTC:DateCreated'] as JsonValue,
+            iptcTime: tags['IPTC:TimeCreated'] as JsonValue,
+            iptcDigitalDate: tags['IPTC:DigitalCreationDate'] as JsonValue,
+            photoshopDate: tags['XMP-photoshop:DateCreated'] as JsonValue,
+            xmpModified: tags['XMP-xmp:ModifyDate'] as JsonValue,
+            xmpCreated: tags['XMP-xmp:CreateDate'] as JsonValue,
+            xmpMetadataDate: tags['XMP-xmp:MetadataDate'] as JsonValue,
+            historyWhen: historyWhen as JsonValue,
+            historyAgents: historyAgents as JsonValue,
+            historyActions: historyActions as JsonValue,
+            historyParameters: historyParameters as JsonValue,
+          },
+        };
+      }
+      const iphoneCapture = request.mediaKind === 'image' ? iphone5GpsLocalCapture(tags) : null;
+      if (iphoneCapture)
+        addCandidate(
+          'Apple:GPSLocalCapture',
+          'capture',
+          'embedded-exif',
+          'iphone5-gps-corroborated',
+          iphoneCapture.rawValue,
+          iphoneCapture.value
+        );
       const photoshop = candidates.find(
         (candidate) => candidate.tag === 'XMP-photoshop:DateCreated'
       );

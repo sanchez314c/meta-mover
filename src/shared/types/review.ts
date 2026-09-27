@@ -375,9 +375,10 @@ function isDateResolutionRecord(value: unknown): value is DateResolutionRecord {
     value.selectedValue.precision === 'date'
   ) {
     const reasons = value.reasonCodes as string[];
-    const automatic = ['CALENDAR_DATE_CONSENSUS', 'TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'].every(
-      (reason) => reasons.includes(reason)
-    );
+    const automatic =
+      ['TIME_UNKNOWN', 'RESOLVED_DATE_ONLY'].every((reason) => reasons.includes(reason)) &&
+      (reasons.includes('CALENDAR_DATE_CONSENSUS') ||
+        reasons.includes('NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY'));
     const selected = (value.candidates as Record<string, unknown>[]).find(
       (candidate) => candidate.id === value.selectedCandidateId
     );

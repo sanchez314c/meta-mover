@@ -124,6 +124,8 @@ function baseScore(candidate: DateCandidateInput): number {
     if (tag.includes('gpsdatestamp') && tag.includes('gpstimestamp')) return 75;
     if (tag.includes('samsung:timestamp')) return 92;
     if (tag === 'canon:timestamp' && candidate.sourceFamily === 'canon-makernote') return 96;
+    if (tag === 'apple:gpslocalcapture' && candidate.sourceFamily === 'iphone5-gps-corroborated')
+      return 96;
     if (candidate.sourceKind === 'embedded-xmp' && tag.includes('datecreated')) return 88;
     if (candidate.sourceKind === 'embedded-iptc' && tag.includes('datecreated')) return 88;
     if (candidate.sourceKind === 'embedded-xmp' && tag.includes('createdate')) return 80;
@@ -199,7 +201,8 @@ function expectedSemantics(candidate: CandidateProvenance): ReadonlySet<string> 
       tag.includes('datetimeoriginal') ||
       tag.includes('gpsdatestamp') ||
       tag.includes('samsung:timestamp') ||
-      (tag === 'canon:timestamp' && candidate.sourceFamily === 'canon-makernote')
+      (tag === 'canon:timestamp' && candidate.sourceFamily === 'canon-makernote') ||
+      (tag === 'apple:gpslocalcapture' && candidate.sourceFamily === 'iphone5-gps-corroborated')
     ) {
       return new Set(['capture']);
     }
@@ -540,6 +543,10 @@ function scoreCandidate(
   if (hasSourceNamespaceMismatch(candidate)) {
     eligibility = 'invalid';
     resolutionIssues.push('PROVENANCE_MISMATCH');
+  }
+  if (candidate.tag === 'Apple:GPSLocalCapture' && !validIphone5GpsCandidate(candidate)) {
+    eligibility = 'invalid';
+    resolutionIssues.push('AUDITED_GPS_SIGNATURE_MISMATCH');
   }
   if (
     FORBIDDEN_SEMANTICS.has(candidate.semantic) ||
@@ -1017,9 +1024,255 @@ interface CalendarDateRecovery {
   contenderIds: string[];
 }
 
+function recoverNikonRawHistoryDay(
+  candidates: readonly ScoredDateCandidate[]
+): CalendarDateRecovery | null {
+  const selected = candidates.find(
+    (candidate) =>
+      candidate.mediaKind === 'image' &&
+      candidate.tag === 'IPTC:DateCreated' &&
+      candidate.sourceKind === 'embedded-iptc' &&
+      candidate.sourceFamily === 'iptc' &&
+      candidate.value.precision === 'date' &&
+      candidate.eligibility === 'eligible' &&
+      candidate.score.final > 0
+  );
+  if (!selected) return null;
+  const raw = jsonRecord(selected.rawValue);
+  const evidence = raw ? jsonRecord(raw.recoveryEvidence) : null;
+  if (
+    !evidence ||
+    evidence.kind !== 'nikon-raw-history-capture-day' ||
+    evidence.make !== 'NIKON CORPORATION' ||
+    evidence.model !== 'NIKON D800E' ||
+    evidence.software !== 'Adobe Photoshop CC (Macintosh)' ||
+    typeof evidence.iptcDate !== 'string' ||
+    typeof evidence.iptcTime !== 'string' ||
+    typeof evidence.iptcDigitalDate !== 'string' ||
+    typeof evidence.photoshopDate !== 'string' ||
+    typeof evidence.ifd0ModifyDate !== 'string' ||
+    typeof evidence.xmpModified !== 'string' ||
+    typeof evidence.exifOriginal !== 'string' ||
+    typeof evidence.exifCreated !== 'string' ||
+    typeof evidence.xmpCreated !== 'string' ||
+    typeof evidence.xmpMetadataDate !== 'string'
+  )
+    return null;
+  const day = selected.value.localIso;
+  const normalized = (value: string): string =>
+    value.replace(/^(\d{4}):(\d{2}):(\d{2})(?=[ T]|$)/, '$1-$2-$3').replace(' ', 'T');
+  const editorialSecond = normalized(evidence.ifd0ModifyDate).slice(0, 19);
+  const savedSecond = normalized(evidence.exifOriginal).slice(0, 19);
+  const editorialParts = parseLocalIso(editorialSecond);
+  const savedParts = parseLocalIso(savedSecond);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+    !editorialParts ||
+    !isCalendarValid(editorialParts) ||
+    !savedParts ||
+    !isCalendarValid(savedParts) ||
+    normalized(evidence.iptcDate).slice(0, 10) !== day ||
+    normalized(evidence.iptcDigitalDate).slice(0, 10) !== day ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(editorialSecond) ||
+    editorialSecond.slice(0, 10) !== day ||
+    normalized(`${evidence.iptcDate}T${evidence.iptcTime}`).slice(0, 19) !== editorialSecond ||
+    normalized(evidence.photoshopDate).slice(0, 19) !== editorialSecond ||
+    normalized(evidence.xmpModified).slice(0, 19) !== editorialSecond ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(savedSecond) ||
+    savedSecond <= editorialSecond ||
+    normalized(evidence.exifCreated).slice(0, 19) !== savedSecond ||
+    normalized(evidence.xmpCreated).slice(0, 19) !== savedSecond ||
+    normalized(evidence.xmpMetadataDate).slice(0, 19) !== savedSecond
+  )
+    return null;
+  const when = evidence.historyWhen;
+  const agents = evidence.historyAgents;
+  const actions = evidence.historyActions;
+  const parameters = evidence.historyParameters;
+  if (
+    !Array.isArray(when) ||
+    !Array.isArray(agents) ||
+    !Array.isArray(actions) ||
+    !Array.isArray(parameters) ||
+    when.length < 2 ||
+    when.length !== agents.length ||
+    !when.every((value) => typeof value === 'string') ||
+    !agents.every((value) => typeof value === 'string') ||
+    !actions.every((value) => typeof value === 'string') ||
+    !parameters.every((value) => typeof value === 'string') ||
+    agents[0] !== 'Adobe Photoshop Lightroom 5.0 (Macintosh)' ||
+    agents.slice(1).some((value) => value !== 'Adobe Photoshop CC (Macintosh)') ||
+    actions[0] !== 'derived' ||
+    actions[actions.length - 1] !== 'saved' ||
+    !parameters.some((value) => value.includes('image/x-nikon-nef to image/tiff')) ||
+    !parameters.some((value) => value.includes('to image/jpeg')) ||
+    normalized(when[0]).slice(0, 10) !== day ||
+    normalized(when[when.length - 1]).slice(0, 19) !== savedSecond
+  )
+    return null;
+  const firstHistory = Date.parse(normalized(when[0]));
+  const lastHistory = Date.parse(normalized(when[when.length - 1]));
+  if (
+    !Number.isFinite(firstHistory) ||
+    !Number.isFinite(lastHistory) ||
+    firstHistory >= lastHistory
+  )
+    return null;
+  const allowed = candidates.every((candidate) => {
+    if (candidate.sourceKind === 'filesystem') return true;
+    if (candidate.sourceKind === 'filename')
+      return candidate.value.localIso.slice(0, 19) === savedSecond;
+    if (candidate.id === selected.id) return true;
+    if (candidate.tag === 'IPTC:DateCreated' && candidate.value.precision !== 'date')
+      return candidate.value.localIso.slice(0, 19) === editorialSecond;
+    if (candidate.tag === 'IPTC:DigitalCreationDate') return candidate.value.localIso === day;
+    if (candidate.tag === 'XMP-photoshop:DateCreated')
+      return candidate.value.localIso.slice(0, 19) === editorialSecond;
+    if (
+      ['ExifIFD:DateTimeOriginal', 'ExifIFD:CreateDate', 'XMP-xmp:CreateDate'].includes(
+        candidate.tag
+      )
+    )
+      return candidate.value.localIso.slice(0, 19) === savedSecond;
+    return false;
+  });
+  return allowed
+    ? {
+        selected,
+        calendarDate: day,
+        contenderIds: candidates
+          .filter((item) => item.eligibility === 'eligible')
+          .map((item) => item.id)
+          .sort(),
+      }
+    : null;
+}
+
 function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
   return value !== null && !Array.isArray(value) && typeof value === 'object'
     ? (value as Record<string, JsonValue>)
+    : null;
+}
+
+function validIphone5GpsCandidate(candidate: DateCandidateInput): boolean {
+  if (
+    candidate.mediaKind !== 'image' ||
+    candidate.semantic !== 'capture' ||
+    candidate.sourceKind !== 'embedded-exif' ||
+    candidate.sourceFamily !== 'iphone5-gps-corroborated' ||
+    candidate.tag !== 'Apple:GPSLocalCapture'
+  )
+    return false;
+  const raw = jsonRecord(candidate.rawValue);
+  if (
+    !raw ||
+    raw.make !== 'Apple' ||
+    raw.model !== 'iPhone 5' ||
+    raw.software !== 'QuickTime 7.7.1' ||
+    raw.original !== '1998:02:09 06:49:00' ||
+    typeof raw.created !== 'string' ||
+    !/^2025:08:16 \d{2}:\d{2}:\d{2}$/.test(raw.created) ||
+    typeof raw.modified !== 'string' ||
+    !/^2013:(?:04|05|06):\d{2} \d{2}:\d{2}:\d{2}$/.test(raw.modified) ||
+    typeof raw.gpsTime !== 'string' ||
+    typeof raw.latitude !== 'string' ||
+    typeof raw.longitude !== 'string' ||
+    raw.latitudeRef !== 'North' ||
+    raw.longitudeRef !== 'West' ||
+    (raw.xmpCreated !== undefined && raw.xmpCreated !== raw.created)
+  )
+    return false;
+  const modifiedIso = raw.modified.replace(/^(\d{4}):(\d{2}):(\d{2}) /, '$1-$2-$3T');
+  const createdIso = raw.created.replace(/^(\d{4}):(\d{2}):(\d{2}) /, '$1-$2-$3T');
+  const modifiedParts = parseLocalIso(modifiedIso);
+  const createdParts = parseLocalIso(createdIso);
+  if (
+    !modifiedParts ||
+    !createdParts ||
+    !isCalendarValid(modifiedParts) ||
+    !isCalendarValid(createdParts)
+  )
+    return false;
+  const degrees = (value: string): number | null => {
+    const match = value.match(/^(\d{1,3}) deg (\d{1,2})' (\d{1,2}(?:\.\d+)?)"$/);
+    if (!match || Number(match[2]) >= 60 || Number(match[3]) >= 60) return null;
+    return Number(match[1]) + Number(match[2]) / 60 + Number(match[3]) / 3600;
+  };
+  const north = degrees(raw.latitude);
+  const west = degrees(raw.longitude);
+  if (north === null || west === null) return false;
+  const orlando = north >= 28.4 && north <= 28.7 && west >= 81.2 && west <= 81.6;
+  const atlanta = north >= 33.6 && north <= 33.9 && west >= 84.2 && west <= 84.6;
+  if (!orlando && !atlanta) return false;
+  const gps = raw.gpsTime.match(/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/);
+  if (!gps || Number(gps[1]) > 23 || Number(gps[2]) > 59 || Number(gps[3]) > 59) return false;
+  const localSeconds =
+    modifiedParts.hour! * 3600 + modifiedParts.minute! * 60 + modifiedParts.second!;
+  if (localSeconds === 0 || localSeconds + 4 * 3600 >= 24 * 3600) return false;
+  const gpsSeconds =
+    Number(gps[1]) * 3600 + Number(gps[2]) * 60 + Number(gps[3]) + Number(`0.${gps[4] ?? '0'}`);
+  if (Math.abs(gpsSeconds - localSeconds - 4 * 3600) > 1) return false;
+  const expectedInstant = new Date(
+    calendarMilliseconds(modifiedParts) + 4 * 3600 * 1000
+  ).toISOString();
+  return (
+    candidate.value.localIso === modifiedIso &&
+    candidate.value.instantUtc === expectedInstant &&
+    candidate.value.offsetMinutes === -240 &&
+    candidate.value.zoneBasis === 'gps-inferred' &&
+    candidate.value.precision === 'second' &&
+    candidate.value.fractionalDigits === undefined
+  );
+}
+
+function recoverIphone5GpsCapture(
+  candidates: readonly ScoredDateCandidate[]
+): NarrowMetadataRecovery | null {
+  const selected = candidates.find(
+    (candidate) =>
+      candidate.tag === 'Apple:GPSLocalCapture' &&
+      candidate.eligibility === 'eligible' &&
+      validIphone5GpsCandidate(candidate)
+  );
+  if (!selected) return null;
+  const selectedRaw = jsonRecord(selected.rawValue)!;
+  const createdIso = (selectedRaw.created as string).replace(
+    /^(\d{4}):(\d{2}):(\d{2}) /,
+    '$1-$2-$3T'
+  );
+  const original = candidates.find(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.tag === 'ExifIFD:DateTimeOriginal' &&
+      candidate.value.localIso === '1998-02-09T06:49:00'
+  );
+  const created = candidates.find(
+    (candidate) =>
+      candidate.sourceKind === 'embedded-exif' &&
+      candidate.tag === 'ExifIFD:CreateDate' &&
+      candidate.value.localIso === createdIso
+  );
+  if (!original || !created) return null;
+  const allowed = candidates.every((candidate) => {
+    if (candidate.sourceKind === 'filesystem') return true;
+    if (candidate.sourceKind === 'filename') return sameDateValue(candidate.value, created.value);
+    if (candidate.id === selected.id || candidate.id === original.id || candidate.id === created.id)
+      return true;
+    return (
+      candidate.sourceKind === 'embedded-xmp' &&
+      candidate.tag === 'XMP-xmp:CreateDate' &&
+      candidate.value.localIso === created.value.localIso
+    );
+  });
+  return allowed
+    ? {
+        selected,
+        contenderIds: candidates
+          .filter((candidate) => candidate.eligibility === 'eligible')
+          .map((candidate) => candidate.id)
+          .sort(),
+        reasonCode: 'IPHONE5_GPS_LOCAL_CAPTURE_RECOVERY',
+      }
     : null;
 }
 
@@ -1850,7 +2103,36 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
     };
   }
 
-  const narrowMetadataRecovery = recoverAuditedNarrowMetadata(selectable);
+  const nikonHistoryDay = recoverNikonRawHistoryDay(candidates);
+  if (nikonHistoryDay !== null) {
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === nikonHistoryDay.selected.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: nikonHistoryDay.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: {
+        localIso: nikonHistoryDay.calendarDate,
+        zoneBasis: 'date-only',
+        precision: 'date',
+      },
+      contenderIds: nikonHistoryDay.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        'NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY',
+        'TIME_UNKNOWN',
+        'RESOLVED_DATE_ONLY',
+        'RESOLVED_MEDIUM_CONFIDENCE',
+      ]),
+    };
+  }
+
+  const narrowMetadataRecovery =
+    recoverIphone5GpsCapture(candidates) ?? recoverAuditedNarrowMetadata(selectable);
   if (second && narrowMetadataRecovery !== null) {
     const selectedGroup = groups.find((group) =>
       group.candidates.some((candidate) => candidate.id === narrowMetadataRecovery.selected.id)
@@ -2150,6 +2432,7 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
   if (
     resolution.status !== 'resolved' ||
     resolution.selectedValue?.precision !== 'date' ||
+    resolution.reasonCodes.includes('NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY') ||
     selected?.sourceKind === 'user-override' ||
     selected?.sourceKind === 'ai-estimate'
   ) {
