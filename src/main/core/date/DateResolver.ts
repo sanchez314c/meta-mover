@@ -1319,6 +1319,280 @@ function recoverNikonRawHistoryDay(
     : null;
 }
 
+function recoverIccContaminatedOriginal(candidates: readonly ScoredDateCandidate[]): {
+  selected: ScoredDateCandidate;
+  value: ParsedDateValue;
+  reasonCode: string;
+  contenderIds: string[];
+} | null {
+  const contenders = candidates.filter((candidate) => candidate.sourceKind !== 'filesystem');
+  const dayCandidate = contenders.find(
+    (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+  );
+  const evidence =
+    dayCandidate && jsonRecord(jsonRecord(dayCandidate.rawValue)?.recoveryEvidence as JsonValue);
+  if (!dayCandidate || evidence?.kind !== 'icc-exif-original-contamination') return null;
+
+  const original = contenders.find((candidate) => candidate.tag === 'ExifIFD:DateTimeOriginal');
+  const exifCreated = contenders.find((candidate) => candidate.tag === 'ExifIFD:CreateDate');
+  const xmpCreated = contenders.find((candidate) => candidate.tag === 'XMP-xmp:CreateDate');
+  const photoshop = contenders.find((candidate) => candidate.tag === 'XMP-photoshop:DateCreated');
+  if (!original || !exifCreated) return null;
+  const day = dayCandidate.value.localIso;
+  const rawDay = day.replace(/-/g, ':');
+  const dcMatchesDay = (date: string): boolean =>
+    date === rawDay || date.startsWith(`${rawDay} `) || date.startsWith(`${rawDay}T`);
+  const profileDate = evidence.profileDate;
+  const rawOriginal = jsonRecord(original.rawValue)?.value ?? original.rawValue;
+  const created = jsonRecord(exifCreated.rawValue)?.value ?? exifCreated.rawValue;
+  if (
+    typeof profileDate !== 'string' ||
+    profileDate !== rawOriginal ||
+    profileDate !== evidence.exifOriginal ||
+    evidence.profileClass !== 'Display Device Profile' ||
+    evidence.iptcDate !== day.replace(/-/g, ':') ||
+    dayCandidate.eligibility !== 'eligible' ||
+    original.eligibility !== 'eligible' ||
+    exifCreated.eligibility !== 'eligible' ||
+    created !== evidence.exifCreated ||
+    exifCreated.value.localIso.slice(0, 10) <= day ||
+    (evidence.dcDate !== undefined &&
+      (typeof evidence.dcDate === 'string'
+        ? !dcMatchesDay(evidence.dcDate)
+        : !Array.isArray(evidence.dcDate) ||
+          evidence.dcDate.length === 0 ||
+          evidence.dcDate.some((date) => typeof date !== 'string' || !dcMatchesDay(date))))
+  ) {
+    return null;
+  }
+
+  if (evidence.fileType === 'PNG') {
+    const pngCreated = contenders.find((candidate) => candidate.tag === 'PNG:CreateDate');
+    const iptcTime = contenders.find(
+      (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'second'
+    );
+    const digitalTime = contenders.find(
+      (candidate) => candidate.tag === 'IPTC:DigitalCreationDate+IPTC:DigitalCreationTime'
+    );
+    const historyWhen = evidence.historyWhen;
+    const historyAction = evidence.historyAction;
+    if (
+      evidence.profileCreator !== 'Hewlett-Packard' ||
+      evidence.pngSoftware !== 'Topaz Photo AI 1.2.6' ||
+      evidence.pngModified !== profileDate ||
+      evidence.ifd0Modified !== profileDate ||
+      evidence.pngCreated !== created ||
+      !pngCreated ||
+      pngCreated.eligibility !== 'eligible' ||
+      pngCreated.value.localIso !== exifCreated.value.localIso.slice(0, 19) ||
+      (exifCreated.value.fractionalDigits !== undefined &&
+        !/^0+$/.test(exifCreated.value.fractionalDigits)) ||
+      !iptcTime ||
+      !digitalTime ||
+      iptcTime.eligibility !== 'eligible' ||
+      digitalTime.eligibility !== 'eligible' ||
+      iptcTime.value.localIso !== digitalTime.value.localIso ||
+      iptcTime.value.instantUtc !== digitalTime.value.instantUtc ||
+      evidence.iptcDigitalDate !== evidence.iptcDate ||
+      evidence.iptcDigitalTime !== evidence.iptcTime ||
+      !Array.isArray(historyAction) ||
+      !historyAction.includes('derived') ||
+      !historyAction.includes('saved') ||
+      typeof historyWhen !== 'string' ||
+      !historyWhen.startsWith(day.replace(/-/g, ':')) ||
+      typeof evidence.historyParameters !== 'string' ||
+      !evidence.historyParameters.includes('converted from image/') ||
+      contenders.some((candidate) => {
+        if (candidate.eligibility !== 'eligible') return true;
+        if (candidate.sourceKind === 'filename') {
+          return candidate.value.localIso.slice(0, 19) !== pngCreated.value.localIso;
+        }
+        if (candidate.tag === 'ExifIFD:DateTimeOriginal') {
+          return candidate.value.localIso !== original.value.localIso;
+        }
+        if (candidate.tag === 'ExifIFD:CreateDate' || candidate.tag === 'PNG:CreateDate') {
+          return candidate.value.localIso.slice(0, 19) !== pngCreated.value.localIso;
+        }
+        return (
+          ![
+            'IPTC:DateCreated',
+            'IPTC:DigitalCreationDate',
+            'IPTC:DigitalCreationDate+IPTC:DigitalCreationTime',
+          ].includes(candidate.tag) || candidate.value.localIso.slice(0, 10) !== day
+        );
+      })
+    ) {
+      return null;
+    }
+    return {
+      selected: dayCandidate,
+      value: { localIso: day, zoneBasis: 'date-only', precision: 'date' },
+      reasonCode: 'ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY',
+      contenderIds: contenders.map((candidate) => candidate.id).sort(),
+    };
+  }
+
+  if (!xmpCreated || !photoshop) return null;
+  const xmp = jsonRecord(xmpCreated.rawValue)?.value ?? xmpCreated.rawValue;
+  if (
+    evidence.fileType !== 'JPEG' ||
+    evidence.profileCreator !== 'Adobe Systems Inc.' ||
+    xmpCreated.eligibility !== 'eligible' ||
+    photoshop.eligibility !== 'eligible' ||
+    xmp !== evidence.xmpCreated ||
+    created !== xmp ||
+    photoshop.value.localIso.slice(0, 10) !== day ||
+    (evidence.iptcDigitalDate !== undefined && evidence.iptcDigitalDate !== evidence.iptcDate)
+  ) {
+    return null;
+  }
+
+  const allowed = new Map([
+    ['ExifIFD:DateTimeOriginal', original.value.localIso.slice(0, 10)],
+    ['ExifIFD:CreateDate', exifCreated.value.localIso.slice(0, 10)],
+    ['XMP-xmp:CreateDate', xmpCreated.value.localIso.slice(0, 10)],
+    ['XMP-photoshop:DateCreated', day],
+    ['IPTC:DateCreated', day],
+    ['IPTC:DigitalCreationDate', day],
+  ]);
+  if (
+    contenders.some((candidate) => {
+      if (candidate.eligibility !== 'eligible') return true;
+      if (candidate.sourceKind === 'filename') {
+        return candidate.value.localIso.slice(0, 10) !== exifCreated.value.localIso.slice(0, 10);
+      }
+      const expected = allowed.get(candidate.tag);
+      return expected === undefined || candidate.value.localIso.slice(0, 10) !== expected;
+    })
+  ) {
+    return null;
+  }
+
+  const iptcTime = contenders.find(
+    (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'second'
+  );
+  const photoshopRaw = jsonRecord(photoshop.rawValue)?.value ?? photoshop.rawValue;
+  const clockConfirmed =
+    iptcTime?.eligibility === 'eligible' &&
+    iptcTime.value.zoneBasis === 'explicit-offset' &&
+    iptcTime.value.localIso.slice(0, 19) === photoshop.value.localIso.slice(0, 19) &&
+    typeof photoshopRaw === 'string' &&
+    photoshopRaw === evidence.ifd0Modified &&
+    photoshopRaw === evidence.xmpModified;
+  return {
+    selected: clockConfirmed && iptcTime ? iptcTime : dayCandidate,
+    value:
+      clockConfirmed && iptcTime
+        ? omitSubseconds(iptcTime.value)
+        : { localIso: day, zoneBasis: 'date-only', precision: 'date' },
+    reasonCode: 'ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY',
+    contenderIds: contenders.map((candidate) => candidate.id).sort(),
+  };
+}
+
+function recoverAuditedShootOrScreenshot(candidates: readonly ScoredDateCandidate[]): {
+  selected: ScoredDateCandidate;
+  value: ParsedDateValue;
+  reasonCode: string;
+  contenderIds: string[];
+} | null {
+  const contenders = candidates.filter((candidate) => candidate.sourceKind !== 'filesystem');
+  const d2xDay = contenders.find(
+    (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+  );
+  const d2xEvidence =
+    d2xDay && jsonRecord(jsonRecord(d2xDay.rawValue)?.recoveryEvidence as JsonValue);
+  if (d2xEvidence?.kind === 'nikon-d2x-shoot-day') {
+    const second = contenders.find(
+      (candidate) =>
+        candidate.tag === 'IPTC:DateCreated' &&
+        candidate.value.precision === 'second' &&
+        candidate.value.zoneBasis === 'explicit-offset' &&
+        candidate.eligibility === 'eligible'
+    );
+    const day = d2xDay?.value.localIso;
+    const created = d2xEvidence.created;
+    const original = d2xEvidence.original;
+    const modified = d2xEvidence.modified;
+    const profile = d2xEvidence.profile;
+    const caption = d2xEvidence.caption;
+    const objectName = d2xEvidence.objectName;
+    if (
+      second &&
+      day === '2006-02-08' &&
+      d2xEvidence.make === 'NIKON CORPORATION' &&
+      d2xEvidence.model === 'NIKON D2X' &&
+      created === '2003:07:01 00:00:00' &&
+      original === created &&
+      profile === created &&
+      typeof modified === 'string' &&
+      modified.replace(/^2006:02:08 /, '2006-02-08T') === second.value.localIso &&
+      d2xEvidence.iptcDate === '2006:02:08' &&
+      typeof d2xEvidence.iptcTime === 'string' &&
+      /^\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(d2xEvidence.iptcTime) &&
+      objectName === 'raw_LeticiaJoeBoxer020806' &&
+      typeof caption === 'string' &&
+      caption.includes('2/8/06') &&
+      caption.includes('February 8, 2006') &&
+      contenders.every((candidate) =>
+        candidate.sourceKind === 'filename'
+          ? candidate.value.localIso.slice(0, 10) === '2003-07-01'
+          : candidate.tag === 'IPTC:DateCreated'
+            ? candidate.value.localIso.slice(0, 10) === day
+            : ['ExifIFD:DateTimeOriginal', 'ExifIFD:CreateDate'].includes(candidate.tag) &&
+              candidate.value.localIso.slice(0, 19) === '2003-07-01T00:00:00'
+      )
+    ) {
+      return {
+        selected: second,
+        value: omitSubseconds(second.value),
+        reasonCode: 'NIKON_D2X_SHOOT_TIME_RECOVERY',
+        contenderIds: contenders.map((candidate) => candidate.id).sort(),
+      };
+    }
+  }
+
+  const xmp = contenders.find((candidate) => candidate.tag === 'XMP-photoshop:DateCreated');
+  const pngEvidence = xmp && jsonRecord(jsonRecord(xmp.rawValue)?.recoveryEvidence as JsonValue);
+  if (xmp && pngEvidence?.kind === 'display-p3-screenshot-day') {
+    const xmpRaw = jsonRecord(xmp.rawValue)?.value;
+    const png = contenders.find((candidate) => candidate.tag === 'PNG:CreateDate');
+    const date = xmp.value.localIso.slice(0, 10);
+    if (
+      xmp.eligibility === 'eligible' &&
+      png &&
+      png.eligibility === 'eligible' &&
+      pngEvidence.comment === 'Screenshot' &&
+      pngEvidence.profileDate === '2022:01:01 00:00:00' &&
+      pngEvidence.profileCreator === 'Apple Computer Inc.' &&
+      pngEvidence.profileName === 'kCGColorSpaceDisplayP3' &&
+      typeof xmpRaw === 'string' &&
+      xmpRaw === pngEvidence.xmpCreated &&
+      xmpRaw === pngEvidence.pngModified &&
+      typeof pngEvidence.pngCreated === 'string' &&
+      pngEvidence.pngCreated.replace(/^(\d{4}):(\d{2}):(\d{2}) /, '$1-$2-$3T') ===
+        png.value.localIso &&
+      png.value.localIso > xmp.value.localIso &&
+      date > '2022-01-01' &&
+      contenders.every(
+        (candidate) =>
+          candidate.id === xmp.id ||
+          candidate.id === png.id ||
+          (candidate.sourceKind === 'filename' &&
+            candidate.value.localIso.slice(0, 19) === png.value.localIso.slice(0, 19))
+      )
+    ) {
+      return {
+        selected: xmp,
+        value: { localIso: date, zoneBasis: 'date-only', precision: 'date' },
+        reasonCode: 'DISPLAY_P3_SCREENSHOT_DAY_RECOVERY',
+        contenderIds: contenders.map((candidate) => candidate.id).sort(),
+      };
+    }
+  }
+  return null;
+}
+
 function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
   return value !== null && !Array.isArray(value) && typeof value === 'object'
     ? (value as Record<string, JsonValue>)
@@ -1471,7 +1745,8 @@ function recoverAuditedNarrowMetadata(
     const pairedEditMatch = contenders.some(
       (candidate) =>
         candidate.tag === 'XMP-photoshop:DateCreated' &&
-        candidate.rawValue === evidence?.xmpDateCreated &&
+        (jsonRecord(candidate.rawValue)?.value ?? candidate.rawValue) ===
+          evidence?.xmpDateCreated &&
         evidence.pngModifyDate === evidence.xmpDateCreated
     );
     const applePlaceholderMatch = contenders.some(
@@ -2328,6 +2603,32 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
         'NIKON_RAW_HISTORY_CAPTURE_DAY_RECOVERY',
         'TIME_UNKNOWN',
         'RESOLVED_DATE_ONLY',
+        'RESOLVED_MEDIUM_CONFIDENCE',
+      ]),
+    };
+  }
+
+  const auditedShootOrScreenshot =
+    recoverIccContaminatedOriginal(candidates) ?? recoverAuditedShootOrScreenshot(candidates);
+  if (auditedShootOrScreenshot !== null) {
+    const selectedGroup = groups.find((group) =>
+      group.candidates.some((candidate) => candidate.id === auditedShootOrScreenshot.selected.id)
+    );
+    return {
+      ...baseRecord,
+      status: 'resolved',
+      confidence: 'medium',
+      selectedCandidateId: auditedShootOrScreenshot.selected.id,
+      selectedGroupId: selectedGroup?.id ?? top.id,
+      selectedGroupScore: selectedGroup?.score ?? top.score,
+      selectedValue: auditedShootOrScreenshot.value,
+      contenderIds: auditedShootOrScreenshot.contenderIds,
+      reasonCodes: uniqueSorted([
+        ...reasonCodes,
+        auditedShootOrScreenshot.reasonCode,
+        ...(auditedShootOrScreenshot.value.precision === 'date'
+          ? ['TIME_UNKNOWN', 'RESOLVED_DATE_ONLY']
+          : []),
         'RESOLVED_MEDIUM_CONFIDENCE',
       ]),
     };

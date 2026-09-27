@@ -36,6 +36,180 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  describe('ICC profile timestamp copied into EXIF Original', () => {
+    const photoshelter = {
+      'File:FileType': 'JPEG',
+      'ICC-header:ProfileClass': 'Display Device Profile',
+      'ICC-header:ProfileCreator': 'Adobe Systems Inc.',
+      'IFD0:Software': 'Photoshelter http://www.photoshelter.com',
+      'ExifIFD:DateTimeOriginal': '1999:06:03 00:00:00',
+      'ICC-header:ProfileDateTime': '1999:06:03 00:00:00',
+      'ExifIFD:CreateDate': '2025:08:16 19:40:48',
+      'XMP-xmp:CreateDate': '2025:08:16 19:40:48',
+      'IPTC:DateCreated': '2012:10:11',
+      'IPTC:DigitalCreationDate': '2012:10:11',
+      'XMP-photoshop:DateCreated': '2012:10:11 06:49:49',
+    } satisfies RawExifTags;
+
+    it('recovers the corroborated calendar day without assuming the Photoshop clock', async () => {
+      const result = await resolveImage('2025-08-16_19-40-48_01.jpeg', photoshelter);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: { localIso: '2012-10-11', precision: 'date', zoneBasis: 'date-only' },
+      });
+      expect(result.reasonCodes).toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+
+    it('recovers a whole second only when IPTC time agrees with independent edit clocks', async () => {
+      const result = await resolveImage('2025-08-16_20-09-59_01.jpeg', {
+        ...photoshelter,
+        'IFD0:Software': 'Adobe Photoshop CS5 Macintosh',
+        'ExifIFD:CreateDate': '2025:08:16 20:09:59',
+        'XMP-xmp:CreateDate': '2025:08:16 20:09:59',
+        'IPTC:DateCreated': '2012:07:01',
+        'IPTC:TimeCreated': '18:31:47+00:00',
+        'IPTC:DigitalCreationDate': undefined,
+        'XMP-photoshop:DateCreated': '2012:07:01 18:31:47',
+        'IFD0:ModifyDate': '2012:07:01 18:31:47',
+        'XMP-xmp:ModifyDate': '2012:07:01 18:31:47',
+      });
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: { localIso: '2012-07-01T18:31:47', precision: 'second' },
+      });
+      expect(result.reasonCodes).toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+
+    it.each([
+      ['missing ICC match', { 'ICC-header:ProfileDateTime': '1999:06:04 00:00:00' }],
+      ['discordant IPTC day', { 'IPTC:DateCreated': '2012:10:12' }],
+      ['discordant Photoshop day', { 'XMP-photoshop:DateCreated': '2012:10:12 06:49:49' }],
+      ['no later rewrite', { 'ExifIFD:CreateDate': '2012:10:11 06:49:49' }],
+      ['another creation day', { 'IPTC:DigitalCreationDate': '2012:10:12' }],
+      ['conflicting XMP DC date array', { 'XMP-dc:Date': ['2011:01:01'] }],
+      ['mixed XMP DC date array', { 'XMP-dc:Date': ['2012:10:11', '2011:01:01'] }],
+    ] as const)('keeps review when %s', async (_name, patch) => {
+      const result = await resolveImage('2025-08-16_19-40-48_01.jpeg', {
+        ...photoshelter,
+        ...patch,
+      });
+      expect(result.reasonCodes).not.toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+
+    const topaz = {
+      'File:FileType': 'PNG',
+      'PNG:Software': 'Topaz Photo AI 1.2.6',
+      'PNG:CreateDate': '2025:08:16 23:47:56',
+      'PNG:ModifyDate': '1998:02:09 06:49:00',
+      'ICC-header:ProfileClass': 'Display Device Profile',
+      'ICC-header:ProfileCreator': 'Hewlett-Packard',
+      'ICC-header:ProfileDateTime': '1998:02:09 06:49:00',
+      'ExifIFD:DateTimeOriginal': '1998:02:09 06:49:00',
+      'IFD0:ModifyDate': '1998:02:09 06:49:00',
+      'ExifIFD:CreateDate': '2025:08:16 23:47:56',
+      'IPTC:DateCreated': '2013:12:04',
+      'IPTC:TimeCreated': '16:59:15-04:00',
+      'IPTC:DigitalCreationDate': '2013:12:04',
+      'IPTC:DigitalCreationTime': '16:59:15-04:00',
+      'XMP-xmpMM:HistoryAction': ['derived', 'saved'],
+      'XMP-xmpMM:HistoryWhen': '2013:12:04 23:00:28-05:00',
+      'XMP-xmpMM:HistoryParameters':
+        'converted from image/x-nikon-nef to image/jpeg, saved to new location',
+    } satisfies RawExifTags;
+    it('recovers the Topaz export calendar day but does not promote its IPTC time', async () => {
+      const result = await resolveImage('2025-08-16_23-47-56.png', topaz);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: { localIso: '2013-12-04', precision: 'date', zoneBasis: 'date-only' },
+      });
+      expect(result.reasonCodes).toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+    it.each([
+      ['no ICC match', { 'ICC-header:ProfileDateTime': undefined }],
+      ['digital time differs', { 'IPTC:DigitalCreationTime': '16:59:16-04:00' }],
+      ['history absent', { 'XMP-xmpMM:HistoryWhen': undefined }],
+      ['different export date', { 'PNG:CreateDate': '2025:08:17 23:47:56' }],
+    ] as const)('keeps Topaz review when %s', async (_name, patch) => {
+      const result = await resolveImage('2025-08-16_23-47-56.png', { ...topaz, ...patch });
+      expect(result.reasonCodes).not.toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+    it('does not recover a Photos export with no matching ICC profile', async () => {
+      const result = await resolveImage('2026-01-21_21-59-51_02.jpeg', {
+        'File:FileType': 'JPEG',
+        'IFD0:Software': 'Photos 1.0.1',
+        'ExifIFD:DateTimeOriginal': '1998:02:09 06:49:00',
+        'ExifIFD:CreateDate': '2026:01:21 21:59:51',
+        'IPTC:DateCreated': '2013:05:05',
+        'IPTC:TimeCreated': '22:50:42-05:00',
+      });
+      expect(result.reasonCodes).not.toContain('ICC_EXIF_ORIGINAL_CONTAMINATION_RECOVERY');
+    });
+  });
+  describe('audited D2X shoot day and Display P3 screenshot day', () => {
+    const d2x = {
+      'IFD0:Make': 'NIKON CORPORATION',
+      'IFD0:Model': 'NIKON D2X',
+      'IFD0:ModifyDate': '2006:02:08 14:40:24',
+      'ExifIFD:DateTimeOriginal': '2003:07:01 00:00:00',
+      'ExifIFD:CreateDate': '2003:07:01 00:00:00',
+      'ICC-header:ProfileDateTime': '2003:07:01 00:00:00',
+      'IPTC:DateCreated': '2006:02:08',
+      'IPTC:TimeCreated': '14:40:24-05:00',
+      'IPTC:ObjectName': 'raw_LeticiaJoeBoxer020806',
+      'IPTC:Caption-Abstract':
+        'RICK WILSON/Rick Wilson Photography--2/8/06-- Leticia Cline Joe Boxer shoot at The Carling in Jacksonville, Fl. Wednesday February 8, 2006.',
+    } satisfies RawExifTags;
+    it('recovers the 2006 D2X shoot time at whole-second precision', async () => {
+      const result = await resolveImage('2003-07-01_00-00-00.000024_07.jpeg', d2x);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: {
+          localIso: '2006-02-08T14:40:24',
+          precision: 'second',
+          zoneBasis: 'explicit-offset',
+        },
+      });
+      expect(result.reasonCodes).toContain('NIKON_D2X_SHOOT_TIME_RECOVERY');
+    });
+    it.each([
+      ['different camera', { 'IFD0:Model': 'NIKON D200' }],
+      ['different caption day', { 'IPTC:Caption-Abstract': 'shoot 2/9/06' }],
+      ['different object name', { 'IPTC:ObjectName': 'raw_LeticiaJoeBoxer020906' }],
+      ['different edit time', { 'IFD0:ModifyDate': '2006:02:08 14:40:25' }],
+      ['different ICC day', { 'ICC-header:ProfileDateTime': '2003:07:02 00:00:00' }],
+      ['discordant XMP', { 'XMP-photoshop:DateCreated': '2005:02:08 14:40:24' }],
+    ] as const)('does not recover D2X with %s', async (_name, patch) => {
+      const result = await resolveImage('2003-07-01_00-00-00.000024_07.jpeg', { ...d2x, ...patch });
+      expect(result.reasonCodes).not.toContain('NIKON_D2X_SHOOT_TIME_RECOVERY');
+    });
+    const png = {
+      'PNG:CreateDate': '2024:03:23 12:36:46',
+      'PNG:ModifyDate': '2023:07:22 03:44:56',
+      'ICC-header:ProfileDateTime': '2022:01:01 00:00:00',
+      'ICC-header:ProfileCreator': 'Apple Computer Inc.',
+      'PNG:ProfileName': 'kCGColorSpaceDisplayP3',
+      'XMP-exif:UserComment': 'Screenshot',
+      'XMP-photoshop:DateCreated': '2023:07:22 03:44:56',
+    } satisfies RawExifTags;
+    it('recovers the corroborated screenshot day without borrowing a time zone', async () => {
+      const result = await resolveImage('2024-03-23_12-36-46_01.png', png);
+      expect(result).toMatchObject({
+        status: 'resolved',
+        selectedValue: { localIso: '2023-07-22', precision: 'date', zoneBasis: 'date-only' },
+      });
+      expect(result.reasonCodes).toContain('DISPLAY_P3_SCREENSHOT_DAY_RECOVERY');
+    });
+    it.each([
+      ['different comment', { 'XMP-exif:UserComment': 'Photo' }],
+      ['different PNG modified', { 'PNG:ModifyDate': '2023:07:23 03:44:56' }],
+      ['different ICC date', { 'ICC-header:ProfileDateTime': '2023:01:01 00:00:00' }],
+      ['different profile', { 'PNG:ProfileName': 'Other' }],
+      ['earlier PNG created', { 'PNG:CreateDate': '2023:03:23 12:36:46' }],
+    ] as const)('does not recover screenshot with %s', async (_name, patch) => {
+      const result = await resolveImage('2024-03-23_12-36-46_01.png', { ...png, ...patch });
+      expect(result.reasonCodes).not.toContain('DISPLAY_P3_SCREENSHOT_DAY_RECOVERY');
+    });
+  });
   describe('Nikon D40 Photoshop CS5 rewrite', () => {
     const base = {
       'IFD0:Make': 'NIKON CORPORATION',

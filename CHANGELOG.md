@@ -1041,3 +1041,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Route zero-byte supported media to `_Needs Review/Invalid File` before metadata/date analysis, so filename dates cannot place empty files in dated output. The AI final pass abstains without a model call. Review Queue explains the invalid file and prevents date assignment or metadata retry. Added planner, routing, AI, remediation and UI regressions.
 - Accepted valid minute-precision May 13 Photoshop save history after real-corpus replay. Reject explicit Photoshop timezone disagreement and invalid calendar rollover in saved history before selecting a capture time. The read-only 325-file replay produced 123 guarded resolutions, three D40 files held for review, and no unexpected activations.
+
+## 2026-09-27 audited D2X and Display P3 review recoveries
+
+- Recover the exact Nikon D2X Feb 8, 2006 shoot cohort from matching offset-bearing IPTC time, IFD0 second, caption, and object name. Reject the 2003 EXIF/ICC midnight placeholder and its synthetic fractions.
+- Recover Apple Display P3 screenshots to the corroborated XMP/PNG modified calendar day when the PNG creation timestamp is later. Require Screenshot comment, exact ICC placeholder, and no contrary creation claim.
+- Added mismatch regressions and replayed all 323 current review files: 15 D2X and 15 screenshot recoveries; 123 pre-existing D40 recoveries retained. Output remains untouched pending primary cutover.
+- The 16 already-organized July 1, 2003 files were replayed separately; none activated either rule.
+
+## 2026-09-27 ICC profile timestamp contamination
+
+- Recover 12 JPEGs and one Topaz PNG whose EXIF Original exactly repeats an embedded ICC profile timestamp, provided independent IPTC/Photoshop or IPTC/history evidence supports a distinct creation day and a later rewrite is explicit. Use date-only except for one JPEG with IPTC time confirmed by two edit clocks.
+- Reject missing or mismatched ICC profiles, discordant creation claims (including XMP DC date arrays), missing history, and mismatched rewrite dates. Failing-first regressions and a 323-file read-only replay found exactly 13 new recoveries; 36 organized counterexamples did not activate.

@@ -1060,6 +1060,85 @@ export class MetadataCandidateCollector {
     }
 
     if (request.mediaKind === 'image' || request.mediaKind === 'raw') {
+      const iccIptcDay = candidates.find(
+        (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+      );
+      if (iccIptcDay && tags['ICC-header:ProfileDateTime'] === tags['ExifIFD:DateTimeOriginal']) {
+        iccIptcDay.rawValue = {
+          date: iccIptcDay.rawValue,
+          recoveryEvidence: JSON.parse(
+            JSON.stringify({
+              kind: 'icc-exif-original-contamination',
+              fileType: tags['File:FileType'],
+              profileClass: tags['ICC-header:ProfileClass'],
+              profileCreator: tags['ICC-header:ProfileCreator'],
+              profileDate: tags['ICC-header:ProfileDateTime'],
+              pngSoftware: tags['PNG:Software'],
+              pngCreated: tags['PNG:CreateDate'],
+              pngModified: tags['PNG:ModifyDate'],
+              exifOriginal: tags['ExifIFD:DateTimeOriginal'],
+              exifCreated: tags['ExifIFD:CreateDate'],
+              xmpCreated: tags['XMP-xmp:CreateDate'],
+              iptcDate: tags['IPTC:DateCreated'],
+              iptcTime: tags['IPTC:TimeCreated'],
+              iptcDigitalDate: tags['IPTC:DigitalCreationDate'],
+              iptcDigitalTime: tags['IPTC:DigitalCreationTime'],
+              photoshopDate: tags['XMP-photoshop:DateCreated'],
+              dcDate: tags['XMP-dc:Date'],
+              ifd0Modified: tags['IFD0:ModifyDate'],
+              xmpModified: tags['XMP-xmp:ModifyDate'],
+              historyAction: tags['XMP-xmpMM:HistoryAction'],
+              historyWhen: tags['XMP-xmpMM:HistoryWhen'],
+              historyParameters: tags['XMP-xmpMM:HistoryParameters'],
+            })
+          ) as JsonValue,
+        };
+      }
+      const d2xDate = candidates.find(
+        (candidate) => candidate.tag === 'IPTC:DateCreated' && candidate.value.precision === 'date'
+      );
+      if (d2xDate && tags['IFD0:Model'] === 'NIKON D2X') {
+        const evidence = JSON.parse(
+          JSON.stringify({
+            kind: 'nikon-d2x-shoot-day',
+            make: tags['IFD0:Make'] as JsonValue,
+            model: tags['IFD0:Model'] as JsonValue,
+            modified: tags['IFD0:ModifyDate'] as JsonValue,
+            original: tags['ExifIFD:DateTimeOriginal'] as JsonValue,
+            created: tags['ExifIFD:CreateDate'] as JsonValue,
+            profile: tags['ICC-header:ProfileDateTime'] as JsonValue,
+            iptcDate: tags['IPTC:DateCreated'] as JsonValue,
+            iptcTime: tags['IPTC:TimeCreated'] as JsonValue,
+            objectName: tags['IPTC:ObjectName'] as JsonValue,
+            caption: tags['IPTC:Caption-Abstract'] as JsonValue,
+          })
+        ) as JsonValue;
+        d2xDate.rawValue = { date: d2xDate.rawValue, recoveryEvidence: evidence };
+      }
+      const displayP3Date = candidates.find(
+        (candidate) => candidate.tag === 'XMP-photoshop:DateCreated'
+      );
+      if (
+        displayP3Date &&
+        tags['XMP-exif:UserComment'] === 'Screenshot' &&
+        tags['PNG:ModifyDate'] !== '2022:01:01 00:00:00'
+      ) {
+        displayP3Date.rawValue = JSON.parse(
+          JSON.stringify({
+            value: displayP3Date.rawValue,
+            recoveryEvidence: {
+              kind: 'display-p3-screenshot-day',
+              comment: tags['XMP-exif:UserComment'] as JsonValue,
+              profileDate: tags['ICC-header:ProfileDateTime'] as JsonValue,
+              profileCreator: tags['ICC-header:ProfileCreator'] as JsonValue,
+              profileName: tags['PNG:ProfileName'] as JsonValue,
+              pngCreated: tags['PNG:CreateDate'] as JsonValue,
+              pngModified: tags['PNG:ModifyDate'] as JsonValue,
+              xmpCreated: tags['XMP-photoshop:DateCreated'] as JsonValue,
+            },
+          })
+        ) as JsonValue;
+      }
       const d40Original = candidates.find(
         (candidate) => candidate.tag === 'ExifIFD:DateTimeOriginal'
       );
