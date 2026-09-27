@@ -143,6 +143,8 @@ function factories(
     get: jest.fn().mockResolvedValue(null),
     dryRun: jest.fn(),
     apply: jest.fn(),
+    automaticRetryDryRun: jest.fn(),
+    automaticRetryApply: jest.fn(),
   };
   const coordinator = {
     createPreview: async () => {

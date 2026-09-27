@@ -36,6 +36,103 @@ const statWithBirthtime = async (): Promise<Pick<Stats, 'birthtime'>> => ({
 });
 
 describe('MetadataCandidateCollector', () => {
+  it('exposes a verified raw review read through the owned adapter and rejects after close', async () => {
+    const signal = new AbortController().signal;
+    const receipt = {
+      tags: { 'IFD0:ModifyDate': '2022:12:12 00:00:00' },
+      sha256: 'a'.repeat(64),
+      bytes: 12,
+    };
+    const readRawVerified = jest.fn(async () => receipt);
+    const collector = new MetadataCandidateCollector({
+      readRaw: jest.fn(),
+      readRawVerified,
+      close: jest.fn(),
+    });
+    await expect(collector.readRawVerifiedForReview('/output/photo.jpg', signal)).resolves.toBe(
+      receipt
+    );
+    expect(readRawVerified).toHaveBeenCalledWith('/output/photo.jpg', signal);
+    await collector.close();
+    await expect(collector.readRawVerifiedForReview('/output/photo.jpg', signal)).rejects.toThrow(
+      /closed/
+    );
+  });
+  describe('Getty original-name recovery from a 2022 rewrite', () => {
+    const base = {
+      'ExifIFD:DateTimeOriginal': '2022:12:12 01:15:12',
+      'ExifIFD:CreateDate': '2022:12:12 01:15:12',
+      'XMP-xmp:CreateDate': '2022:12:12 01:15:12',
+      'IFD0:ModifyDate': '2022:12:12 01:15:12',
+      'XMP-photoshop:DateCreated': '2015:02:21 16:30:42-05:00',
+      'IPTC:DateCreated': '2015:02:21',
+      'IPTC:TimeCreated': '16:30:42-05:00',
+      'XMP-getty:OriginalFileName': '2015-02-21_16-30-42d.jpg',
+    } satisfies RawExifTags;
+
+    it('recovers the editorial time when the original name agrees and omits unsupported fractions', async () => {
+      const result = await resolveImage('2022-12-12_01-15-12_21.jpeg', {
+        ...base,
+        'XMP-photoshop:DateCreated': '2015:02:21 16:30:42.000123-05:00',
+      });
+      expect(result).toMatchObject({
+        status: 'resolved',
+        confidence: 'medium',
+        selectedValue: { localIso: '2015-02-21T16:30:42', precision: 'second' },
+      });
+      expect(result.reasonCodes).toContain('ORIGINAL_NAME_2022_REWRITE_RECOVERY');
+    });
+
+    it('accepts the audited original-name letter suffix used by rewritten files', async () => {
+      const result = await resolveImage('2022-12-12_01-05-49_02.jpeg', {
+        ...base,
+        'ExifIFD:DateTimeOriginal': '2022:12:12 01:05:49',
+        'ExifIFD:CreateDate': '2022:12:12 01:05:49',
+        'XMP-xmp:CreateDate': '2022:12:12 01:05:49',
+        'IFD0:ModifyDate': '2022:12:12 01:05:49',
+        'XMP-photoshop:DateCreated': '2017:09:07 15:04:12-05:00',
+        'IPTC:DateCreated': '2017:09:07',
+        'IPTC:TimeCreated': '15:04:12-05:00',
+        'XMP-getty:OriginalFileName': '2017-09-07_15-04-12dab.jpg',
+      });
+      expect(result.reasonCodes).toContain('ORIGINAL_NAME_2022_REWRITE_RECOVERY');
+    });
+
+    it.each([
+      ['missing name', { 'XMP-getty:OriginalFileName': undefined }],
+      ['different name time', { 'XMP-getty:OriginalFileName': '2015-02-21_16-30-43d.jpg' }],
+      ['different IPTC time', { 'IPTC:TimeCreated': '16:30:43-05:00' }],
+      ['nonbatch EXIF date', { 'ExifIFD:DateTimeOriginal': '2022:12:13 01:15:12' }],
+      [
+        'same-day noon rewrite outside the audited interval',
+        {
+          'ExifIFD:DateTimeOriginal': '2022:12:12 12:15:12',
+          'ExifIFD:CreateDate': '2022:12:12 12:15:12',
+          'XMP-xmp:CreateDate': '2022:12:12 12:15:12',
+          'IFD0:ModifyDate': '2022:12:12 12:15:12',
+        },
+      ],
+      ['other creation date', { 'XMP-exif:DateTimeOriginal': '2016:02:21 16:30:42' }],
+      [
+        'additional digital creation contender',
+        {
+          'IPTC:DigitalCreationDate': '2014:05:01',
+          'IPTC:DigitalCreationTime': '12:00:00-05:00',
+        },
+      ],
+      [
+        'conflicting GPS creation contender',
+        {
+          'GPS:GPSDateStamp': '2018:01:01',
+          'GPS:GPSTimeStamp': '12:00:00',
+        },
+      ],
+    ] as const)('does not recover %s', async (_label, change) => {
+      const result = await resolveImage('2022-12-12_01-15-12_21.jpeg', { ...base, ...change });
+      expect(result.reasonCodes).not.toContain('ORIGINAL_NAME_2022_REWRITE_RECOVERY');
+    });
+  });
+
   async function resolveImage(filename: string, tags: RawExifTags) {
     const collector = new MetadataCandidateCollector(new FakeExifToolAdapter(tags), async () => ({
       birthtime: new Date(Number.NaN),

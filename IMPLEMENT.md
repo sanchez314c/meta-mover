@@ -1047,3 +1047,57 @@ A read-only replay of all 10,270 date-only output files through the bundled meta
 The 449 conflicting-date review files all contain at least two distinct embedded calendar dates. The largest 90-file group contrasts clustered 2026 EXIF/XMP dates with individualized 2013 IPTC/Photoshop dates; the 48-file and 43-file groups each share one exact EXIF second across every image while their alternatives vary. These are signs of bulk metadata writes, but not proof of the original capture date for an individual file. A 33-file one-day disagreement has varied timestamps on both sides. A 23-file group has the same 2003 midnight EXIF placeholder against varied 2006 IPTC dates. No general EXIF-over-IPTC or oldest-date rule was adopted. Of 249 files previously labeled No Usable Date, 248 have no apparent embedded or filename creation date; the remaining one is the low-confidence digitization case now routed more accurately on future processing.
 
 The existing output migration applied all 5,129 planned atomic renames with 5,129 committed receipts and zero identity mismatches. The photo file total remained 100,000; 5,141 direct-year filenames remain date-only and 698 files remain in `_Needs Review`. The six reported 2018 examples stayed date-only because their embedded times disagree. The migration manifest, decisions, and rollback ledger are kept under the output root's `.meta-mover-maintenance/20260926-whole-second` directory.
+
+### Getty original-name recovery for 2022-12-12 rewrites
+
+The current 449-file conflicting-date set contains 26 images whose EXIF original/create, XMP create, and IFD0 modify fields repeat a later 2022-12-12 processing time within the audited 01:05:43–01:15:13 interval. Their Getty OriginalFileName embeds an older timestamp matching both IPTC DateCreated+TimeCreated and Photoshop DateCreated. Added a fail-closed resolver rule for that exact metadata pattern, including the audited one-to-three letter original-name suffix. It rejects missing or mismatched original names, rewrite times outside that interval, EXIF deviations, IPTC disagreement, a third credible creation contender, and offset disagreement. The selected date is kept at whole-second precision; unverified fractions are omitted. TDD covered success and eight counterexamples, including a same-day noon rewrite and additional digital or GPS creation claims. Re-extracting all 449 review files through the collector/resolver changed exactly 26 ambiguous rows to medium-confidence resolved; the remaining 423 matched the pre-edit resolver in status and selected value. A second 449-file replay after the interval guard retained the same 26 recoveries and left every other selected value unchanged. No output assets were moved by this source change.
+## 2026-09-26 complete review-loop correction
+
+### Discussed
+
+The 100,000-file output contains 698 review images. The User requires every supported file to reach output and only genuinely undatable or unresolved cases to remain after repeated normal-app processing. The final pass may use GLM 5.3 to make an auditable educated choice among remaining dates, with GLM 4.6v image inspection available for visible clues. AI choices must not be recorded as user overrides or as deterministic capture facts.
+
+### Decided
+
+Re-extract current review items through the latest deterministic resolver before a paid model call. Apply a deterministic decision only through the normal identity-bound, no-clobber review transaction and persist the refreshed resolution. Give GLM verified, bounded metadata and eligible candidate IDs; accept only a date supported by an eligible candidate, record model and rationale, and leave unsupported or dateless cases in review. Keep the API key in process memory or a generic runtime environment variable, never in packaged source, settings, evidence, or renderer status. The GLM 4.6v adapter reports visible date text as advisory evidence and does not turn image context into a capture timestamp.
+
+### Built
+
+- Guarded 2022-12-12 original-name rewrite recovery; 26 of 449 current conflicting-date files become deterministic resolutions in fresh re-extraction, with 423 unchanged.
+- Internal automatic retry with persisted refreshed evidence, transaction recovery, and renderer IPC rejection of forged internal actions.
+- GLM 5.3 client, verified metadata reader, candidate-bound AI estimate action, resumable review batch, private checkpoints, and Review Queue controls. A generic `ZAI_API_KEY` environment fallback supports the current source run without embedding workstation credential paths in the product.
+- Separate GLM 4.6v visible-date adapter, tested with a synthetic image. It is not part of automatic date selection.
+
+### Validation
+
+The initial integrated gate passed 1,325 tests across 63 suites, typecheck, lint, formatting, and production build. A second gate after the automatic retry integration and a live review run are still required before completion.
+
+### Real override store correction
+
+The live batch reached review apply but the durable store rejected every record: the service generated a public `review-` ID from job and row, while the store accepted only a different full hash of job, preview, row, output path, and content hash. Keep the existing public IDs stable for queue links and bookmarks. The store now accepts both ID formats and enforces immutable job, preview, row, and complete output binding through every append and replay. A failing real-store integration test reproduced the rejection before the change. Focused store and service tests pass after the correction; the full integrated gate and live retry remain with the primary agent.
+
+### Native review transaction and batch lease
+
+The next live retry recorded review intent but could not move: the production review factory created `TransactionalFileCore` without the native helper required for mutation. The source launcher had staged the helper and broker correctly. The review factory now uses the same `NativeFilesystemHelperClient` and launch trust policy as normal processing, with the destination tree as the retained source capability for review files. A real staged-helper integration test moves a test review file through an exact no-clobber transaction.
+
+The review service now opens its transaction core lazily for a batch, reuses it for sequential moves, and closes it in `finally` after active moves finish. This avoids replaying the large destination journal for every resolved file. A single manual apply retains one open and one close. Concurrent manual apply receives an explicit busy error before an override write. Focused tests cover reuse, ordinary apply, contention, cancellation during a move, and production composition. The primary agent owns the full gate and source relaunch.
+
+### Bound AI candidate preflight
+
+The initial AI preflight called `dryRun` for every eligible candidate. Each call repeated `JobHistoryStore.listJobs` over the large prior job, scanned committed rows, and rebound the same output file. Added a review-service API that locates the file once, verifies its evidence revision and output identity, then evaluates at most 128 unique candidate values in memory with cancellation checks. It returns only candidates whose AI estimate path produces a trusted, noncolliding target. The final dry run and apply remain separate and revalidate current state before mutation. A six-candidate test measures one history lookup and one output-binding read; placeholder midnight, occupied SKIP target, and cancellation cases are covered.
+
+### Review Queue error ownership during AI batches
+
+The live AI batch resolved files while the Review Queue still showed a red native-helper error from an earlier attempt. Starting or resuming AI now clears that prior review error. Status polling also clears it while the batch runs, and row selection cannot restore an old per-file error until the batch ends. A current AI batch error still displays through its own status notice. Renderer tests cover both cases.
+
+### Bounded GLM proposal concurrency
+
+The User asked to use idle processing capacity without allowing concurrent file mutations. The batch now prepares review items serially, then keeps at most four verified metadata proposals in flight. It consumes proposal outcomes in stable queue order; only the serial lane applies review transactions and writes checkpoints. Before an AI move, it reloads the item and requires pending status, matching evidence revision, and the complete saved output binding. Cancellation and authentication failure abort and drain in-flight requests; a persistent 429 reduces subsequent proposal concurrency to one. Tests cover four-call maximum, ordered applies, stale binding, authentication stop, and cancellation.
+
+### AI candidate actionability preflight
+
+The live review of `2025-08-16_20-01-35.jpeg` exposed an eligible EXIF midnight value from 1999 that the resolver correctly rejects as a placeholder. Before a paid model call, one batched review preflight binds the item once, tests eligible AI estimates in memory, and returns only candidate IDs with a trusted review plan. This avoids a full 100,000-row history scan per candidate. If all candidates fail the resolver guard, it abstains without a model call. A candidate that becomes untrusted at final dry run is also an abstention, not a failed file move. Tests cover the midnight-style conflict, no actionable candidates, and a later guard rejection.
+
+### Bounded timeout retry for GLM proposals
+
+Two live model calls exceeded the original 120-second timeout, and the client did not retry either one. The client now allows 240 seconds per attempt, retries a timeout once with bounded jitter, and enforces a 480-second total deadline even if the HTTP transport ignores AbortSignal. A user cancel or 401/403 rejection stops immediately. Tests cover a successful second attempt, two timeouts, cancellation, authentication rejection, and a transport that never settles. No transaction is retried by this change.

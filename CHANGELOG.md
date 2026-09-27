@@ -961,3 +961,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved date-only filenames when embedded sources disagree about the time; existing output and review history remain in place.
 - Recovered an agreed capture second when independent embedded sources differ only in unverified fractional digits. Explicit instant conflicts, placeholders, and conflicting filename claims still prevent this recovery.
 - Added an audited maintenance tool to rename existing date-only output files after a verified whole-second decision, with no-overwrite collision allocation, durable ledger, recovery, and rollback.
+## 2026-09-26 original-name 2022 rewrite recovery
+
+- Added a guarded recovery for the 2022-12-12 rewrite cohort. Matching EXIF original/create, XMP create, and IFD0 modify times within the audited 01:05:43–01:15:13 interval identify the later rewrite. An older Getty original filename must match the IPTC and Photoshop creation time through seconds, with no third credible creation contender.
+- The selected Photoshop time omits unverified fractional digits. A read-only re-extraction of all 449 conflicting-date review images resolved exactly 26 at medium confidence; all other 423 retained their baseline status and selected value.
+## 2026-09-26 review reduction and AI final pass
+
+- Added a narrow recovery for the audited 2022-12-12 metadata rewrite cohort. It requires the observed rewrite clock interval, matching older Getty original filename and IPTC/Photoshop creation time, and no credible conflicting creation claim. A fresh 449-file re-extraction resolves 26 and leaves the other 423 decisions unchanged.
+- Added an internal automatic metadata retry that uses the current resolver before AI assessment. A newly resolved file follows the existing no-clobber transaction and retains the refreshed evidence in its durable review record.
+- Added an optional GLM 5.3 final pass for remaining review items. Each request uses verified file metadata, bounded date and provenance fields, a runtime-only API key, strict response validation, and a separate AI estimate action. Unsupported dates and files with no eligible date remain in review.
+- Added a GLM 4.6v visible-date adapter. Its image finding is advisory and cannot silently create a capture date. Renderer IPC cannot forge internal automatic or AI actions.
+- Added review progress, cancellation, resume checkpoints, and explicit deterministic, AI, abstained, and failed counts. The existing transaction and review ledger protect applied moves; the AI checkpoint contains no key or image.
+
+## 2026-09-26 review override ID compatibility
+
+- Fixed the real review override store rejecting the app's existing `review-` IDs on every apply. The store accepts both established public IDs and full-hash ledger IDs, and checks that the job, preview, row, and complete output binding remain unchanged across append and replay.
+- Added real-store integration tests for automatic retry and keep, plus tampered-binding rejection on append and replay. Existing public review IDs remain stable.
+
+## 2026-09-26 review native transaction wiring
+
+- Wired review moves to the same packaged native filesystem helper and launch trust policy used by normal processing. The staged helper was present; review creation had omitted its native factory, so moves failed after audit append.
+- Reused one lazily opened transaction core during each AI review batch and closed it after completion, cancellation, or failure. A normal single review apply still opens and closes its own core. Manual apply during a batch reports an explicit busy error before writing a review record.
+- Added a staged-helper integration move plus lease, contention, cancellation, and lifecycle tests. The batch now replays the destination transaction journal once per active review session instead of once per resolved file.
+
+## 2026-09-26 bounded AI candidate preflight
+
+- Replaced repeated full review history and output-binding reads for each AI date candidate with one bound preflight call per review file. It evaluates up to 128 unique candidate values against the current evidence and resolver, checks cancellation between candidates, and returns only trusted actionable candidate IDs. Final dry run and apply still revalidate evidence, output identity, and destination occupancy.
+- Added regressions proving six candidates require one history lookup and one output binding read, and that midnight placeholders, occupied SKIP targets, and cancelled preflights are excluded.
+
+## 2026-09-26 review error display during AI batch
+
+- Cleared prior review errors when an AI batch starts or resumes. Selecting a row during the active batch no longer restores its old error banner. Current batch errors remain visible; row errors return after the batch finishes.
+
+## 2026-09-26 bounded AI proposal concurrency
+
+- Allowed up to four GLM proposals in flight after serial deterministic retry and verified metadata reads. Review transactions, checkpoints, and result accounting stay ordered. Before AI apply, the batch rechecks status, evidence revision, and full output binding. Authentication failure or cancellation aborts and drains pending proposals.
+
+## 2026-09-26 AI candidate preflight
+
+- Screened eligible metadata candidates through one batched review preflight before offering their IDs to GLM. The preflight binds the item once and checks candidates in memory, avoiding a full review-history scan per candidate. A candidate that still triggers a resolver review guard, including a midnight placeholder, is excluded. A later trusted-resolution rejection is counted as abstained and leaves the file in review.
+
+## 2026-09-26 bounded GLM timeout retry
+
+- Extended GLM 5.3 proposals to a 240-second per-attempt window with one timeout retry and a hard 480-second total budget. The timeout also terminates a transport that ignores cancellation. User cancellation and API authentication rejection remain immediate; the retry only requests a proposal and cannot repeat a file move.

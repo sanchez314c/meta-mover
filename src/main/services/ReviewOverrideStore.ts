@@ -52,8 +52,33 @@ export function reviewOverrideId(
     .digest('hex');
 }
 
+function serviceReviewId(record: Pick<ReviewOverrideRecord, 'jobId' | 'rowIndex'>): string {
+  return `review-${createHash('sha256')
+    .update(JSON.stringify({ jobId: record.jobId, rowIndex: record.rowIndex }))
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+function sameBinding(left: ReviewOverrideRecord, right: ReviewOverrideRecord): boolean {
+  return (
+    left.jobId === right.jobId &&
+    left.previewId === right.previewId &&
+    left.rowIndex === right.rowIndex &&
+    left.output.path === right.output.path &&
+    left.output.device === right.output.device &&
+    left.output.inode === right.output.inode &&
+    left.output.size === right.output.size &&
+    left.output.modifiedTimeMs === right.output.modifiedTimeMs &&
+    left.output.mtimeNs === right.output.mtimeNs &&
+    left.output.sha256 === right.output.sha256
+  );
+}
+
 function validRecord(value: unknown): value is ReviewOverrideRecord {
-  return isReviewOverrideRecord(value) && value.reviewId === reviewOverrideId(value);
+  return (
+    isReviewOverrideRecord(value) &&
+    (value.reviewId === reviewOverrideId(value) || value.reviewId === serviceReviewId(value))
+  );
 }
 
 function clone<T>(value: T): T {
@@ -276,6 +301,7 @@ export class ReviewOverrideStore {
     const prior = this.latest.get(record.reviewId);
     const expected = (prior?.sequence ?? 0) + 1;
     if (record.sequence !== expected) this.corrupt(line, 'non-monotonic review sequence');
+    if (prior && !sameBinding(prior, record)) this.corrupt(line, 'review output binding changed');
     this.latest.set(record.reviewId, Object.freeze(clone(record)));
   }
 
@@ -293,6 +319,9 @@ export class ReviewOverrideStore {
               'SEQUENCE_REJECTED',
               `expected review sequence ${expected}`
             );
+          const prior = this.latest.get(record.reviewId);
+          if (prior && !sameBinding(prior, record))
+            throw new ReviewOverrideStoreError('INVALID_INPUT', 'review output binding changed');
           await this.assertLockIdentity();
           await this.assertFileIdentity();
           const currentSize = (await this.handle!.stat()).size;

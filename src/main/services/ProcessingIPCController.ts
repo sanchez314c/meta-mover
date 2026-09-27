@@ -5,6 +5,7 @@ import {
   ProcessingCoordinatorError,
 } from './ProcessingCoordinator';
 import { BundledRuntimeHealth } from '../tools/BundledRuntimeHealth';
+import type { AiReviewBatchStatus } from './AiReviewBatchService';
 import {
   CancelProcessingRequestDTO,
   ConflictPolicy,
@@ -55,6 +56,9 @@ export const PROCESSING_IPC_CHANNELS = Object.freeze([
   'review:get',
   'review:dry-run',
   'review:apply',
+  'review:ai-start',
+  'review:ai-status',
+  'review:ai-cancel',
 ] as const);
 
 type ProcessingIpcChannel = (typeof PROCESSING_IPC_CHANNELS)[number];
@@ -105,6 +109,12 @@ export interface ReviewIpcPort {
   apply(request: ReviewApplyRequestDTO): Promise<ReviewApplyResultDTO>;
 }
 
+export interface AiReviewIpcPort {
+  start(request: { apiKey: string }): Promise<AiReviewBatchStatus>;
+  status(): AiReviewBatchStatus;
+  cancel(): void;
+}
+
 export interface ProcessingIPCDependencies {
   ipc: IpcRegistrarPort;
   coordinator: ProcessingCoordinatorPort;
@@ -113,6 +123,8 @@ export interface ProcessingIPCDependencies {
   config: ConfigIpcPort;
   audit: NormalizationAuditIpcPort;
   review: ReviewIpcPort;
+  aiReview: AiReviewIpcPort;
+  aiKeyFromEnvironment(): string | undefined;
   publishEvent(event: Readonly<ProcessingEvent>): void;
 }
 
@@ -417,6 +429,10 @@ export class ProcessingIPCController {
       this.handle('review:dry-run', async (value) => {
         if (!isReviewDryRunRequestDTO(value))
           throw new IPCValidationError('Review dry-run request is invalid');
+        if (['ai-estimate', 'automatic-retry'].includes(value.action.type))
+          throw new IPCValidationError(
+            'Internal review actions cannot be submitted from the renderer'
+          );
         const data = await this.dependencies.review.dryRun(value);
         if (!isReviewDryRunDTO(data)) throw new Error('Review service returned an invalid plan');
         return { success: true, data };
@@ -424,10 +440,40 @@ export class ProcessingIPCController {
       this.handle('review:apply', async (value) => {
         if (!isReviewApplyRequestDTO(value))
           throw new IPCValidationError('Review apply request is invalid');
+        if (['ai-estimate', 'automatic-retry'].includes(value.action.type))
+          throw new IPCValidationError(
+            'Internal review actions cannot be submitted from the renderer'
+          );
         const data = await this.dependencies.review.apply(value);
         if (!isReviewApplyResultDTO(data))
           throw new Error('Review service returned an invalid result');
         return { success: true, data };
+      });
+      this.handle('review:ai-start', async (value) => {
+        const request = dataRecord(value, ['apiKey']);
+        if (
+          request.apiKey !== undefined &&
+          (typeof request.apiKey !== 'string' || request.apiKey.length > 8192)
+        )
+          throw new IPCValidationError('AI API key is required');
+        const entered = typeof request.apiKey === 'string' ? request.apiKey.trim() : '';
+        const apiKey = entered || this.dependencies.aiKeyFromEnvironment()?.trim();
+        if (!apiKey) throw new IPCValidationError('AI API key is required');
+        return {
+          success: true,
+          data: await this.dependencies.aiReview.start({ apiKey }),
+        };
+      });
+      this.handle('review:ai-status', async () => ({
+        success: true,
+        data: {
+          ...this.dependencies.aiReview.status(),
+          keyAvailable: Boolean(this.dependencies.aiKeyFromEnvironment()?.trim()),
+        },
+      }));
+      this.handle('review:ai-cancel', async () => {
+        this.dependencies.aiReview.cancel();
+        return { success: true };
       });
       const unsubscribe = this.dependencies.coordinator.subscribe((event) => {
         if (this.accepting) this.dependencies.publishEvent(event);

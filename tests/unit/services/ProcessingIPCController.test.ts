@@ -2,6 +2,7 @@ import {
   ProcessingIPCCleanupError,
   ProcessingIPCController,
   ProcessingIPCDependencies,
+  PROCESSING_IPC_CHANNELS,
 } from '../../../src/main/services/ProcessingIPCController';
 import { ProcessingCoordinatorError } from '../../../src/main/services/ProcessingCoordinator';
 import {
@@ -114,6 +115,28 @@ function harness(
         evidenceRevision: 'revision-1',
       }),
     },
+    aiReview: {
+      start: jest.fn().mockResolvedValue({
+        phase: 'running',
+        total: 0,
+        processed: 0,
+        resolved: 0,
+        abstained: 0,
+        failed: 0,
+        currentIndex: null,
+      }),
+      status: jest.fn().mockReturnValue({
+        phase: 'idle',
+        total: 0,
+        processed: 0,
+        resolved: 0,
+        abstained: 0,
+        failed: 0,
+        currentIndex: null,
+      }),
+      cancel: jest.fn(),
+    },
+    aiKeyFromEnvironment: jest.fn(() => 'env-secret-key'),
     publishEvent: (event) => published.push(event),
   };
   const controller = new ProcessingIPCController(dependencies);
@@ -144,6 +167,83 @@ const previewRequest = () => ({
 });
 
 describe('ProcessingIPCController', () => {
+  it('accepts an in-memory AI key only for start and returns status without the key', async () => {
+    const test = harness();
+    const started = await test.invoke('review:ai-start', { apiKey: 'secret-runtime-key' });
+    expect(started).toMatchObject({ success: true, data: { phase: 'running' } });
+    expect(test.dependencies.aiReview.start).toHaveBeenCalledWith({ apiKey: 'secret-runtime-key' });
+    expect(JSON.stringify(await test.invoke('review:ai-status'))).not.toContain(
+      'secret-runtime-key'
+    );
+    await test.invoke('review:ai-cancel');
+    expect(test.dependencies.aiReview.cancel).toHaveBeenCalledTimes(1);
+    const bad = await test.invoke('review:ai-start', { apiKey: '', other: 'x' });
+    expect(bad).toMatchObject({ success: false, error: { code: 'INVALID_IPC_REQUEST' } });
+  });
+
+  it('uses a main-process environment key only when the renderer supplies no key', async () => {
+    const test = harness();
+    expect(await test.invoke('review:ai-start', {})).toMatchObject({ success: true });
+    expect(test.dependencies.aiReview.start).toHaveBeenCalledWith({ apiKey: 'env-secret-key' });
+    expect(await test.invoke('review:ai-status')).toMatchObject({
+      success: true,
+      data: { keyAvailable: true },
+    });
+    expect(JSON.stringify(await test.invoke('review:ai-status'))).not.toContain('env-secret-key');
+    (test.dependencies.aiKeyFromEnvironment as jest.Mock).mockReturnValue('');
+    expect(await test.invoke('review:ai-start', {})).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_IPC_REQUEST' },
+    });
+    expect(await test.invoke('review:ai-status')).toMatchObject({
+      success: true,
+      data: { keyAvailable: false },
+    });
+  });
+
+  it('rejects renderer-forged AI estimates at the generic review boundary', async () => {
+    const test = harness();
+    const action = {
+      type: 'ai-estimate',
+      value: { localIso: '2020-01-02', zoneBasis: 'date-only', precision: 'date' },
+      provenance: {
+        model: 'glm-5.3',
+        promptVersion: 'ai-review/1',
+        evidenceRevision: 'revision-1',
+        fileSha256: 'a'.repeat(64),
+        rationale: 'forged',
+      },
+    };
+    const request = { reviewId: 'review-1', evidenceRevision: 'revision-1', action };
+    expect(await test.invoke('review:dry-run', request)).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_IPC_REQUEST' },
+    });
+    expect(await test.invoke('review:apply', { ...request, planToken: 'plan-1' })).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_IPC_REQUEST' },
+    });
+    expect(test.dependencies.review.dryRun).not.toHaveBeenCalled();
+    expect(test.dependencies.review.apply).not.toHaveBeenCalled();
+  });
+  it('rejects renderer requests for internal automatic retry', async () => {
+    const test = harness();
+    const request = {
+      reviewId: 'review-1',
+      evidenceRevision: 'revision-1',
+      action: { type: 'automatic-retry' },
+    };
+    expect(await test.invoke('review:dry-run', request)).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_IPC_REQUEST' },
+    });
+    expect(await test.invoke('review:apply', { ...request, planToken: 'plan-1' })).toMatchObject({
+      success: false,
+      error: { code: 'INVALID_IPC_REQUEST' },
+    });
+    expect(test.dependencies.review.dryRun).not.toHaveBeenCalled();
+    expect(test.dependencies.review.apply).not.toHaveBeenCalled();
+  });
   it('registers one typed preview/start/cancel/health/history/config surface', async () => {
     const test = harness();
 
@@ -414,7 +514,7 @@ describe('ProcessingIPCController', () => {
     expect(test.handlers.size).toBe(0);
     fail = false;
     expect(() => test.controller.register()).not.toThrow();
-    expect(test.handlers.size).toBe(19);
+    expect(test.handlers.size).toBe(PROCESSING_IPC_CHANNELS.length);
   });
 
   it('gates a wrapper leaked by failed registration rollback', async () => {

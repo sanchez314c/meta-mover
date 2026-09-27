@@ -55,6 +55,31 @@ describe('ReviewOverrideStore', () => {
   });
   afterEach(async () => fs.rm(root, { recursive: true, force: true }));
 
+  it('accepts existing service IDs but rejects binding changes across append and replay', async () => {
+    const first = record();
+    first.reviewId = `review-${createHash('sha256')
+      .update(JSON.stringify({ jobId: first.jobId, rowIndex: first.rowIndex }))
+      .digest('hex')
+      .slice(0, 32)}`;
+    const store = await ReviewOverrideStore.open(storePath);
+    await store.append(first);
+    const tampered = {
+      ...first,
+      eventId: randomUUID(),
+      sequence: 2,
+      output: { ...first.output, sha256: hash('f') },
+    };
+    await expect(store.append(tampered)).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await store.close();
+    const reopened = await ReviewOverrideStore.open(storePath);
+    expect((await reopened.get(first.reviewId))?.output.sha256).toBe(first.output.sha256);
+    await reopened.close();
+    await fs.appendFile(storePath, `${JSON.stringify(tampered)}\n`);
+    await expect(ReviewOverrideStore.open(storePath)).rejects.toMatchObject({
+      code: 'CORRUPT_STORE',
+    });
+  });
+
   it('creates private durable storage and replays the latest record per review', async () => {
     const store = await ReviewOverrideStore.open(storePath);
     await store.append(record());

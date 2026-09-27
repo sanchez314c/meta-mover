@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 
 import type {
@@ -12,14 +12,19 @@ import type {
   ReviewPageDTO,
 } from '../../../shared/types/review';
 import type { ScoredDateCandidate } from '../../../main/core/date/types';
+import type { AiReviewBatchStatus } from '../../../main/services/AiReviewBatchService';
 
 const PAGE_SIZE = 50;
 type Response<T> = { success: boolean; data?: T; error?: { message: string } };
+type AiStatus = AiReviewBatchStatus & { keyAvailable?: boolean };
 interface ReviewAPI {
   reviewList(request: ReviewListRequestDTO): Promise<Response<ReviewPageDTO>>;
   reviewGet(request: { reviewId: string }): Promise<Response<ReviewItemDTO | null>>;
   reviewDryRun(request: ReviewDryRunRequestDTO): Promise<Response<ReviewDryRunDTO>>;
   reviewApply(request: ReviewApplyRequestDTO): Promise<Response<ReviewApplyResultDTO>>;
+  aiReviewStart(request: { apiKey?: string }): Promise<Response<AiReviewBatchStatus>>;
+  aiReviewStatus(): Promise<Response<AiStatus>>;
+  aiReviewCancel(): Promise<Response<void>>;
 }
 
 const View = styled.div`
@@ -290,6 +295,10 @@ function cautiousRecommendation(candidates: ScoredDateCandidate[]): string | nul
 }
 
 export function ReviewView() {
+  const [aiKey, setAiKey] = useState('');
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const previousAiPhase = useRef<AiReviewBatchStatus['phase'] | null>(null);
   const [items, setItems] = useState<ReviewItemDTO[]>([]);
   const [cursor, setCursor] = useState<string>();
   const [selected, setSelected] = useState<ReviewItemDTO | null>(null);
@@ -315,7 +324,8 @@ export function ReviewView() {
       const detail = unwrap(await bridge.reviewGet({ reviewId }));
       setSelected(detail);
       if (!detail) setError('This review item no longer exists.');
-      else if (detail.lastError) setError(detail.lastError);
+      else if (detail.lastError && previousAiPhase.current !== 'running')
+        setError(detail.lastError);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Review item could not be loaded.');
     } finally {
@@ -368,6 +378,69 @@ export function ReviewView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const bridge = api();
+    if (!bridge?.aiReviewStatus) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const response = await bridge.aiReviewStatus();
+        if (active && response.success && response.data) {
+          setAiStatus(response.data);
+          const finished =
+            previousAiPhase.current === 'running' && response.data.phase !== 'running';
+          previousAiPhase.current = response.data.phase;
+          if (response.data.phase === 'running') setError(null);
+          if (finished) void load();
+        }
+      } catch {
+        // Review Queue remains usable if AI status cannot be read.
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 1000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [load]);
+
+  const startAiReview = async () => {
+    const bridge = api();
+    if (!bridge || (!aiKey.trim() && !aiStatus?.keyAvailable)) return;
+    setAiBusy(true);
+    setError(null);
+    try {
+      const response = await bridge.aiReviewStart(aiKey.trim() ? { apiKey: aiKey } : {});
+      setAiKey('');
+      const status = unwrap(response);
+      setAiStatus(status);
+      previousAiPhase.current = status.phase;
+    } catch (caught) {
+      setAiKey('');
+      setError(caught instanceof Error ? caught.message : 'AI final pass could not start.');
+    } finally {
+      setAiBusy(false);
+    }
+  };
+  const cancelAiReview = async () => {
+    const bridge = api();
+    if (!bridge) return;
+    setAiKey('');
+    setAiBusy(true);
+    try {
+      const response = await bridge.aiReviewCancel();
+      if (!response.success)
+        throw new Error(response.error?.message ?? 'AI final pass could not stop.');
+      const status = await bridge.aiReviewStatus();
+      if (status.success && status.data) setAiStatus(status.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'AI final pass could not stop.');
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const chooseManual = (input: string) => {
     setManualDate(input);
@@ -468,6 +541,53 @@ export function ReviewView() {
             preview token before it can be applied.
           </p>
         </Header>
+      </Card>
+      <Card>
+        <Header>
+          <h3>AI final pass</h3>
+          <p>
+            GLM 5.3 checks pending files against saved metadata evidence and applies supported
+            dates. It leaves uncertain files in review. Applied estimates record the model and
+            evidence used.
+          </p>
+        </Header>
+        <Toolbar>
+          <input
+            aria-label="AI coding endpoint key"
+            type="password"
+            autoComplete="off"
+            value={aiKey}
+            onChange={(event) => setAiKey(event.currentTarget.value)}
+            disabled={aiStatus?.phase === 'running'}
+          />
+          <Button
+            $primary
+            disabled={
+              aiBusy || aiStatus?.phase === 'running' || (!aiKey.trim() && !aiStatus?.keyAvailable)
+            }
+            onClick={() => void startAiReview()}
+          >
+            {aiStatus?.phase === 'cancelled' || aiStatus?.phase === 'failed'
+              ? 'Resume AI final pass'
+              : 'Start AI final pass'}
+          </Button>
+          {aiStatus?.phase === 'running' && (
+            <Button disabled={aiBusy} onClick={() => void cancelAiReview()}>
+              Cancel AI final pass
+            </Button>
+          )}
+        </Toolbar>
+        {aiStatus && (
+          <p aria-live="polite">
+            {aiStatus.phase}: {aiStatus.processed} of {aiStatus.total} assessed; {aiStatus.resolved}{' '}
+            resolved, {aiStatus.abstained} abstained, {aiStatus.failed} failed.
+          </p>
+        )}
+        {aiStatus?.error && (
+          <Notice $error role="alert">
+            {aiStatus.error}
+          </Notice>
+        )}
       </Card>
       {error && (
         <Notice role="alert" $error>

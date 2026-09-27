@@ -25,7 +25,8 @@ export type SourceKind =
   | 'sidecar'
   | 'filename'
   | 'filesystem'
-  | 'user-override';
+  | 'user-override'
+  | 'ai-estimate';
 
 export type ZoneBasis =
   | 'explicit-offset'

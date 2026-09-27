@@ -64,12 +64,29 @@ describe('ProductionApplicationRuntime', () => {
       close: jest.fn(),
     };
     const runtime = { verified: jest.fn(), getHealth: jest.fn(), check: jest.fn() };
-    const metadata = { collectDetailed: jest.fn(), close: jest.fn() };
+    const metadata = {
+      collectDetailed: jest.fn(),
+      readRawVerifiedForReview: jest.fn().mockResolvedValue({
+        tags: { 'IFD0:ModifyDate': '2022:12:12 00:00:00' },
+        sha256: 'a'.repeat(64),
+        bytes: 12,
+      }),
+      close: jest.fn(),
+    };
     const planner = { plan: jest.fn() };
     const revalidator = { revalidate: jest.fn() };
     const transaction = { execute: jest.fn(), close: jest.fn() };
     const overrides = { list: jest.fn(), get: jest.fn(), append: jest.fn(), close: jest.fn() };
-    const review = { list: jest.fn(), get: jest.fn(), dryRun: jest.fn(), apply: jest.fn() };
+    const review = {
+      list: jest.fn(),
+      get: jest.fn(),
+      dryRun: jest.fn(),
+      apply: jest.fn(),
+      automaticRetryDryRun: jest.fn(),
+      automaticRetryApply: jest.fn(),
+      preflightAIEstimateCandidates: jest.fn(),
+      withTransactionSession: jest.fn(),
+    };
     const coordinator = {
       createPreview: jest.fn(),
       startProcessing: jest.fn(),
@@ -162,6 +179,10 @@ describe('ProductionApplicationRuntime', () => {
       path.join(root, 'review-overrides.jsonl')
     );
     expect(test.bindings.createReview).toHaveBeenCalledWith({
+      runtime: expect.objectContaining({
+        resourcesRoot: path.join(root, 'resources'),
+        launchTrustPolicy: test.policy,
+      }),
       history: test.history.review,
       audit: test.audit,
       overrides: test.overrides,
@@ -189,6 +210,12 @@ describe('ProductionApplicationRuntime', () => {
       })
     );
     expect(test.bindings.createIpc).toHaveBeenCalledWith({
+      aiKeyFromEnvironment: expect.any(Function),
+      aiReview: expect.objectContaining({
+        start: expect.any(Function),
+        status: expect.any(Function),
+        cancel: expect.any(Function),
+      }),
       ipc: ipcRegistrar,
       config: test.config,
       history: test.history.list,
@@ -200,7 +227,33 @@ describe('ProductionApplicationRuntime', () => {
     });
     expect(test.ipc.register).toHaveBeenCalledTimes(1);
 
+    const aiReview = (test.bindings.createIpc as jest.Mock).mock.calls[0][0].aiReview;
+    const reader = aiReview.options.metadataReader;
+    const reviewItem = {
+      currentPath: '/output/photo.jpg',
+      output: { sha256: 'a'.repeat(64), size: 12 },
+    };
+    await expect(reader.read(reviewItem, new AbortController().signal)).resolves.toEqual({
+      'IFD0:ModifyDate': '2022:12:12 00:00:00',
+    });
+    test.metadata.readRawVerifiedForReview.mockResolvedValueOnce({
+      tags: {},
+      sha256: 'b'.repeat(64),
+      bytes: 12,
+    });
+    await expect(reader.read(reviewItem, new AbortController().signal)).rejects.toThrow(/changed/);
+    test.metadata.readRawVerifiedForReview.mockResolvedValueOnce({
+      tags: {},
+      sha256: 'a'.repeat(64),
+      bytes: 13,
+    });
+    await expect(reader.read(reviewItem, new AbortController().signal)).rejects.toThrow(/changed/);
+    const cancel = jest.spyOn(aiReview, 'cancel');
+    const wait = jest.spyOn(aiReview, 'wait');
     await application.shutdown();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(test.ipc.dispose).toHaveBeenCalledTimes(1);
   });
 
   it.each(['darwin', 'win32'] as const)(

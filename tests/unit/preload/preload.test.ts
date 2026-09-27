@@ -102,6 +102,9 @@ describe('preload processing API', () => {
     await bridge.reviewGet(get);
     await bridge.reviewDryRun(dryRun);
     await bridge.reviewApply(apply);
+    await bridge.aiReviewStart({ apiKey: 'runtime-key' });
+    await bridge.aiReviewStatus();
+    await bridge.aiReviewCancel();
 
     expect(invoke.mock.calls).toEqual(
       expect.arrayContaining([
@@ -109,6 +112,9 @@ describe('preload processing API', () => {
         ['review:get', get],
         ['review:dry-run', dryRun],
         ['review:apply', apply],
+        ['review:ai-start', { apiKey: 'runtime-key' }],
+        ['review:ai-status'],
+        ['review:ai-cancel'],
       ])
     );
   });

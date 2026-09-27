@@ -1,4 +1,5 @@
 import type { AppConfig, AppConfigUpdate } from '../main/services/AppConfigStore';
+import type { AiReviewBatchStatus } from '../main/services/AiReviewBatchService';
 import type {
   CancelProcessingRequestDTO,
   DependencyHealthDTO,
@@ -93,6 +94,13 @@ export interface ElectronAPI {
   reviewApply: (
     request: ReviewApplyRequestDTO
   ) => Promise<ProcessingResponseDTO<ReviewApplyResultDTO>>;
+  aiReviewStart: (request: {
+    apiKey?: string;
+  }) => Promise<ProcessingResponseDTO<AiReviewBatchStatus>>;
+  aiReviewStatus: () => Promise<
+    ProcessingResponseDTO<AiReviewBatchStatus & { keyAvailable: boolean }>
+  >;
+  aiReviewCancel: () => Promise<ProcessingResponseDTO<void>>;
   getConfig: () => Promise<ProcessingResponseDTO<AppConfig>>;
   updateConfig: (update: AppConfigUpdate) => Promise<ProcessingResponseDTO<AppConfig>>;
   resetConfig: () => Promise<ProcessingResponseDTO<AppConfig>>;

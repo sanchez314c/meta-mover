@@ -5,14 +5,20 @@ import path from 'path';
 
 import { resolveDateCandidates } from '../../../src/main/core/date';
 import type { DateResolutionRecord, ParsedDateValue } from '../../../src/main/core/date';
+import { MediaPlanner } from '../../../src/main/core/planning/MediaPlanner';
 import { ReviewRemediationService } from '../../../src/main/services/ReviewRemediationService';
+import { ReviewOverrideStore } from '../../../src/main/services/ReviewOverrideStore';
 import {
   ConflictPolicy,
   FolderStructure,
   OperationMode,
   ProcessingEventKind,
 } from '../../../src/shared/types/processing';
-import type { ReviewOverrideRecord } from '../../../src/shared/types/review';
+import {
+  isReviewOverrideRecord,
+  type ReviewOutputBinding,
+  type ReviewOverrideRecord,
+} from '../../../src/shared/types/review';
 
 const candidateValue: ParsedDateValue = {
   localIso: '2024-05-06T07:08:09',
@@ -88,6 +94,9 @@ async function fixture(
   options: {
     terminal?: 'completed' | 'partial' | 'cancelled';
     resolution?: DateResolutionRecord;
+    conflictPolicy?: ConflictPolicy;
+    outputBinding?: (filePath: string) => Promise<ReviewOutputBinding>;
+    planner?: MediaPlanner;
   } = {}
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'review-service-'));
@@ -108,7 +117,7 @@ async function fixture(
     sourcePath,
     targetPath: currentPath,
     operation: OperationMode.MOVE,
-    conflictPolicy: ConflictPolicy.RENAME,
+    conflictPolicy: options.conflictPolicy ?? ConflictPolicy.RENAME,
     dateEvidence: { value: null, source: 'none', confidence: 0, warnings: [] },
     fingerprint: { size: 14, modifiedAt: '2026-09-22T00:00:00.000Z' },
     warnings: [],
@@ -196,7 +205,7 @@ async function fixture(
         destinationPath: destination,
         effectiveOptions: {
           operation: OperationMode.MOVE,
-          conflictPolicy: ConflictPolicy.RENAME,
+          conflictPolicy: options.conflictPolicy ?? ConflictPolicy.RENAME,
           folderStructure: FolderStructure.YEAR_MONTH,
           appendScreenshotSuffix: false,
           workerCount: 1,
@@ -280,12 +289,15 @@ async function fixture(
     };
   });
   const core = { execute, close: jest.fn(async () => undefined) };
+  const coreFactory = jest.fn(async () => core);
   const service = new ReviewRemediationService({
     history,
     audit,
     overrides,
-    coreFactory: async () => core,
+    coreFactory,
     now: () => new Date('2026-09-22T00:00:02.000Z'),
+    ...(options.outputBinding ? { outputBinding: options.outputBinding } : {}),
+    ...(options.planner ? { planner: options.planner } : {}),
   });
   return {
     service,
@@ -295,12 +307,537 @@ async function fixture(
     destination,
     overrides,
     execute,
+    core,
+    coreFactory,
     audit,
     history,
   };
 }
 
 describe('ReviewRemediationService', () => {
+  it('preflights six AI candidates with one bound history and output read, excluding midnight', async () => {
+    const candidates = Array.from({ length: 6 }, (_, index) => ({
+      ...selectable().candidates[0],
+      id: `candidate-${index}`,
+      value:
+        index === 5
+          ? { ...candidateValue, localIso: '2024-05-06T00:00:00' }
+          : {
+              ...candidateValue,
+              localIso: `2024-05-06T07:08:${String(index + 10).padStart(2, '0')}`,
+            },
+    }));
+    const outputBinding = jest.fn(async (filePath: string): Promise<ReviewOutputBinding> => {
+      const info = await stat(filePath, { bigint: true });
+      return {
+        path: filePath,
+        device: Number(info.dev),
+        inode: Number(info.ino),
+        size: Number(info.size),
+        modifiedTimeMs: Number(info.mtimeNs) / 1_000_000,
+        mtimeNs: info.mtimeNs.toString(),
+        sha256: createHash('sha256').update('original bytes').digest('hex'),
+      };
+    });
+    const value = await fixture({
+      resolution: { ...selectable(), candidates },
+      outputBinding,
+    });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    outputBinding.mockClear();
+    const history = jest.spyOn(value.history, 'listJobs');
+    const result = await value.service.preflightAIEstimateCandidates({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+      candidates: candidates.map((candidate) => ({
+        candidateId: candidate.id,
+        value: candidate.value,
+      })),
+    });
+    expect(result).toEqual(candidates.slice(0, 5).map((candidate) => candidate.id));
+    expect(history).toHaveBeenCalledTimes(1);
+    expect(outputBinding).toHaveBeenCalledTimes(1);
+    expect(value.audit.reviewInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops AI preflight between candidates when cancelled', async () => {
+    const controller = new AbortController();
+    class AbortingPlanner extends MediaPlanner {
+      override planForExecution(request: Parameters<MediaPlanner['planForExecution']>[0]) {
+        controller.abort();
+        return super.planForExecution(request);
+      }
+    }
+    const candidates = Array.from({ length: 2 }, (_, index) => ({
+      ...selectable().candidates[0],
+      id: `candidate-${index}`,
+    }));
+    const value = await fixture({
+      resolution: { ...selectable(), candidates },
+      planner: new AbortingPlanner(),
+    });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    await expect(
+      value.service.preflightAIEstimateCandidates({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        candidates: candidates.map((candidate) => ({
+          candidateId: candidate.id,
+          value: candidate.value,
+        })),
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('excludes occupied targets under SKIP without moving the review file', async () => {
+    const value = await fixture({ conflictPolicy: ConflictPolicy.SKIP });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const target = path.join(value.destination, 'Photos', '2024', '05', '2024-05-06_07-08-09.jpg');
+    await import('fs/promises').then((fs) => fs.mkdir(path.dirname(target), { recursive: true }));
+    await writeFile(target, 'occupied');
+    const accepted = await value.service.preflightAIEstimateCandidates({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+      candidates: [{ candidateId: 'candidate-1', value: candidateValue }],
+    });
+    expect(accepted).toEqual([]);
+    expect(value.execute).not.toHaveBeenCalled();
+    await expect(readFile(item.currentPath, 'utf8')).resolves.toBe('original bytes');
+  });
+  it('reuses one transaction core through a batch lease and closes it after completion', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const plan = await value.service.dryRun(request);
+    value.execute.mockResolvedValueOnce({
+      operationId: 'failed',
+      status: 'failed',
+      committed: false,
+      sourceRetained: true,
+      error: 'precommit',
+    });
+    await value.service.withTransactionSession(async () => {
+      expect((await value.service.apply({ ...request, planToken: plan.planToken })).status).toBe(
+        'failed'
+      );
+      expect(value.core.close).not.toHaveBeenCalled();
+      expect((await value.service.apply({ ...request, planToken: plan.planToken })).status).toBe(
+        'resolved'
+      );
+      expect(value.core.close).not.toHaveBeenCalled();
+    });
+    expect(value.coreFactory).toHaveBeenCalledTimes(1);
+    expect(value.core.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a manual apply from outside an active batch lease before journal mutation', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const plan = await value.service.dryRun(request);
+    let trigger!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      trigger = resolve;
+    });
+    const external = gate.then(() =>
+      value.service.apply({ ...request, planToken: plan.planToken })
+    );
+    await value.service.withTransactionSession(async () => {
+      trigger();
+      await expect(external).rejects.toThrow('busy');
+      expect(value.overrides.records).toHaveLength(0);
+      expect(value.coreFactory).not.toHaveBeenCalled();
+    });
+  });
+
+  it('closes the leased core when a batch aborts and closes ordinary apply after one move', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const plan = await value.service.dryRun(request);
+    value.execute.mockResolvedValueOnce({
+      operationId: 'failed',
+      status: 'failed',
+      committed: false,
+      sourceRetained: true,
+      error: 'precommit',
+    });
+    await expect(
+      value.service.withTransactionSession(async () => {
+        await value.service.apply({ ...request, planToken: plan.planToken });
+        throw new Error('batch aborted');
+      })
+    ).rejects.toThrow('batch aborted');
+    expect(value.core.close).toHaveBeenCalledTimes(1);
+    await value.service.apply({ ...request, planToken: plan.planToken });
+    expect(value.coreFactory).toHaveBeenCalledTimes(2);
+    expect(value.core.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for an in-flight move before closing a cancelled batch core', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const plan = await value.service.dryRun(request);
+    const normalExecute = value.execute.getMockImplementation()!;
+    let entered!: () => void;
+    let finish!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    value.execute.mockImplementationOnce(async (operation) => {
+      entered();
+      await gate;
+      return normalExecute(operation);
+    });
+    let move!: Promise<unknown>;
+    const session = value.service.withTransactionSession(async () => {
+      move = value.service.apply({ ...request, planToken: plan.planToken });
+      await started;
+      throw new Error('cancelled batch');
+    });
+    await started;
+    expect(value.core.close).not.toHaveBeenCalled();
+    const cancellation = expect(session).rejects.toThrow('cancelled batch');
+    finish();
+    await move;
+    await cancellation;
+    expect(value.core.close).toHaveBeenCalledTimes(1);
+  });
+  it('persists service review IDs through the real override store for automatic retry and keep', async () => {
+    const automatic = await fixture({
+      resolution: { ...selectable(), status: 'unresolved', confidence: 'none', candidates: [] },
+    });
+    const automaticStore = await ReviewOverrideStore.open(
+      path.join(automatic.root, 'private', 'overrides.jsonl')
+    );
+    try {
+      const service = new ReviewRemediationService({
+        history: automatic.history,
+        audit: automatic.audit,
+        overrides: automaticStore,
+        coreFactory: async () => ({ execute: automatic.execute, close: async () => undefined }),
+        metadataCollector: {
+          collectDetailed: async () => ({
+            candidates: [
+              {
+                id: 'fresh-capture',
+                fileId: 'record-0',
+                mediaKind: 'image',
+                semantic: 'capture',
+                sourceKind: 'embedded-exif',
+                sourceFamily: 'exif',
+                tag: 'ExifIFD:DateTimeOriginal',
+                rawValue: '2024:05:06 07:08:09',
+                value: candidateValue,
+              },
+            ],
+            warnings: [],
+          }),
+        },
+        now: () => new Date('2026-09-22T00:00:02.000Z'),
+      });
+      const item = (await service.list({ limit: 10 })).items[0];
+      const plan = await service.automaticRetryDryRun({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+      });
+      const result = await service.automaticRetryApply({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        planToken: plan.planToken,
+      });
+      expect(result.status).toBe('resolved');
+      expect((await automaticStore.get(item.reviewId))?.result.status).toBe('resolved');
+    } finally {
+      await automaticStore.close();
+    }
+    const kept = await fixture();
+    const keepStore = await ReviewOverrideStore.open(
+      path.join(kept.root, 'private', 'overrides.jsonl')
+    );
+    try {
+      const service = new ReviewRemediationService({
+        history: kept.history,
+        audit: kept.audit,
+        overrides: keepStore,
+        coreFactory: async () => ({ execute: kept.execute, close: async () => undefined }),
+        now: () => new Date('2026-09-22T00:00:02.000Z'),
+      });
+      const item = (await service.list({ limit: 10 })).items[0];
+      const action = { type: 'keep' as const };
+      const plan = await service.dryRun({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        action,
+      });
+      const result = await service.apply({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        action,
+        planToken: plan.planToken,
+      });
+      expect(result.status).toBe('kept');
+      expect((await keepStore.get(item.reviewId))?.result.status).toBe('kept');
+    } finally {
+      await keepStore.close();
+    }
+  });
+  it('automatically retries metadata and moves only a newly resolved result with audit evidence', async () => {
+    const value = await fixture({
+      resolution: { ...selectable(), status: 'unresolved', confidence: 'none', candidates: [] },
+    });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const metadataCollector = {
+      collectDetailed: jest.fn(async () => ({
+        candidates: [
+          {
+            id: 'fresh-capture',
+            fileId: 'record-0',
+            mediaKind: 'image' as const,
+            semantic: 'capture' as const,
+            sourceKind: 'embedded-exif' as const,
+            sourceFamily: 'exif',
+            tag: 'ExifIFD:DateTimeOriginal',
+            rawValue: '2024:05:06 07:08:09',
+            value: candidateValue,
+          },
+        ],
+        warnings: [],
+      })),
+    };
+    const service = value.service.withMetadataCollector(metadataCollector);
+    const occupied = path.join(
+      value.destination,
+      'Photos',
+      '2024',
+      '05',
+      '2024-05-06_07-08-09.jpg'
+    );
+    await import('fs/promises').then((fs) => fs.mkdir(path.dirname(occupied), { recursive: true }));
+    await writeFile(occupied, 'other image');
+    const plan = await service.automaticRetryDryRun({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+    });
+    expect(plan.targetPath).toBe(occupied.replace(/\.jpg$/, '_01.jpg'));
+    expect(plan.collision).toBe(false);
+    expect(plan.refreshedEvidence?.resolution.status).toBe('resolved');
+    expect(value.execute).not.toHaveBeenCalled();
+    const result = await service.automaticRetryApply({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+      planToken: plan.planToken,
+    });
+    expect(result.status).toBe('resolved');
+    expect(result.evidenceRevision).toBe(plan.refreshedEvidence?.revision);
+    await expect(readFile(occupied, 'utf8')).resolves.toBe('other image');
+    expect(value.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collisionMode: 'exact-no-clobber',
+        expectedSha256: item.output.sha256,
+      })
+    );
+    expect(value.overrides.records).toHaveLength(2);
+    expect(
+      value.overrides.records.every((record) => record.action.type === 'automatic-retry')
+    ).toBe(true);
+    expect(value.overrides.records.at(-1)?.result).toMatchObject({
+      status: 'resolved',
+      refreshedEvidence: { revision: plan.refreshedEvidence?.revision },
+    });
+    expect(value.overrides.records.every(isReviewOverrideRecord)).toBe(true);
+    const reopened = new ReviewRemediationService({
+      history: value.history,
+      audit: value.audit,
+      overrides: value.overrides,
+      coreFactory: async () => {
+        throw new Error('reopen must not move again');
+      },
+      now: () => new Date('2026-09-22T00:00:03.000Z'),
+    });
+    const reopenedItem = await reopened.get(item.reviewId);
+    expect(reopenedItem?.status).toBe('resolved');
+    expect(reopenedItem?.evidence.revision).toBe(plan.refreshedEvidence?.revision);
+    expect(reopenedItem?.evidence.resolution.selectedValue).toEqual(candidateValue);
+  });
+
+  it('keeps unresolved automatic retries pending and records refreshed evidence without moving', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const service = value.service.withMetadataCollector({
+      collectDetailed: jest.fn(async () => ({ candidates: [], warnings: [] })),
+    });
+    const plan = await service.automaticRetryDryRun({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+    });
+    expect(plan.targetPath).toBeNull();
+    const result = await service.automaticRetryApply({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+      planToken: plan.planToken,
+    });
+    expect(result.status).toBe('pending');
+    expect(result.evidenceRevision).toBe(plan.refreshedEvidence?.revision);
+    expect(value.execute).not.toHaveBeenCalled();
+    expect(value.overrides.records).toHaveLength(1);
+    expect(value.overrides.records[0].action.type).toBe('automatic-retry');
+    expect(value.overrides.records[0].result.status).toBe('pending');
+  });
+
+  it('reconciles an interrupted automatic retry with its refreshed resolution intact', async () => {
+    const value = await fixture({
+      resolution: { ...selectable(), status: 'unresolved', confidence: 'none', candidates: [] },
+    });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const service = value.service.withMetadataCollector({
+      collectDetailed: jest.fn(async () => ({
+        candidates: [
+          {
+            id: 'fresh-capture',
+            fileId: 'record-0',
+            mediaKind: 'image' as const,
+            semantic: 'capture' as const,
+            sourceKind: 'embedded-exif' as const,
+            sourceFamily: 'exif',
+            tag: 'ExifIFD:DateTimeOriginal',
+            rawValue: '2024:05:06 07:08:09',
+            value: candidateValue,
+          },
+        ],
+        warnings: [],
+      })),
+    });
+    const plan = await service.automaticRetryDryRun({
+      reviewId: item.reviewId,
+      evidenceRevision: item.evidence.revision,
+    });
+    const originalAppend = value.overrides.append.bind(value.overrides);
+    let calls = 0;
+    jest.spyOn(value.overrides, 'append').mockImplementation(async (record) => {
+      calls += 1;
+      if (calls === 2) throw new Error('disk full');
+      return originalAppend(record);
+    });
+    await expect(
+      service.automaticRetryApply({
+        reviewId: item.reviewId,
+        evidenceRevision: item.evidence.revision,
+        planToken: plan.planToken,
+      })
+    ).rejects.toThrow('transaction committed');
+    expect(value.overrides.records[0].result).toMatchObject({
+      status: 'reconciling',
+      refreshedEvidence: { revision: plan.refreshedEvidence?.revision },
+    });
+    jest.restoreAllMocks();
+    const reopened = new ReviewRemediationService({
+      history: value.history,
+      audit: value.audit,
+      overrides: value.overrides,
+      coreFactory: async () => {
+        throw new Error('recovery must not move again');
+      },
+      now: () => new Date('2026-09-22T00:00:03.000Z'),
+    });
+    const recovered = await reopened.get(item.reviewId);
+    expect(recovered?.status).toBe('resolved');
+    expect(recovered?.evidence.revision).toBe(plan.refreshedEvidence?.revision);
+    expect(recovered?.evidence.resolution.selectedValue).toEqual(candidateValue);
+  });
+  it('binds an AI estimate to evidence and file hash and records distinct provenance through apply', async () => {
+    const { service, currentPath, execute, overrides } = await fixture();
+    const item = (await service.list({ limit: 10 })).items[0];
+    const action = {
+      type: 'ai-estimate' as const,
+      candidateId: 'candidate-1',
+      value: candidateValue,
+      provenance: {
+        model: 'glm-5.3',
+        promptVersion: 'review-v1',
+        evidenceRevision: item.evidence.revision,
+        fileSha256: item.output.sha256,
+        rationale: 'Embedded capture date has the strongest support.',
+      },
+    };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    await expect(
+      service.dryRun({
+        ...request,
+        action: { ...action, provenance: { ...action.provenance, fileSha256: '0'.repeat(64) } },
+      })
+    ).rejects.toThrow('file hash');
+    await expect(
+      service.dryRun({
+        ...request,
+        action: { ...action, provenance: { ...action.provenance, evidenceRevision: 'stale' } },
+      })
+    ).rejects.toThrow('evidence revision');
+    await expect(
+      service.dryRun({ ...request, action: { ...action, candidateId: 'missing' } })
+    ).rejects.toThrow('candidate');
+    await expect(
+      service.dryRun({
+        ...request,
+        action: { ...action, provenance: { ...action.provenance, apiKey: 'secret' } } as any,
+      })
+    ).rejects.toThrow('invalid');
+    await expect(
+      service.dryRun({ ...request, action: { ...action, candidateId: undefined } as any })
+    ).rejects.toThrow('invalid');
+    await expect(
+      service.dryRun({
+        ...request,
+        action: { ...action, value: { ...candidateValue, localIso: '2023-05-06T07:08:09' } },
+      })
+    ).rejects.toThrow('candidate');
+    expect(execute).not.toHaveBeenCalled();
+    const plan = await service.dryRun(request);
+    expect(plan.targetPath).toContain('2024-05-06_07-08-09.jpg');
+    const result = await service.apply({ ...request, planToken: plan.planToken });
+    expect(result.status).toBe('resolved');
+    expect(overrides.records).toHaveLength(2);
+    expect(overrides.records.at(-1)?.action).toEqual(action);
+    expect(overrides.records.at(-1)?.action.type).toBe('ai-estimate');
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ sourcePath: currentPath, collisionMode: 'exact-no-clobber' })
+    );
+  });
+
+  it('rejects an AI estimate without an eligible stored date candidate', async () => {
+    const { service } = await fixture({
+      resolution: { ...selectable(), status: 'unresolved', confidence: 'none', candidates: [] },
+    });
+    const item = (await service.list({ limit: 10 })).items[0];
+    const provenance = {
+      model: 'glm-5.3',
+      promptVersion: 'review-v1',
+      evidenceRevision: item.evidence.revision,
+      fileSha256: item.output.sha256,
+      rationale: 'The image content indicates this calendar date.',
+    };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision };
+    await expect(
+      service.dryRun({
+        ...request,
+        action: {
+          type: 'ai-estimate',
+          candidateId: 'missing',
+          value: { localIso: '2024-05-06', zoneBasis: 'date-only', precision: 'date' },
+          provenance,
+        },
+      })
+    ).rejects.toThrow('candidate');
+  });
   it('pages 7,391 descriptors before binding at most the returned 25 and exact get binds one', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'meta-mover-review-bounded-'));
     try {
@@ -566,7 +1103,7 @@ describe('ReviewRemediationService', () => {
     await expect(readFile(plan.targetPath!, 'utf8')).resolves.toBe('original bytes');
   });
 
-  it('rejects stale revisions, identities, tokens, and collisions before mutation', async () => {
+  it('rejects stale revisions, identities, tokens, and destination races before mutation', async () => {
     const { service, currentPath, execute } = await fixture();
     const item = (await service.list({ limit: 10 })).items[0];
     const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
@@ -597,7 +1134,7 @@ describe('ReviewRemediationService', () => {
         action,
         planToken: plan.planToken,
       })
-    ).rejects.toThrow('collision');
+    ).rejects.toThrow('token');
     expect(execute).not.toHaveBeenCalled();
     await import('fs/promises').then((fs) => fs.unlink(plan.targetPath!));
     await writeFile(currentPath, 'changed bytes');
@@ -609,6 +1146,52 @@ describe('ReviewRemediationService', () => {
         planToken: plan.planToken,
       })
     ).rejects.toThrow('identity');
+  });
+
+  it('allocates normal _01/_02 suffixes for occupied review targets and keeps exact no-clobber', async () => {
+    const value = await fixture();
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const base = (await value.service.dryRun(request)).targetPath!;
+    await import('fs/promises').then((fs) => fs.mkdir(path.dirname(base), { recursive: true }));
+    await writeFile(base, 'base occupant');
+    await writeFile(base.replace(/\.jpg$/, '_01.jpg'), 'first occupant');
+    const plan = await value.service.dryRun(request);
+    expect(plan.targetPath).toBe(base.replace(/\.jpg$/, '_02.jpg'));
+    expect(plan.collision).toBe(false);
+    expect((await value.service.dryRun(request)).planToken).toBe(plan.planToken);
+    const result = await value.service.apply({ ...request, planToken: plan.planToken });
+    expect(result.status).toBe('resolved');
+    expect(result.resolvedPath).toBe(plan.targetPath);
+    await expect(readFile(base, 'utf8')).resolves.toBe('base occupant');
+    await expect(readFile(base.replace(/\.jpg$/, '_01.jpg'), 'utf8')).resolves.toBe(
+      'first occupant'
+    );
+    expect(value.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedDestinationPath: plan.targetPath,
+        collisionMode: 'exact-no-clobber',
+      })
+    );
+  });
+
+  it('honors SKIP review policy when target already exists', async () => {
+    const value = await fixture({ conflictPolicy: ConflictPolicy.SKIP });
+    const item = (await value.service.list({ limit: 10 })).items[0];
+    const action = { type: 'select-candidate' as const, candidateId: 'candidate-1' };
+    const request = { reviewId: item.reviewId, evidenceRevision: item.evidence.revision, action };
+    const base = (await value.service.dryRun(request)).targetPath!;
+    await import('fs/promises').then((fs) => fs.mkdir(path.dirname(base), { recursive: true }));
+    await writeFile(base, 'existing');
+    const plan = await value.service.dryRun(request);
+    expect(plan.targetPath).toBe(base);
+    expect(plan.collision).toBe(true);
+    await expect(value.service.apply({ ...request, planToken: plan.planToken })).rejects.toThrow(
+      'collision'
+    );
+    expect(value.execute).not.toHaveBeenCalled();
+    await expect(readFile(item.currentPath, 'utf8')).resolves.toBe('original bytes');
   });
 
   it('keeps in place, retries metadata, and records precommit failures', async () => {

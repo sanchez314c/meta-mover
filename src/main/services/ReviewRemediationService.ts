@@ -1,23 +1,28 @@
 import { createHash, randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { lstat, realpath } from 'fs/promises';
 import path from 'path';
 
 import {
+  isSelectedValueSupported,
   resolveDateCandidates,
   type DateCandidateInput,
   type DateResolutionRecord,
   type JsonValue,
   type MediaKind,
+  type ParsedDateValue,
 } from '../core/date';
 import type { MetadataCollectionResult } from '../core/metadata/MetadataCandidateCollector';
 import { MediaPlanner } from '../core/planning/MediaPlanner';
 import { hashFile } from '../core/transaction/Hashing';
+import { isReviewAction } from '../../shared/types/review';
 import type {
   TransactionRequest,
   TransactionResult,
 } from '../core/transaction/TransactionalFileCore';
 import {
   CancellationFileState,
+  ConflictPolicy,
   OperationMode,
   ProcessingEventKind,
   type PreviewRowDTO,
@@ -237,6 +242,23 @@ function contained(root: string, candidate: string): boolean {
   );
 }
 
+function collisionFilename(filename: string, counter: number): string {
+  if (counter === 0) return filename;
+  const parsed = path.parse(filename);
+  const suffix = counter < 100 ? counter.toString().padStart(2, '0') : counter.toString();
+  return `${parsed.name}_${suffix}${parsed.ext}`;
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  return lstat(candidate).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+}
+
 function sameBinding(left: ReviewOutputBinding, right: ReviewOutputBinding): boolean {
   return (
     left.path === right.path &&
@@ -260,7 +282,7 @@ function sameFileIdentity(left: ReviewOutputBinding, right: ReviewOutputBinding)
 
 function selectedResolution(
   evidence: ReviewEvidenceSnapshot,
-  action: Extract<ReviewAction, { type: 'select-candidate' | 'manual-date' }>
+  action: Extract<ReviewAction, { type: 'select-candidate' | 'manual-date' | 'ai-estimate' }>
 ): DateResolutionRecord {
   const original = evidence.resolution;
   let candidate: DateCandidateInput;
@@ -281,6 +303,17 @@ function selectedResolution(
       ...(found.issues ? { issues: [...found.issues] } : {}),
     };
   } else {
+    if (action.type === 'ai-estimate') {
+      if (action.provenance.evidenceRevision !== evidence.revision)
+        throw new Error('AI estimate evidence revision does not match');
+      const selected = original.candidates.find((entry) => entry.id === action.candidateId);
+      if (
+        !selected ||
+        selected.eligibility !== 'eligible' ||
+        !isSelectedValueSupported(action.value, selected.value)
+      )
+        throw new Error('AI estimate requires an eligible candidate supporting the proposed date');
+    }
     const semantic =
       original.mediaKind === 'audio'
         ? 'recording'
@@ -290,13 +323,13 @@ function selectedResolution(
           ? 'capture'
           : 'content-created';
     candidate = {
-      id: `${original.fileId}:user-override`,
+      id: `${original.fileId}:${action.type === 'ai-estimate' ? 'ai-estimate' : 'user-override'}`,
       fileId: original.fileId,
       mediaKind: original.mediaKind,
       semantic,
-      sourceKind: 'user-override',
-      sourceFamily: 'user-override',
-      tag: 'UserOverride:CreationDate',
+      sourceKind: action.type === 'ai-estimate' ? 'ai-estimate' : 'user-override',
+      sourceFamily: action.type === 'ai-estimate' ? 'ai-estimate' : 'user-override',
+      tag: action.type === 'ai-estimate' ? 'AIEstimate:CreationDate' : 'UserOverride:CreationDate',
       rawValue: JSON.parse(JSON.stringify(action.value)) as JsonValue,
       value: clone(action.value),
     };
@@ -309,10 +342,24 @@ function selectedResolution(
   });
   if (resolution.status !== 'resolved')
     throw new Error('review action did not produce a trusted resolution');
-  return resolution;
+  return action.type === 'ai-estimate'
+    ? {
+        ...resolution,
+        confidence: 'medium',
+        reasonCodes: [...resolution.reasonCodes, 'AI_ESTIMATE'],
+      }
+    : resolution;
 }
 
 export class ReviewRemediationService {
+  private readonly transactionScope = new AsyncLocalStorage<object>();
+  private session?: {
+    identity: object;
+    cores: Map<string, Promise<ReviewTransactionCorePort>>;
+    active: number;
+    closing: boolean;
+    drained?: () => void;
+  };
   private readonly initialBindings = new Map<string, ReviewOutputBinding>();
   private readonly planner: MediaPlanner;
   private readonly now: () => Date;
@@ -333,6 +380,63 @@ export class ReviewRemediationService {
     });
     for (const [key, value] of this.initialBindings) service.initialBindings.set(key, clone(value));
     return service;
+  }
+
+  async withTransactionSession<T>(work: () => Promise<T>): Promise<T> {
+    if (this.session) throw new Error('Review transaction session is busy');
+    const session = {
+      identity: {},
+      cores: new Map<string, Promise<ReviewTransactionCorePort>>(),
+      active: 0,
+      closing: false,
+      drained: undefined as (() => void) | undefined,
+    };
+    this.session = session;
+    try {
+      return await this.transactionScope.run(session.identity, work);
+    } finally {
+      session.closing = true;
+      if (session.active > 0)
+        await new Promise<void>((resolve) => {
+          session.drained = resolve;
+        });
+      try {
+        const cores = await Promise.all([...session.cores.values()]);
+        await Promise.all(cores.map((core) => core.close()));
+      } finally {
+        this.session = undefined;
+      }
+    }
+  }
+
+  private async leaseCore(destinationRoot: string): Promise<{
+    core: ReviewTransactionCorePort;
+    release: () => Promise<void>;
+  }> {
+    const session = this.session;
+    if (!session) {
+      const core = await this.options.coreFactory(destinationRoot);
+      return { core, release: () => core.close() };
+    }
+    if (session.closing || this.transactionScope.getStore() !== session.identity)
+      throw new Error('Review transaction session is busy');
+    session.active += 1;
+    const release = async (): Promise<void> => {
+      session.active -= 1;
+      if (session.closing && session.active === 0) session.drained?.();
+    };
+    let promise = session.cores.get(destinationRoot);
+    if (!promise) {
+      promise = this.options.coreFactory(destinationRoot);
+      session.cores.set(destinationRoot, promise);
+    }
+    try {
+      return { core: await promise, release };
+    } catch (error) {
+      if (session.cores.get(destinationRoot) === promise) session.cores.delete(destinationRoot);
+      await release();
+      throw error;
+    }
   }
 
   async list(request: ReviewListRequestDTO): Promise<ReviewPageDTO> {
@@ -360,17 +464,101 @@ export class ReviewRemediationService {
     return descriptor ? (await this.materialize(descriptor)).item : null;
   }
 
+  async preflightAIEstimateCandidates(request: {
+    reviewId: string;
+    evidenceRevision: string;
+    candidates: readonly { candidateId: string; value: ParsedDateValue }[];
+    signal?: AbortSignal;
+  }): Promise<string[]> {
+    if (
+      request.candidates.length > 128 ||
+      new Set(request.candidates.map((candidate) => candidate.candidateId)).size !==
+        request.candidates.length
+    )
+      throw new Error('AI candidate preflight list is invalid');
+    const throwIfCancelled = (): void => {
+      if (!request.signal?.aborted) return;
+      const error = new Error('AI candidate preflight cancelled');
+      error.name = 'AbortError';
+      throw error;
+    };
+    throwIfCancelled();
+    if (request.candidates.length === 0) return [];
+    const located = await this.locate(request.reviewId);
+    if (located.item.evidence.revision !== request.evidenceRevision)
+      throw new Error('review evidence revision is stale');
+    const accepted: string[] = [];
+    for (const proposed of request.candidates) {
+      throwIfCancelled();
+      const source = located.item.evidence.resolution.candidates.find(
+        (candidate) => candidate.id === proposed.candidateId
+      );
+      if (
+        !source ||
+        source.eligibility !== 'eligible' ||
+        !isSelectedValueSupported(proposed.value, source.value)
+      )
+        continue;
+      const action: Extract<ReviewAction, { type: 'ai-estimate' }> = {
+        type: 'ai-estimate',
+        candidateId: proposed.candidateId,
+        value: clone(proposed.value),
+        provenance: {
+          model: 'candidate-preflight',
+          promptVersion: 'candidate-preflight/1',
+          evidenceRevision: located.item.evidence.revision,
+          fileSha256: located.item.output.sha256,
+          rationale: 'Candidate preflight',
+        },
+      };
+      if (!isReviewAction(action)) continue;
+      try {
+        const plan = await this.buildPlan(located, action);
+        if (!plan.collision && plan.targetPath !== null) accepted.push(proposed.candidateId);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === 'review action did not produce a trusted resolution' ||
+            error.message === 'review action still requires review')
+        )
+          continue;
+        throw error;
+      }
+    }
+    throwIfCancelled();
+    return accepted;
+  }
+
+  async automaticRetryDryRun(request: {
+    reviewId: string;
+    evidenceRevision: string;
+  }): Promise<ReviewDryRunDTO> {
+    return this.dryRun({ ...request, action: { type: 'automatic-retry' } });
+  }
+
+  async automaticRetryApply(request: {
+    reviewId: string;
+    evidenceRevision: string;
+    planToken: string;
+  }): Promise<ReviewApplyResultDTO> {
+    return this.apply({ ...request, action: { type: 'automatic-retry' } });
+  }
+
   async dryRun(request: ReviewDryRunRequestDTO): Promise<ReviewDryRunDTO> {
     const located = await this.locate(request.reviewId);
     if (located.item.evidence.revision !== request.evidenceRevision)
       throw new Error('review evidence revision is stale');
+    this.validateAIEstimateBinding(located.item, request.action);
     return this.buildPlan(located, request.action);
   }
 
   async apply(request: ReviewApplyRequestDTO): Promise<ReviewApplyResultDTO> {
+    if (this.session && this.transactionScope.getStore() !== this.session.identity)
+      throw new Error('Review transaction session is busy');
     const located = await this.locate(request.reviewId);
     if (located.item.evidence.revision !== request.evidenceRevision)
       throw new Error('review evidence revision is stale');
+    this.validateAIEstimateBinding(located.item, request.action);
     const plan = await this.buildPlan(located, request.action);
     if (plan.collision) throw new Error('review destination collision detected');
     if (plan.planToken !== request.planToken)
@@ -402,7 +590,10 @@ export class ReviewRemediationService {
         evidenceRevision: located.item.evidence.revision,
       };
     }
-    if (request.action.type === 'retry-metadata') {
+    if (
+      request.action.type === 'retry-metadata' ||
+      (request.action.type === 'automatic-retry' && plan.targetPath === null)
+    ) {
       if (!plan.refreshedEvidence)
         throw new Error('metadata retry did not produce refreshed evidence');
       await this.options.overrides.append({
@@ -430,16 +621,19 @@ export class ReviewRemediationService {
         currentPath: located.item.currentPath,
         targetPath,
         transactionId: operationId,
+        ...(request.action.type === 'automatic-retry' && plan.refreshedEvidence
+          ? { refreshedEvidence: plan.refreshedEvidence }
+          : {}),
       },
     });
     const terminalBase = { ...base, eventId: randomUUID(), sequence: sequence + 1 };
     let committedReceipt = false;
     let committedClaim = false;
-    let core: ReviewTransactionCorePort | undefined;
+    let lease: Awaited<ReturnType<ReviewRemediationService['leaseCore']>> | undefined;
     try {
-      core = await this.options.coreFactory(located.item.destinationRoot);
+      lease = await this.leaseCore(located.item.destinationRoot);
       const stats = await lstat(located.item.currentPath, { bigint: true });
-      const result = await core.execute({
+      const result = await lease.core.execute({
         operationId,
         sourcePath: located.item.currentPath,
         targetFilename: path.relative(located.item.destinationRoot, targetPath),
@@ -474,6 +668,9 @@ export class ReviewRemediationService {
             previousPath: located.item.currentPath,
             resolvedPath: targetPath,
             transactionId: result.operationId,
+            ...(request.action.type === 'automatic-retry' && plan.refreshedEvidence
+              ? { refreshedEvidence: plan.refreshedEvidence }
+              : {}),
           },
         });
         return {
@@ -481,7 +678,10 @@ export class ReviewRemediationService {
           status: 'resolved',
           currentPath: targetPath,
           resolvedPath: targetPath,
-          evidenceRevision: located.item.evidence.revision,
+          evidenceRevision:
+            request.action.type === 'automatic-retry' && plan.refreshedEvidence
+              ? plan.refreshedEvidence.revision
+              : located.item.evidence.revision,
         };
       }
       const error = result.error ?? 'review transaction failed before commit';
@@ -539,14 +739,18 @@ export class ReviewRemediationService {
         evidenceRevision: located.item.evidence.revision,
       };
     } finally {
-      await core?.close();
+      await lease?.release();
     }
   }
 
   private async buildPlan(located: LocatedItem, action: ReviewAction): Promise<ReviewDryRunDTO> {
     let targetPath: string | null = null;
     let refreshedEvidence: ReviewEvidenceSnapshot | undefined;
-    if (action.type === 'select-candidate' || action.type === 'manual-date') {
+    if (
+      action.type === 'select-candidate' ||
+      action.type === 'manual-date' ||
+      action.type === 'ai-estimate'
+    ) {
       const resolution = selectedResolution(located.item.evidence, action);
       const planned = this.planner.planForExecution({
         sourcePath: located.item.currentPath,
@@ -566,7 +770,7 @@ export class ReviewRemediationService {
         !contained(located.item.destinationRoot, targetPath)
       )
         throw new Error('review target is outside its canonical destination root');
-    } else if (action.type === 'retry-metadata') {
+    } else if (action.type === 'retry-metadata' || action.type === 'automatic-retry') {
       const collector = this.options.metadataCollector;
       if (!collector) throw new Error('metadata retry is unavailable');
       const collected = await collector.collectDetailed({
@@ -588,17 +792,36 @@ export class ReviewRemediationService {
         resolution,
         collectedAt: this.timestamp(),
       };
+      if (action.type === 'automatic-retry' && resolution.status === 'resolved') {
+        const planned = this.planner.planForExecution({
+          sourcePath: located.item.currentPath,
+          destinationRoot: located.item.destinationRoot,
+          mediaKind: located.item.mediaKind,
+          resolution,
+          operation: OperationMode.MOVE,
+          conflictPolicy: located.row.conflictPolicy,
+          folderStructure: located.options.folderStructure,
+          appendScreenshotSuffix: located.options.appendScreenshotSuffix,
+          screenshotDetected: located.item.screenshotDetected,
+        });
+        if (planned.needsReview) throw new Error('resolved metadata retry still requires review');
+        targetPath = planned.targetPath;
+        if (
+          path.resolve(targetPath) !== targetPath ||
+          !contained(located.item.destinationRoot, targetPath)
+        )
+          throw new Error('review target is outside its canonical destination root');
+      }
     }
-    const collision =
-      targetPath === null
-        ? false
-        : await lstat(targetPath).then(
-            () => true,
-            (error: NodeJS.ErrnoException) => {
-              if (error.code === 'ENOENT') return false;
-              throw error;
-            }
-          );
+    if (targetPath !== null && located.row.conflictPolicy === ConflictPolicy.RENAME) {
+      const base = targetPath;
+      let counter = 0;
+      while (await pathExists(targetPath)) {
+        counter += 1;
+        targetPath = path.join(path.dirname(base), collisionFilename(path.basename(base), counter));
+      }
+    }
+    const collision = targetPath !== null && (await pathExists(targetPath));
     const warnings = collision
       ? ['Destination already exists; exact-no-clobber apply is blocked.']
       : [];
@@ -629,6 +852,15 @@ export class ReviewRemediationService {
     if (!['pending', 'failed'].includes(found.item.status))
       throw new Error('review item is already terminal');
     return found;
+  }
+
+  private validateAIEstimateBinding(item: ReviewItemDTO, action: ReviewAction): void {
+    if (action.type !== 'ai-estimate') return;
+    if (!isReviewAction(action)) throw new Error('AI estimate action is invalid');
+    if (action.provenance.evidenceRevision !== item.evidence.revision)
+      throw new Error('AI estimate evidence revision does not match');
+    if (action.provenance.fileSha256 !== item.output.sha256)
+      throw new Error('AI estimate file hash does not match');
   }
 
   private async descriptors(exactId?: string): Promise<ReviewDescriptor[]> {
@@ -724,7 +956,8 @@ export class ReviewRemediationService {
         currentPath = override.result.resolvedPath;
         resolvedPath = override.result.resolvedPath;
       } else currentPath = override.result.currentPath;
-      if (override.result.status === 'pending') evidence = clone(override.result.refreshedEvidence);
+      if ('refreshedEvidence' in override.result && override.result.refreshedEvidence)
+        evidence = clone(override.result.refreshedEvidence);
       if (override.result.status === 'failed') lastError = override.result.error;
       output = clone(override.output);
     } else {
@@ -819,6 +1052,9 @@ export class ReviewRemediationService {
         previousPath: override.result.currentPath,
         resolvedPath: override.result.targetPath,
         transactionId: override.result.transactionId,
+        ...(override.result.refreshedEvidence
+          ? { refreshedEvidence: override.result.refreshedEvidence }
+          : {}),
       };
     } else if (sourceMatches && targetState === null) {
       result = {

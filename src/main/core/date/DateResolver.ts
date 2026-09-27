@@ -103,7 +103,8 @@ function semanticCap(candidate: DateCandidateInput): number {
 }
 
 function baseScore(candidate: DateCandidateInput): number {
-  if (candidate.sourceKind === 'user-override') return 100;
+  if (candidate.sourceKind === 'user-override' || candidate.sourceKind === 'ai-estimate')
+    return 100;
   if (candidate.sourceKind === 'filesystem') {
     return candidate.semantic === 'filesystem-birth' ? 25 : 0;
   }
@@ -184,7 +185,8 @@ function baseScore(candidate: DateCandidateInput): number {
 }
 
 function expectedSemantics(candidate: CandidateProvenance): ReadonlySet<string> | null {
-  if (candidate.sourceKind === 'user-override') return null;
+  if (candidate.sourceKind === 'user-override' || candidate.sourceKind === 'ai-estimate')
+    return null;
   if (candidate.sourceKind === 'filesystem') {
     return new Set(['filesystem-birth', 'filesystem-modified', 'filesystem-changed']);
   }
@@ -293,7 +295,8 @@ export function isResolvedCreationProvenance(candidate: CandidateProvenance): bo
   if (candidate.sourceKind === 'filesystem' || FORBIDDEN_SEMANTICS.has(candidate.semantic)) {
     return false;
   }
-  if (candidate.sourceKind === 'user-override') return true;
+  if (candidate.sourceKind === 'user-override' || candidate.sourceKind === 'ai-estimate')
+    return true;
   if (hasSourceNamespaceMismatch(candidate)) return false;
   if (candidate.sourceKind !== 'filename' && hasForbiddenProvenanceLabel(candidate)) return false;
   const semanticRule = expectedSemantics(candidate);
@@ -542,6 +545,7 @@ function scoreCandidate(
     FORBIDDEN_SEMANTICS.has(candidate.semantic) ||
     (candidate.sourceKind !== 'filename' &&
       candidate.sourceKind !== 'user-override' &&
+      candidate.sourceKind !== 'ai-estimate' &&
       hasForbiddenProvenanceLabel(candidate))
   ) {
     eligibility = 'forbidden';
@@ -817,7 +821,8 @@ function assessSubseconds(
   );
   const userOverride = fractional.find(
     (candidate) =>
-      candidate.sourceKind === 'user-override' && normalizedFraction(candidate) !== null
+      (candidate.sourceKind === 'user-override' || candidate.sourceKind === 'ai-estimate') &&
+      normalizedFraction(candidate) !== null
   );
   if (userOverride) {
     return {
@@ -1424,6 +1429,75 @@ function recoverExact2022BatchPlaceholder(
   };
 }
 
+function recoverOriginalName2022Rewrite(
+  candidates: readonly ScoredDateCandidate[]
+): AuditedPlaceholderRecovery | null {
+  const credible = candidates.filter(
+    (candidate) =>
+      candidate.sourceKind !== 'filename' &&
+      candidate.sourceKind !== 'filesystem' &&
+      (candidate.eligibility === 'eligible' || candidate.eligibility === 'corroboration-only') &&
+      isResolvedCreationProvenance(candidate)
+  );
+  const findOne = (tag: string): ScoredDateCandidate | null => {
+    const matches = credible.filter((candidate) => candidate.tag.toLowerCase() === tag);
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const original = findOne('exififd:datetimeoriginal');
+  const created = findOne('exififd:createdate');
+  const xmpCreated = findOne('xmp-xmp:createdate');
+  const photoshop = findOne('xmp-photoshop:datecreated');
+  const iptc = credible.filter(
+    (candidate) =>
+      candidate.tag.toLowerCase() === 'iptc:datecreated' && candidate.value.precision !== 'date'
+  );
+  if (!original || !created || !xmpCreated || !photoshop || iptc.length !== 1) return null;
+  const exifSecond = wholeSecondLocal(original.value);
+  if (
+    exifSecond === null ||
+    exifSecond < '2022-12-12T01:05:43' ||
+    exifSecond > '2022-12-12T01:15:13' ||
+    wholeSecondLocal(created.value) !== exifSecond ||
+    wholeSecondLocal(xmpCreated.value) !== exifSecond
+  )
+    return null;
+  const evidence = jsonRecord(photoshop.rawValue);
+  const originalName = evidence?.originalFileName;
+  const modified = evidence?.ifd0ModifyDate;
+  if (typeof originalName !== 'string' || typeof modified !== 'string') return null;
+  const nameMatch = originalName.match(
+    /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})[a-z]{0,3}\.(?:jpe?g|png|tiff?)$/i
+  );
+  if (!nameMatch) return null;
+  const namedSecond = `${nameMatch[1]}-${nameMatch[2]}-${nameMatch[3]}T${nameMatch[4]}:${nameMatch[5]}:${nameMatch[6]}`;
+  const editorialSecond = photoshop.value.localIso.slice(0, 19);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(editorialSecond) ||
+    editorialSecond !== namedSecond ||
+    wholeSecondLocal(iptc[0].value) !== namedSecond ||
+    namedSecond >= exifSecond ||
+    modified.replace(/^(\d{4}):(\d{2}):(\d{2})\s/, '$1-$2-$3T').slice(0, 19) !== exifSecond ||
+    photoshop.value.offsetMinutes !== iptc[0].value.offsetMinutes
+  )
+    return null;
+  const allowed = new Set([original.id, created.id, xmpCreated.id, photoshop.id, iptc[0].id]);
+  if (
+    credible.some((candidate) =>
+      allowed.has(candidate.id)
+        ? false
+        : candidate.tag.toLowerCase() === 'iptc:datecreated' && candidate.value.precision === 'date'
+          ? candidate.value.localIso !== namedSecond.slice(0, 10)
+          : true
+    )
+  )
+    return null;
+  return {
+    selected: photoshop,
+    contenderIds: credible.map((candidate) => candidate.id).sort(),
+    reasonCode: 'ORIGINAL_NAME_2022_REWRITE_RECOVERY',
+  };
+}
+
 function recoverUnanimousEmbeddedCalendarDate(
   candidates: readonly ScoredDateCandidate[]
 ): CalendarDateRecovery | null {
@@ -1480,7 +1554,11 @@ function recoverWholeSecondCaptureConsensus(
       (candidate.eligibility === 'eligible' || candidate.eligibility === 'corroboration-only') &&
       isResolvedCreationProvenance(candidate)
   );
-  if (credible.some((candidate) => ['user-override', 'sidecar'].includes(candidate.sourceKind))) {
+  if (
+    credible.some((candidate) =>
+      ['user-override', 'ai-estimate', 'sidecar'].includes(candidate.sourceKind)
+    )
+  ) {
     return null;
   }
   const embedded = credible.filter((candidate) =>
@@ -1739,7 +1817,9 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
   const contenderNeutralized = subsecondConsensus || sameInstant || authoritativeOriginal;
 
   const auditedPlaceholderRecovery =
-    recoverSyntheticExifGps(candidates) ?? recoverEditorialCaptureConsensus(candidates);
+    recoverSyntheticExifGps(candidates) ??
+    recoverEditorialCaptureConsensus(candidates) ??
+    recoverOriginalName2022Rewrite(candidates);
   if (auditedPlaceholderRecovery !== null) {
     const selectedGroup = groups.find((group) =>
       group.candidates.some((candidate) => candidate.id === auditedPlaceholderRecovery.selected.id)
@@ -1751,13 +1831,19 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
       selectedCandidateId: auditedPlaceholderRecovery.selected.id,
       selectedGroupId: selectedGroup?.id ?? top.id,
       selectedGroupScore: selectedGroup?.score ?? top.score,
-      selectedValue: { ...auditedPlaceholderRecovery.selected.value },
+      selectedValue:
+        auditedPlaceholderRecovery.reasonCode === 'ORIGINAL_NAME_2022_REWRITE_RECOVERY'
+          ? omitSubseconds(auditedPlaceholderRecovery.selected.value)
+          : { ...auditedPlaceholderRecovery.selected.value },
       contenderIds: auditedPlaceholderRecovery.contenderIds,
       reasonCodes: uniqueSorted([
         ...reasonCodes,
         auditedPlaceholderRecovery.reasonCode,
         ...(auditedPlaceholderRecovery.reasonCode === 'EXACT_2022_BATCH_PLACEHOLDER_RECOVERY'
           ? ['KNOWN_BATCH_PLACEHOLDER']
+          : []),
+        ...(auditedPlaceholderRecovery.reasonCode === 'ORIGINAL_NAME_2022_REWRITE_RECOVERY'
+          ? ['BATCH_REWRITE_EVIDENCE']
           : []),
         'RESOLVED_MEDIUM_CONFIDENCE',
       ]),
@@ -1968,7 +2054,11 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
     };
   }
 
-  if (selected.sourceKind === 'filename' || selected.value.zoneBasis === 'date-only') {
+  if (
+    selected.sourceKind === 'filename' ||
+    selected.sourceKind === 'ai-estimate' ||
+    selected.value.zoneBasis === 'date-only'
+  ) {
     reasonCodes.push('NON_AUTHORITATIVE_SELECTION');
   }
   // A same-instant or subsecond contender is not a disagreement, so it cannot dilute the lead.
@@ -1980,7 +2070,10 @@ function resolveDateCandidatesInternal(request: ResolveDateRequest): DateResolut
       ? omitSubseconds(selected.value)
       : { ...selected.value };
 
-  if (selected.sourceKind === 'user-override' && selected.value.precision === 'date') {
+  if (
+    (selected.sourceKind === 'user-override' || selected.sourceKind === 'ai-estimate') &&
+    selected.value.precision === 'date'
+  ) {
     reasonCodes.push('RESOLVED_MEDIUM_CONFIDENCE');
     return {
       ...baseRecord,
@@ -2057,7 +2150,8 @@ export function resolveDateCandidates(request: ResolveDateRequest): DateResoluti
   if (
     resolution.status !== 'resolved' ||
     resolution.selectedValue?.precision !== 'date' ||
-    selected?.sourceKind === 'user-override'
+    selected?.sourceKind === 'user-override' ||
+    selected?.sourceKind === 'ai-estimate'
   ) {
     return resolution;
   }

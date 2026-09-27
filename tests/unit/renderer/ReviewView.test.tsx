@@ -89,9 +89,127 @@ describe('ReviewView', () => {
           evidenceRevision: 'evidence-1',
         },
       })),
+      aiReviewStart: jest.fn(async () => ({
+        success: true,
+        data: {
+          phase: 'running',
+          total: 2,
+          processed: 0,
+          resolved: 0,
+          abstained: 0,
+          failed: 0,
+          currentIndex: null,
+        },
+      })),
+      aiReviewStatus: jest.fn(async () => ({
+        success: true,
+        data: {
+          phase: 'idle',
+          total: 0,
+          processed: 0,
+          resolved: 0,
+          abstained: 0,
+          failed: 0,
+          currentIndex: null,
+        },
+      })),
+      aiReviewCancel: jest.fn(async () => ({ success: true })),
     } as never;
   });
   afterEach(() => delete window.electronAPI);
+
+  it('can start with an available main-process key without exposing or entering it', async () => {
+    const bridge = window.electronAPI as unknown as {
+      aiReviewStatus: jest.Mock;
+      aiReviewStart: jest.Mock;
+    };
+    bridge.aiReviewStatus.mockResolvedValue({
+      success: true,
+      data: {
+        phase: 'idle',
+        total: 0,
+        processed: 0,
+        resolved: 0,
+        abstained: 0,
+        failed: 0,
+        currentIndex: null,
+        keyAvailable: true,
+      },
+    });
+    render(<ReviewView />);
+    const start = await screen.findByRole('button', { name: 'Start AI final pass' });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    await waitFor(() => expect(bridge.aiReviewStart).toHaveBeenCalledWith({}));
+    expect(screen.getByLabelText('AI coding endpoint key')).toHaveValue('');
+  });
+
+  it('starts and cancels optional AI review with an entered key and displays progress', async () => {
+    render(<ReviewView />);
+    await screen.findAllByText('photo.jpg');
+    fireEvent.change(screen.getByLabelText('AI coding endpoint key'), {
+      target: { value: 'runtime-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start AI final pass' }));
+    const bridge = window.electronAPI as unknown as {
+      aiReviewStart: jest.Mock;
+      aiReviewCancel: jest.Mock;
+    };
+    await waitFor(() =>
+      expect(bridge.aiReviewStart).toHaveBeenCalledWith({ apiKey: 'runtime-secret' })
+    );
+    expect(screen.getByText(/0 of 2 assessed/i)).toBeInTheDocument();
+    expect(screen.getByText(/GLM 5.3 checks pending files/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel AI final pass' }));
+    await waitFor(() => expect(bridge.aiReviewCancel).toHaveBeenCalled());
+    expect(screen.queryByDisplayValue('runtime-secret')).not.toBeInTheDocument();
+  });
+
+  it('clears a previous review error when a batch starts and keeps current batch errors visible', async () => {
+    const bridge = window.electronAPI as unknown as {
+      reviewGet: jest.Mock;
+      aiReviewStart: jest.Mock;
+    };
+    const failed = { ...item, status: 'failed' as const, lastError: 'old native helper failure' };
+    bridge.reviewGet.mockResolvedValue({ success: true, data: failed });
+    render(<ReviewView />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('old native helper failure');
+    fireEvent.change(screen.getByLabelText('AI coding endpoint key'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start AI final pass' }));
+    await waitFor(() => expect(bridge.aiReviewStart).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.queryByText('old native helper failure')).not.toBeInTheDocument()
+    );
+    fireEvent.click(screen.getAllByRole('button', { name: /photo.jpg/i })[0]);
+    await waitFor(() => expect(bridge.reviewGet).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('old native helper failure')).not.toBeInTheDocument();
+  });
+
+  it('shows a failure reported by the current AI batch', async () => {
+    const bridge = window.electronAPI as unknown as { aiReviewStart: jest.Mock };
+    bridge.aiReviewStart.mockResolvedValueOnce({
+      success: true,
+      data: {
+        phase: 'failed',
+        total: 2,
+        processed: 1,
+        resolved: 0,
+        abstained: 0,
+        failed: 1,
+        currentIndex: 1,
+        error: 'Current AI batch failed',
+      },
+    });
+    render(<ReviewView />);
+    await screen.findAllByText('photo.jpg');
+    fireEvent.change(screen.getByLabelText('AI coding endpoint key'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start AI final pass' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Current AI batch failed');
+  });
 
   it('loads the pending queue, selects a detail, and pages without discarding prior rows', async () => {
     render(<ReviewView />);

@@ -10,6 +10,8 @@ import {
 } from '../native/NativeFilesystemHelperClient';
 import { nativePackageBrokerLaunchTrustPolicy } from '../native/NativePackageTrustPolicies';
 import { AppConfigStore } from '../services/AppConfigStore';
+import { AiReviewBatchService } from '../services/AiReviewBatchService';
+import { AiReviewClient } from '../services/AiReviewClient';
 import { CoordinatorEvidenceAdapter } from '../services/CoordinatorEvidenceAdapter';
 import { CoordinatorJobHistoryAdapter } from '../services/CoordinatorJobHistoryAdapter';
 import { JobHistoryStore } from '../services/JobHistoryStore';
@@ -110,6 +112,7 @@ export interface ProductionRuntimeBindings {
   ): Promise<ApplicationTransactionPort>;
   openReviewOverrides(filePath: string): Promise<ApplicationReviewOverridePort>;
   createReview(context: {
+    runtime: ProductionRuntimeContext;
     history: ReviewHistoryPort;
     audit: ApplicationAuditPort;
     overrides: ApplicationReviewOverridePort;
@@ -117,6 +120,35 @@ export interface ProductionRuntimeBindings {
   }): ReviewRemediationService;
   createCoordinator(context: ProductionCoordinatorContext): ApplicationCoordinatorPort;
   createIpc(dependencies: ProcessingIPCDependencies): ApplicationIpcPort;
+}
+
+async function openNativeTransactionFilesystem(
+  context: ProductionRuntimeContext,
+  destinationRoot: string,
+  controlRoot: string,
+  sourceRoots: readonly string[]
+): Promise<NativeTransactionFilesystem> {
+  const client = await NativeFilesystemHelperClient.open({
+    resourcesRoot: context.resourcesRoot,
+    roots: NativeTransactionFilesystem.rootBindings(destinationRoot, controlRoot, sourceRoots),
+    platform: context.platform,
+    architecture: context.architecture,
+    launchTrustPolicy: context.launchTrustPolicy,
+    isPackaged: context.isPackaged,
+  });
+  return new NativeTransactionFilesystem(client, destinationRoot, controlRoot, sourceRoots);
+}
+
+export function createProductionReviewCoreFactory(
+  context: ProductionRuntimeContext
+): (destinationRoot: string) => Promise<TransactionalFileCore> {
+  return (destinationRoot) =>
+    TransactionalFileCore.create(destinationRoot, {
+      nativeFilesystemFactory: (canonicalDestinationRoot, controlRoot) =>
+        openNativeTransactionFilesystem(context, canonicalDestinationRoot, controlRoot, [
+          canonicalDestinationRoot,
+        ]),
+    });
 }
 
 function canonicalAbsolute(value: string, label: string): string {
@@ -212,31 +244,18 @@ const DEFAULT_BINDINGS: ProductionRuntimeBindings = {
       metadataWriter,
       normalizationAuthorization: audit,
       nativeFilesystemFactory: async ({ destinationRoot, controlRoot, sourceRoots }) => {
-        const roots = NativeTransactionFilesystem.rootBindings(
-          destinationRoot,
-          controlRoot,
-          sourceRoots
-        );
-        const client = await NativeFilesystemHelperClient.open({
-          resourcesRoot: context.resourcesRoot,
-          roots,
-          platform: context.platform,
-          architecture: context.architecture,
-          launchTrustPolicy: context.launchTrustPolicy,
-          isPackaged: context.isPackaged,
-        });
-        return new NativeTransactionFilesystem(client, destinationRoot, controlRoot, sourceRoots);
+        return openNativeTransactionFilesystem(context, destinationRoot, controlRoot, sourceRoots);
       },
     });
   },
   openReviewOverrides: (filePath) => ReviewOverrideStore.open(filePath),
-  createReview: ({ history, audit, overrides, metadata }) =>
+  createReview: ({ runtime, history, audit, overrides, metadata }) =>
     new ReviewRemediationService({
       history,
       audit,
       overrides,
       metadataCollector: metadata,
-      coreFactory: (destinationRoot) => TransactionalFileCore.create(destinationRoot),
+      coreFactory: createProductionReviewCoreFactory(runtime),
     }),
   createCoordinator: (context) =>
     new ProcessingCoordinator({
@@ -298,7 +317,7 @@ export async function createProductionApplicationRuntime(
     openReviewOverrides: () =>
       bindings.openReviewOverrides(path.join(path.dirname(historyPath), 'review-overrides.jsonl')),
     createReview: ({ history, audit, overrides, metadata }) =>
-      bindings.createReview({ history, audit, overrides, metadata }),
+      bindings.createReview({ runtime: runtimeContext, history, audit, overrides, metadata }),
     createCoordinator: ({ config, history, runtime, planner, revalidator, transaction }) => {
       const current = config.getAll();
       return bindings.createCoordinator({
@@ -321,8 +340,21 @@ export async function createProductionApplicationRuntime(
         },
       });
     },
-    createIpc: ({ config, history, runtime, coordinator, audit, review }) =>
-      bindings.createIpc({
+    createIpc: ({ config, history, runtime, coordinator, audit, review, metadata }) => {
+      const aiReview = new AiReviewBatchService({
+        review,
+        client: new AiReviewClient(),
+        ledgerPath: path.join(evidenceRoot, 'ai-review-checkpoints.jsonl'),
+        metadataReader: {
+          read: async (item, signal) => {
+            const receipt = await metadata.readRawVerifiedForReview(item.currentPath, signal);
+            if (receipt.sha256 !== item.output.sha256 || receipt.bytes !== item.output.size)
+              throw new Error('Review output changed before AI metadata assessment');
+            return receipt.tags;
+          },
+        },
+      });
+      const ipc = bindings.createIpc({
         ipc: options.ipc,
         config,
         history,
@@ -330,7 +362,18 @@ export async function createProductionApplicationRuntime(
         coordinator,
         audit,
         review,
+        aiReview,
+        aiKeyFromEnvironment: () => process.env.ZAI_API_KEY,
         publishEvent: options.publishEvent,
-      }),
+      });
+      return {
+        register: () => ipc.register(),
+        dispose: async () => {
+          aiReview.cancel();
+          await aiReview.wait();
+          await ipc.dispose();
+        },
+      };
+    },
   });
 }

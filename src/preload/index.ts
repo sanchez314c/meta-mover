@@ -59,6 +59,9 @@ const electronAPI = {
   reviewGet: (request: ReviewGetRequestDTO) => ipcRenderer.invoke('review:get', request),
   reviewDryRun: (request: ReviewDryRunRequestDTO) => ipcRenderer.invoke('review:dry-run', request),
   reviewApply: (request: ReviewApplyRequestDTO) => ipcRenderer.invoke('review:apply', request),
+  aiReviewStart: (request: { apiKey?: string }) => ipcRenderer.invoke('review:ai-start', request),
+  aiReviewStatus: () => ipcRenderer.invoke('review:ai-status'),
+  aiReviewCancel: () => ipcRenderer.invoke('review:ai-cancel'),
 
   getConfig: () => ipcRenderer.invoke('config:get'),
   updateConfig: (update: AppConfigUpdate) => ipcRenderer.invoke('config:update', update),

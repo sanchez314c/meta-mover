@@ -66,6 +66,45 @@ const item: ReviewItemDTO = {
 };
 
 describe('review queue shared contract', () => {
+  it('validates AI estimate provenance and rejects missing or unsafe fields', () => {
+    const action = {
+      type: 'ai-estimate',
+      candidateId: 'c1',
+      value: { localIso: '2024-05-06', zoneBasis: 'date-only', precision: 'date' },
+      provenance: {
+        model: 'glm-5.3',
+        promptVersion: 'review-v1',
+        evidenceRevision: 'evidence-1',
+        fileSha256: 'a'.repeat(64),
+        rationale: 'Only the calendar date is supported by the available clues.',
+      },
+    };
+    const request = { reviewId: 'review-1', evidenceRevision: 'evidence-1', action };
+    expect(isReviewDryRunRequestDTO(request)).toBe(true);
+    const { candidateId: _candidateId, ...withoutCandidate } = action;
+    expect(isReviewDryRunRequestDTO({ ...request, action: withoutCandidate })).toBe(false);
+    expect(isReviewDryRunRequestDTO({ ...request, action: { ...action, apiKey: 'secret' } })).toBe(
+      false
+    );
+    expect(
+      isReviewDryRunRequestDTO({
+        ...request,
+        action: { ...action, provenance: { ...action.provenance, image: 'base64' } },
+      })
+    ).toBe(false);
+    expect(
+      isReviewDryRunRequestDTO({
+        ...request,
+        action: { ...action, provenance: { ...action.provenance, rationale: '' } },
+      })
+    ).toBe(false);
+    expect(
+      isReviewDryRunRequestDTO({
+        ...request,
+        action: { ...action, value: { ...action.value, localIso: '2024-02-30' } },
+      })
+    ).toBe(false);
+  });
   it('accepts v1 history and validates the exact v2 calendar-date invariant', () => {
     expect(isReviewEvidenceSnapshot(evidence)).toBe(true);
     const dateOnly = {
@@ -255,6 +294,7 @@ describe('review queue shared contract', () => {
       { type: 'manual-date', value },
       { type: 'keep' },
       { type: 'retry-metadata' },
+      { type: 'automatic-retry' },
     ]) {
       expect(
         isReviewDryRunRequestDTO({ reviewId: 'review-1', evidenceRevision: 'rev-1', action })

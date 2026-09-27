@@ -846,6 +846,19 @@ export class MetadataCandidateCollector {
     this.statReader = statReader;
   }
 
+  async readRawVerifiedForReview(
+    filePath: string,
+    signal?: AbortSignal
+  ): Promise<VerifiedRawExifRead> {
+    if (this.closed) throw new Error('MetadataCandidateCollector is closed');
+    throwIfAborted(signal);
+    if (!path.isAbsolute(filePath) || /\p{Cc}/u.test(filePath))
+      throw new Error('Verified review metadata path is invalid');
+    if (typeof this.adapter.readRawVerified !== 'function')
+      throw new Error('Verified metadata reader is unavailable');
+    return this.adapter.readRawVerified(filePath, signal);
+  }
+
   async collect(request: CollectMetadataCandidatesRequest): Promise<DateCandidateInput[]> {
     return (await this.collectDetailed(request)).candidates;
   }
@@ -951,6 +964,21 @@ export class MetadataCandidateCollector {
           }
         : (raw as JsonValue);
       addCandidate(rule.tag, rule.semantic, rule.sourceKind, rule.sourceFamily, rawValue, value);
+    }
+
+    if (request.mediaKind === 'image' || request.mediaKind === 'raw') {
+      const photoshop = candidates.find(
+        (candidate) => candidate.tag === 'XMP-photoshop:DateCreated'
+      );
+      const originalName = stringValue(tags['XMP-getty:OriginalFileName']);
+      const modified = stringValue(tags['IFD0:ModifyDate']);
+      if (photoshop && originalName && modified) {
+        photoshop.rawValue = {
+          value: photoshop.rawValue,
+          originalFileName: originalName,
+          ifd0ModifyDate: modified,
+        };
+      }
     }
 
     const pngRecovery =

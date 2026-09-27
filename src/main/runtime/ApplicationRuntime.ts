@@ -6,6 +6,7 @@ import type {
   PreviewRevalidatorPort,
 } from '../services/ProcessingCoordinator';
 import type { MetadataCollectionPort } from '../services/MediaPreviewPlanner';
+import type { VerifiedRawExifRead } from '../core/metadata/MetadataCandidateCollector';
 import type { RuntimeReadinessPort } from '../services/MediaPreviewRevalidator';
 import type {
   ConfigIpcPort,
@@ -19,6 +20,7 @@ import type {
   ReviewAuditPort,
   ReviewHistoryPort,
   ReviewOverridePort,
+  ReviewRemediationService,
 } from '../services/ReviewRemediationService';
 import type { NormalizationAuthorizationPort } from '../services/TransactionalOperationExecutor';
 
@@ -51,6 +53,7 @@ export interface ApplicationAuditPort
 
 /** Owns the packaged one-shot metadata reader. */
 export interface ApplicationMetadataPort extends MetadataCollectionPort {
+  readRawVerifiedForReview(filePath: string, signal?: AbortSignal): Promise<VerifiedRawExifRead>;
   close(): Promise<void>;
 }
 
@@ -64,7 +67,15 @@ export interface ApplicationReviewOverridePort extends ReviewOverridePort {
   close(): Promise<void>;
 }
 
-export interface ApplicationReviewPort extends ReviewIpcPort {}
+export interface ApplicationReviewPort
+  extends ReviewIpcPort,
+    Pick<
+      ReviewRemediationService,
+      | 'automaticRetryDryRun'
+      | 'automaticRetryApply'
+      | 'withTransactionSession'
+      | 'preflightAIEstimateCandidates'
+    > {}
 
 export interface ApplicationCoordinatorPort extends ProcessingCoordinatorPort {
   /** Stops admission, settles active atomic operations, and drains history/evidence writes. */
@@ -128,6 +139,7 @@ export interface ApplicationRuntimeFactories {
     coordinator: ApplicationCoordinatorPort;
     audit: ApplicationAuditPort;
     review: ApplicationReviewPort;
+    metadata: ApplicationMetadataPort;
   }): MaybePromise<ApplicationIpcPort>;
 }
 
@@ -313,6 +325,7 @@ export class ApplicationRuntime {
         coordinator,
         audit,
         review,
+        metadata,
       });
       cleanup.push({ name: 'ipc', order: 10, run: () => ipc.dispose() });
 

@@ -48,8 +48,23 @@ export interface ReviewItemDTO {
 export type ReviewAction =
   | { type: 'select-candidate'; candidateId: string }
   | { type: 'manual-date'; value: ParsedDateValue }
+  | {
+      type: 'ai-estimate';
+      candidateId: string;
+      value: ParsedDateValue;
+      provenance: ReviewAIEstimateProvenance;
+    }
   | { type: 'keep' }
-  | { type: 'retry-metadata' };
+  | { type: 'retry-metadata' }
+  | { type: 'automatic-retry' };
+
+export interface ReviewAIEstimateProvenance {
+  model: string;
+  promptVersion: string;
+  evidenceRevision: string;
+  fileSha256: string;
+  rationale: string;
+}
 
 export interface ReviewListRequestDTO {
   status?: ReviewStatus;
@@ -97,9 +112,21 @@ export interface ReviewApplyResultDTO {
 
 export type ReviewOverrideResult =
   | { status: 'kept'; currentPath: string }
-  | { status: 'resolved'; previousPath: string; resolvedPath: string; transactionId: string }
+  | {
+      status: 'resolved';
+      previousPath: string;
+      resolvedPath: string;
+      transactionId: string;
+      refreshedEvidence?: ReviewEvidenceSnapshot;
+    }
   | { status: 'pending'; currentPath: string; refreshedEvidence: ReviewEvidenceSnapshot }
-  | { status: 'reconciling'; currentPath: string; targetPath: string; transactionId: string }
+  | {
+      status: 'reconciling';
+      currentPath: string;
+      targetPath: string;
+      transactionId: string;
+      refreshedEvidence?: ReviewEvidenceSnapshot;
+    }
   | { status: 'failed'; currentPath: string; error: string };
 
 export interface ReviewOverrideRecord {
@@ -263,6 +290,7 @@ function isScoredDateCandidate(value: unknown): boolean {
       'filename',
       'filesystem',
       'user-override',
+      'ai-estimate',
     ].includes(value.sourceKind as string) &&
     text(value.sourceFamily) &&
     text(value.tag) &&
@@ -369,9 +397,10 @@ function isDateResolutionRecord(value: unknown): value is DateResolutionRecord {
       return false;
     }
     const manual =
-      selected?.sourceKind === 'user-override' &&
+      (selected?.sourceKind === 'user-override' || selected?.sourceKind === 'ai-estimate') &&
       reasons.includes('NON_AUTHORITATIVE_SELECTION') &&
-      reasons.includes('RESOLVED_MEDIUM_CONFIDENCE');
+      reasons.includes('RESOLVED_MEDIUM_CONFIDENCE') &&
+      (selected?.sourceKind !== 'ai-estimate' || reasons.includes('AI_ESTIMATE'));
     return automatic || manual;
   }
   return true;
@@ -409,7 +438,38 @@ export function isReviewAction(value: unknown): value is ReviewAction {
     return exact(value, ['type', 'candidateId']) && text(value.candidateId);
   if (value.type === 'manual-date')
     return exact(value, ['type', 'value']) && isParsedDateValue(value.value);
-  return (value.type === 'keep' || value.type === 'retry-metadata') && exact(value, ['type']);
+  if (value.type === 'ai-estimate') {
+    if (
+      !exact(value, ['type', 'candidateId', 'value', 'provenance']) ||
+      !isParsedDateValue(value.value) ||
+      !object(value.provenance) ||
+      !exact(value.provenance, [
+        'model',
+        'promptVersion',
+        'evidenceRevision',
+        'fileSha256',
+        'rationale',
+      ])
+    )
+      return false;
+    const provenance = value.provenance;
+    return (
+      text(value.candidateId) &&
+      text(provenance.model, 128) &&
+      text(provenance.promptVersion, 128) &&
+      text(provenance.evidenceRevision) &&
+      typeof provenance.fileSha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(provenance.fileSha256) &&
+      text(provenance.rationale, 4096) &&
+      isValidDateEvidenceValue((value.value as ParsedDateValue).localIso.slice(0, 10))
+    );
+  }
+  return (
+    (value.type === 'keep' ||
+      value.type === 'retry-metadata' ||
+      value.type === 'automatic-retry') &&
+    exact(value, ['type'])
+  );
 }
 
 export function isReviewListRequestDTO(value: unknown): value is ReviewListRequestDTO {
@@ -550,10 +610,15 @@ function isReviewOverrideResult(value: unknown): value is ReviewOverrideResult {
     return exact(value, ['status', 'currentPath']) && text(value.currentPath, PATH_MAX);
   if (value.status === 'resolved')
     return (
-      exact(value, ['status', 'previousPath', 'resolvedPath', 'transactionId']) &&
+      exact(
+        value,
+        ['status', 'previousPath', 'resolvedPath', 'transactionId'],
+        ['refreshedEvidence']
+      ) &&
       text(value.previousPath, PATH_MAX) &&
       text(value.resolvedPath, PATH_MAX) &&
-      text(value.transactionId)
+      text(value.transactionId) &&
+      (value.refreshedEvidence === undefined || isReviewEvidenceSnapshot(value.refreshedEvidence))
     );
   if (value.status === 'pending')
     return (
@@ -563,10 +628,15 @@ function isReviewOverrideResult(value: unknown): value is ReviewOverrideResult {
     );
   if (value.status === 'reconciling')
     return (
-      exact(value, ['status', 'currentPath', 'targetPath', 'transactionId']) &&
+      exact(
+        value,
+        ['status', 'currentPath', 'targetPath', 'transactionId'],
+        ['refreshedEvidence']
+      ) &&
       text(value.currentPath, PATH_MAX) &&
       text(value.targetPath, PATH_MAX) &&
-      text(value.transactionId)
+      text(value.transactionId) &&
+      (value.refreshedEvidence === undefined || isReviewEvidenceSnapshot(value.refreshedEvidence))
     );
   return (
     value.status === 'failed' &&
