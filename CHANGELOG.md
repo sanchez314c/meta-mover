@@ -1008,3 +1008,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 2026-09-26 AI proposal completion throughput
 
 - Removed head-of-line waiting in the four-call GLM batch. A settled proposal now enters the serial review transaction lane immediately, even when an earlier request is still running. Each move still checks the saved output binding and evidence revision, uses final dry run and exact no-clobber apply, then records its checkpoint. Cancellation and authentication failure drain remaining requests; 429 responses reduce new proposal concurrency to one.
+
+## 2026-09-26 review session descriptor index
+
+- Indexed compact committed review rows for the lifetime of one transaction session. Later list pages and exact review lookups reuse that index instead of cloning and scanning the full job history each time. Audit evidence, overrides, output bindings, and destination identity remain freshly checked. The index clears when the session ends.
+- Kept an active page cursor bound to its original ID order when a file leaves review between pages. A new first page rebuilds the inventory, so a removed row cannot shift the offset past the next file.

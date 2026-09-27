@@ -150,6 +150,23 @@ interface ReviewDescriptor {
   status: ReviewItemDTO['status'];
 }
 
+interface IndexedReviewRow {
+  job: HistorySnapshot;
+  row: Readonly<PreviewRowDTO>;
+  rowIndex: number;
+}
+
+interface ReviewTransactionSession {
+  identity: object;
+  cores: Map<string, Promise<ReviewTransactionCorePort>>;
+  active: number;
+  closing: boolean;
+  drained?: () => void;
+  index?: Map<string, IndexedReviewRow>;
+  listIds?: string[];
+  listFilterKey?: string;
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -353,13 +370,7 @@ function selectedResolution(
 
 export class ReviewRemediationService {
   private readonly transactionScope = new AsyncLocalStorage<object>();
-  private session?: {
-    identity: object;
-    cores: Map<string, Promise<ReviewTransactionCorePort>>;
-    active: number;
-    closing: boolean;
-    drained?: () => void;
-  };
+  private session?: ReviewTransactionSession;
   private readonly initialBindings = new Map<string, ReviewOutputBinding>();
   private readonly planner: MediaPlanner;
   private readonly now: () => Date;
@@ -384,7 +395,7 @@ export class ReviewRemediationService {
 
   async withTransactionSession<T>(work: () => Promise<T>): Promise<T> {
     if (this.session) throw new Error('Review transaction session is busy');
-    const session = {
+    const session: ReviewTransactionSession = {
       identity: {},
       cores: new Map<string, Promise<ReviewTransactionCorePort>>(),
       active: 0,
@@ -404,6 +415,9 @@ export class ReviewRemediationService {
         const cores = await Promise.all([...session.cores.values()]);
         await Promise.all(cores.map((core) => core.close()));
       } finally {
+        session.listIds = undefined;
+        session.listFilterKey = undefined;
+        session.index?.clear();
         this.session = undefined;
       }
     }
@@ -440,12 +454,23 @@ export class ReviewRemediationService {
   }
 
   async list(request: ReviewListRequestDTO): Promise<ReviewPageDTO> {
-    const descriptors = await this.descriptors();
+    const session = this.currentSession();
     const selectedStatuses = request.statuses ?? (request.status ? [request.status] : undefined);
+    const filterKey = JSON.stringify(selectedStatuses ?? null);
+    if (session && request.cursor !== undefined) {
+      if (!session.listIds || session.listFilterKey !== filterKey)
+        throw new Error('review cursor is stale or invalid');
+      return this.listFromSession(session, request);
+    }
+    const descriptors = await this.descriptors();
     const filtered =
       selectedStatuses === undefined
         ? descriptors
         : descriptors.filter((entry) => selectedStatuses.includes(entry.status));
+    if (session) {
+      session.listIds = filtered.map((entry) => entry.id);
+      session.listFilterKey = filterKey;
+    }
     const offset = request.cursor === undefined ? 0 : Number(request.cursor);
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > filtered.length)
       throw new Error('review cursor is invalid');
@@ -456,6 +481,34 @@ export class ReviewRemediationService {
     return {
       items: page.map((entry) => entry.item),
       ...(next < filtered.length ? { nextCursor: String(next) } : {}),
+    };
+  }
+
+  private async listFromSession(
+    session: ReviewTransactionSession,
+    request: ReviewListRequestDTO
+  ): Promise<ReviewPageDTO> {
+    const ids = session.listIds!;
+    const offset = request.cursor === undefined ? 0 : Number(request.cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > ids.length)
+      throw new Error('review cursor is invalid');
+    const next = Math.min(ids.length, offset + request.limit);
+    const selectedStatuses = request.statuses ?? (request.status ? [request.status] : undefined);
+    const items = await Promise.all(
+      ids.slice(offset, next).map(async (id) => {
+        const indexed = session.index?.get(id);
+        if (!indexed) return null;
+        const descriptor = await this.indexedDescriptor(id, indexed);
+        if (!descriptor) return null;
+        const item = (await this.materialize(descriptor)).item;
+        return selectedStatuses === undefined || selectedStatuses.includes(item.status)
+          ? item
+          : null;
+      })
+    );
+    return {
+      items: items.filter((item): item is ReviewItemDTO => item !== null),
+      ...(next < ids.length ? { nextCursor: String(next) } : {}),
     };
   }
 
@@ -863,7 +916,68 @@ export class ReviewRemediationService {
       throw new Error('AI estimate file hash does not match');
   }
 
+  private currentSession(): ReviewTransactionSession | undefined {
+    const session = this.session;
+    return session && this.transactionScope.getStore() === session.identity ? session : undefined;
+  }
+
+  private async indexedDescriptor(
+    id: string,
+    entry: IndexedReviewRow
+  ): Promise<ReviewDescriptor | null> {
+    const { job, row, rowIndex } = entry;
+    if (
+      path.resolve(job.destinationPath) !== job.destinationPath ||
+      (await realpath(job.destinationPath)) !== job.destinationPath
+    )
+      throw new Error('review destination root identity is not canonical');
+    if (
+      !row.targetPath ||
+      path.resolve(row.targetPath) !== row.targetPath ||
+      !contained(job.destinationPath, row.targetPath)
+    )
+      throw new Error('committed review output is outside its destination root');
+    const [audit, persisted] = await Promise.all([
+      this.options.audit.reviewInput({
+        previewId: job.previewId,
+        sourcePath: row.sourcePath,
+        outputPath: row.targetPath,
+      }),
+      this.options.overrides.get(id),
+    ]);
+    if (!audit || audit.input.resolution.status === 'resolved') {
+      const session = this.currentSession();
+      session?.index?.delete(id);
+      return null;
+    }
+    let override = persisted ?? undefined;
+    if (override) this.validateOverride(override, job, row, rowIndex, audit.input.outputPath);
+    if (override?.result.status === 'reconciling') {
+      override = await this.reconcileOverride(override);
+    }
+    if (override?.result.status === 'reconciling')
+      throw new Error('review transaction reconciliation did not terminalize');
+    if (override) this.validateOverride(override, job, row, rowIndex, audit.input.outputPath);
+    return {
+      id,
+      job,
+      row,
+      rowIndex,
+      audit,
+      ...(override ? { override } : {}),
+      status: override?.result.status ?? 'pending',
+    };
+  }
+
   private async descriptors(exactId?: string): Promise<ReviewDescriptor[]> {
+    const session = this.currentSession();
+    if (session && exactId !== undefined) {
+      const indexed = session.index?.get(exactId);
+      if (indexed) {
+        const descriptor = await this.indexedDescriptor(exactId, indexed);
+        return descriptor ? [descriptor] : [];
+      }
+    }
     const [jobs, overrideList] = await Promise.all([
       this.options.history.listJobs(),
       this.options.overrides.list(),
@@ -935,7 +1049,28 @@ export class ReviewRemediationService {
         items.push({ id, job, row, rowIndex, audit, ...(override ? { override } : {}), status });
       }
     }
-    return items.sort((a, b) => a.id.localeCompare(b.id));
+    items.sort((a, b) => a.id.localeCompare(b.id));
+    if (session && exactId === undefined) {
+      const compact = items.map((entry) => ({
+        ...entry,
+        job: Object.freeze({
+          jobId: entry.job.jobId,
+          previewId: entry.job.previewId,
+          destinationPath: entry.job.destinationPath,
+          effectiveOptions: Object.freeze(clone(entry.job.effectiveOptions)),
+          events: Object.freeze([]),
+        }) as HistorySnapshot,
+        row: Object.freeze(clone(entry.row)),
+      }));
+      session.index = new Map(
+        compact.map((entry) => [
+          entry.id,
+          { job: entry.job, row: entry.row, rowIndex: entry.rowIndex },
+        ])
+      );
+      return items;
+    }
+    return items;
   }
 
   private async materialize(descriptor: ReviewDescriptor): Promise<LocatedItem> {

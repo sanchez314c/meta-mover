@@ -860,7 +860,7 @@ describe('ReviewRemediationService', () => {
         resolution,
       }));
       const history = {
-        listJobs: async () => [
+        listJobs: jest.fn(async () => [
           {
             jobId: '33333333-3333-4333-8333-333333333333',
             previewId: 'preview-scale',
@@ -892,7 +892,7 @@ describe('ReviewRemediationService', () => {
               },
             ],
           },
-        ],
+        ]),
       };
       const audit = {
         reviewPage: jest.fn(async ({ cursor, limit }: { cursor?: string; limit: number }) => {
@@ -923,31 +923,103 @@ describe('ReviewRemediationService', () => {
         mtimeNs: '1000000',
         sha256: 'a'.repeat(64),
       }));
+      const overrides = new Overrides();
       const make = () =>
         new ReviewRemediationService({
           history,
           audit,
-          overrides: new Overrides(),
+          overrides,
           outputBinding,
           coreFactory: async () => ({ execute: jest.fn(), close: async () => undefined }),
           now: () => new Date('2026-09-22T00:00:02.000Z'),
         });
       const service = make();
-      const first = await service.list({ limit: 25 });
-      expect(first.items).toHaveLength(25);
-      expect(outputBinding).toHaveBeenCalledTimes(25);
-      const second = await service.list({ limit: 25, cursor: first.nextCursor });
-      expect(second.items).toHaveLength(25);
+      await service.withTransactionSession(async () => {
+        const first = await service.list({ limit: 25 });
+        expect(first.items).toHaveLength(25);
+        expect(outputBinding).toHaveBeenCalledTimes(25);
+        const second = await service.list({ limit: 25, cursor: first.nextCursor });
+        expect(second.items).toHaveLength(25);
+        expect(new Set([...first.items, ...second.items].map((item) => item.reviewId)).size).toBe(
+          50
+        );
+        expect(outputBinding).toHaveBeenCalledTimes(50);
+        expect(history.listJobs).toHaveBeenCalledTimes(1);
+        audit.reviewInput.mockClear();
+        const request = {
+          reviewId: first.items[0].reviewId,
+          evidenceRevision: first.items[0].evidence.revision,
+          action: { type: 'select-candidate' as const, candidateId: 'candidate-1' },
+        };
+        await service.dryRun(request);
+        await service.get(request.reviewId);
+        expect(history.listJobs).toHaveBeenCalledTimes(1);
+        expect(audit.reviewInput).toHaveBeenCalledTimes(2);
+        const selected = first.items[0];
+        outputBinding.mockResolvedValueOnce({
+          ...selected.output,
+          sha256: 'b'.repeat(64),
+        });
+        expect((await service.get(selected.reviewId))?.status).toBe('stale');
+        expect(history.listJobs).toHaveBeenCalledTimes(1);
+        overrides.records.push({
+          schemaVersion: 1,
+          eventId: 'fresh-override',
+          reviewId: selected.reviewId,
+          sequence: 1,
+          recordedAt: '2026-09-22T00:00:03.000Z',
+          jobId: selected.jobId,
+          previewId: selected.previewId,
+          rowIndex: selected.rowIndex,
+          output: selected.output,
+          evidenceRevision: selected.evidence.revision,
+          action: { type: 'keep' },
+          result: { status: 'kept', currentPath: selected.currentPath },
+        });
+        expect((await service.get(selected.reviewId))?.status).toBe('kept');
+        expect(audit.reviewInput).toHaveBeenCalledTimes(4);
+        expect(history.listJobs).toHaveBeenCalledTimes(1);
+        const pending = await service.list({ statuses: ['pending'], limit: 25 });
+        expect(pending.items).toHaveLength(25);
+        expect(pending.items.some((item) => item.reviewId === selected.reviewId)).toBe(false);
+        const pendingNext = await service.list({
+          statuses: ['pending'],
+          limit: 25,
+          cursor: pending.nextCursor,
+        });
+        expect(pendingNext.items).toHaveLength(25);
+        expect(history.listJobs).toHaveBeenCalledTimes(2);
+        expect(await service.get('review-unknown')).toBeNull();
+        expect(history.listJobs).toHaveBeenCalledTimes(3);
+      });
       expect(
-        new Set([...first.items, ...second.items].map((item) => item.reviewId))
-      ).toHaveProperty('size', 50);
-      expect(outputBinding).toHaveBeenCalledTimes(50);
-
+        (await service.get((await service.list({ limit: 1 })).items[0].reviewId))?.status
+      ).toBe('kept');
+      expect(history.listJobs.mock.calls.length).toBeGreaterThan(2);
       outputBinding.mockClear();
-      const exact = await make().get(first.items[0].reviewId);
-      expect(exact?.reviewId).toBe(first.items[0].reviewId);
+      audit.reviewInput.mockClear();
+      const first = await service.list({ limit: 2 });
+      outputBinding.mockClear();
+      const exact = await make().get(first.items[1].reviewId);
+      expect(exact?.reviewId).toBe(first.items[1].reviewId);
       expect(outputBinding).toHaveBeenCalledTimes(1);
       expect(audit.reviewInput).toHaveBeenCalledTimes(1);
+      const paged = make();
+      await paged.withTransactionSession(async () => {
+        const pageA = await paged.list({ limit: 1 });
+        const pageB = await paged.list({ limit: 1, cursor: pageA.nextCursor });
+        const pageC = await paged.list({ limit: 1, cursor: pageB.nextCursor });
+        const removed = pageB.items[0];
+        const inputIndex = inputs.findIndex(
+          (input) => input.sourcePath === removed.originalSourcePath
+        );
+        expect(inputIndex).toBeGreaterThanOrEqual(0);
+        inputs.splice(inputIndex, 1);
+        const missing = await paged.list({ limit: 1, cursor: pageA.nextCursor });
+        expect(missing.items).toEqual([]);
+        const next = await paged.list({ limit: 1, cursor: missing.nextCursor });
+        expect(next.items.map((item) => item.reviewId)).toEqual([pageC.items[0].reviewId]);
+      });
     } finally {
       await import('fs/promises').then((fs) => fs.rm(root, { recursive: true, force: true }));
     }
