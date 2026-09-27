@@ -1004,3 +1004,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 2026-09-26 bounded GLM timeout retry
 
 - Extended GLM 5.3 proposals to a 240-second per-attempt window with one timeout retry and a hard 480-second total budget. The timeout also terminates a transport that ignores cancellation. User cancellation and API authentication rejection remain immediate; the retry only requests a proposal and cannot repeat a file move.
+
+## 2026-09-26 AI proposal completion throughput
+
+- Removed head-of-line waiting in the four-call GLM batch. A settled proposal now enters the serial review transaction lane immediately, even when an earlier request is still running. Each move still checks the saved output binding and evidence revision, uses final dry run and exact no-clobber apply, then records its checkpoint. Cancellation and authentication failure drain remaining requests; 429 responses reduce new proposal concurrency to one.

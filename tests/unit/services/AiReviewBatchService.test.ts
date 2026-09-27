@@ -61,6 +61,65 @@ function deterministic<T extends object>(review: T) {
 }
 
 describe('AiReviewBatchService', () => {
+  it('commits a fast second proposal while the first model call is still pending', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
+    const rows = [0, 1].map((n) => {
+      const row = JSON.parse(JSON.stringify(item)) as ReviewItemDTO;
+      row.reviewId = `review-${n}`;
+      row.output.sha256 = String(n).repeat(64);
+      row.evidence.resolution.candidates[0].id = `candidate-${n}`;
+      return row;
+    });
+    const review = deterministic({
+      list: jest.fn(async () => ({ items: rows })),
+      get: jest.fn(async (id: string) => rows.find((row) => row.reviewId === id)!),
+      dryRun: jest.fn(async () => ({ planToken: 'p', collision: false })),
+      apply: jest.fn(async (request: { reviewId: string }) => ({
+        reviewId: request.reviewId,
+        status: 'resolved',
+      })),
+    });
+    const releases = new Map<string, (value: unknown) => void>();
+    const client = {
+      propose: jest.fn(
+        ({ candidateIds }: { candidateIds: string[] }) =>
+          new Promise((resolve) => releases.set(candidateIds[0], resolve))
+      ),
+    };
+    const service = new AiReviewBatchService({
+      review,
+      client,
+      metadataReader: defaultMetadataReader,
+      ledgerPath: path.join(dir, 'ledger.jsonl'),
+    });
+    await service.start({ apiKey: 'secret' });
+    await waitFor(() => expect(releases.size).toBe(2));
+    releases.get('candidate-1')!({
+      kind: 'candidate',
+      candidateId: 'candidate-1',
+      rationale: 'EXIF',
+    });
+    try {
+      await waitFor(() => expect(review.apply).toHaveBeenCalledTimes(1));
+      expect(review.apply.mock.calls[0][0]).toMatchObject({
+        reviewId: 'review-1',
+        action: { provenance: { fileSha256: '1'.repeat(64) } },
+      });
+      expect(service.status().processed).toBe(1);
+    } finally {
+      releases.get('candidate-0')!({
+        kind: 'candidate',
+        candidateId: 'candidate-0',
+        rationale: 'EXIF',
+      });
+    }
+    await service.wait();
+    expect(review.apply.mock.calls.map(([request]) => request.reviewId)).toEqual([
+      'review-1',
+      'review-0',
+    ]);
+    expect(review.apply.mock.calls[1][0].action.provenance.fileSha256).toBe('0'.repeat(64));
+  });
   it('offers GLM only candidates that pass the review resolver dry run', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
     const conflict = JSON.parse(JSON.stringify(item)) as ReviewItemDTO;
@@ -150,7 +209,7 @@ describe('AiReviewBatchService', () => {
     expect(service.status()).toMatchObject({ abstained: 1, failed: 0 });
     expect(review.apply).not.toHaveBeenCalled();
   });
-  it('runs at most four proposals while applying results in queue order', async () => {
+  it('runs at most four proposals while applying results serially', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
     const rows = Array.from({ length: 6 }, (_, n) => ({ ...item, reviewId: `review-${n}` }));
     const review = deterministic({
@@ -196,6 +255,51 @@ describe('AiReviewBatchService', () => {
     expect(review.apply.mock.calls.map(([request]) => request.reviewId)).toEqual(
       rows.map((row) => row.reviewId)
     );
+  });
+  it('reduces proposal concurrency after a 429 without losing settled peers', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
+    const rows = Array.from({ length: 5 }, (_, n) => ({ ...item, reviewId: `review-${n}` }));
+    const review = deterministic({
+      list: jest.fn(async () => ({ items: rows })),
+      get: jest.fn(async (id: string) => rows.find((row) => row.reviewId === id)!),
+      dryRun: jest.fn(async () => ({ planToken: 'p', collision: false })),
+      apply: jest.fn(async () => ({ status: 'resolved' })),
+    });
+    const releases: Array<(value: unknown) => void> = [];
+    const client = {
+      propose: jest.fn(
+        () =>
+          new Promise((resolve, reject) => {
+            releases.push((value) => (value instanceof Error ? reject(value) : resolve(value)));
+          })
+      ),
+    };
+    const service = new AiReviewBatchService({
+      review,
+      client,
+      metadataReader: defaultMetadataReader,
+      ledgerPath: path.join(dir, 'ledger.jsonl'),
+    });
+    await service.start({ apiKey: 'secret' });
+    await waitFor(() => expect(releases).toHaveLength(4));
+    releases[1](new Error('AI request failed with HTTP 429'));
+    await waitFor(() => expect(service.status().processed).toBe(1));
+    expect(releases).toHaveLength(4);
+    for (const index of [2, 3, 0]) {
+      releases[index]({ kind: 'candidate', candidateId: 'candidate-1', rationale: 'EXIF' });
+      await waitFor(() =>
+        expect(service.status().processed).toBe(index === 2 ? 2 : index === 3 ? 3 : 4)
+      );
+    }
+    await waitFor(() => expect(releases).toHaveLength(5));
+    releases[4]({ kind: 'candidate', candidateId: 'candidate-1', rationale: 'EXIF' });
+    await service.wait();
+    expect(service.status()).toMatchObject({
+      phase: 'completed',
+      processed: 5,
+      resolved: 4,
+      failed: 1,
+    });
   });
   it('stops proposal dispatch and drains peers on authentication failure', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'meta-ai-batch-'));
@@ -611,19 +715,20 @@ describe('AiReviewBatchService', () => {
       dryRun: jest.fn(),
       apply: jest.fn(),
     };
-    let service: AiReviewBatchService;
+    const holder: { service?: AiReviewBatchService } = {};
     const client = {
       propose: jest.fn(async () => {
-        service.cancel();
+        holder.service?.cancel();
         return { kind: 'candidate', candidateId: 'candidate-1', rationale: 'x' };
       }),
     };
-    service = new AiReviewBatchService({
+    const service = new AiReviewBatchService({
       metadataReader: defaultMetadataReader,
       review: deterministic(review),
       client,
       ledgerPath: path.join(dir, 'ledger.jsonl'),
     });
+    holder.service = service;
     await service.start({ apiKey: 'secret' });
     await service.wait();
     expect(service.status().phase).toBe('cancelled');

@@ -1101,3 +1101,7 @@ The live review of `2025-08-16_20-01-35.jpeg` exposed an eligible EXIF midnight 
 ### Bounded timeout retry for GLM proposals
 
 Two live model calls exceeded the original 120-second timeout, and the client did not retry either one. The client now allows 240 seconds per attempt, retries a timeout once with bounded jitter, and enforces a 480-second total deadline even if the HTTP transport ignores AbortSignal. A user cancel or 401/403 rejection stops immediately. Tests cover a successful second attempt, two timeouts, cancellation, authentication rejection, and a transport that never settles. No transaction is retried by this change.
+
+### AI proposal completion throughput
+
+The live four-call batch could wait behind one slow GLM request while later proposals had completed. The scheduler now commits whichever prepared proposal settles first. The transaction and checkpoint lane remains serial, and final binding validation prevents a proposal from applying to a changed output. Destination suffix order may follow proposal completion order. A red-first test held the first request while the second resolved and confirmed the second file moved with its own content hash before the first request was released. Existing cancellation, authentication, stale-binding, and maximum-concurrency tests pass; a 429 test confirms conservative refill after rate limiting.

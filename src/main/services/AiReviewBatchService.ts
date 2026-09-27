@@ -429,17 +429,23 @@ export class AiReviewBatchService {
           return;
         }
         if (authFailure) throw authFailure;
-        const entry = queue.shift();
-        if (!entry) continue;
+        if (queue.length === 0) continue;
+        const { entry, settled } = await Promise.race(
+          queue.map(async (pending) => ({
+            entry: pending,
+            settled: pending.proposal ? await pending.proposal : null,
+          }))
+        );
+        queue.splice(queue.indexOf(entry), 1);
+        if (signal.aborted) {
+          this.state.phase = 'cancelled';
+          return;
+        }
+        if (authFailure) throw authFailure;
         this.state.currentIndex = this.state.processed + 1;
         this.state.currentStage = entry.proposal ? 'model-call' : 'checkpoint';
         if (entry.proposal) {
-          const settled = await entry.proposal;
-          if (signal.aborted) {
-            this.state.phase = 'cancelled';
-            return;
-          }
-          if (authFailure) throw authFailure;
+          if (!settled) throw new Error('Missing settled AI proposal');
           if (!settled.ok && settled.error instanceof AiReviewAuthenticationError)
             throw settled.error;
           if (
